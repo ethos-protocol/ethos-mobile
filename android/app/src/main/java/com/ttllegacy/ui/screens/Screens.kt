@@ -15,10 +15,15 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ttllegacy.models.Vault
+import com.ttllegacy.models.TwoFactorMethod
+import com.ttllegacy.models.TwoFactorStatus
+import com.ttllegacy.models.Enable2FARequest
+import com.ttllegacy.models.Verify2FARequest
 import com.ttllegacy.services.BiometricHelper
 import com.ttllegacy.services.VaultDeepLinkAction
 import com.ttllegacy.ui.AuthViewModel
 import com.ttllegacy.ui.VaultViewModel
+import com.ttllegacy.ui.TwoFactorViewModel
 
 // MARK: - Auth Screen
 
@@ -445,4 +450,165 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+// MARK: - 2FA Screens
+
+@Composable
+fun TwoFactorSetupScreen(
+    vaultId: String,
+    onComplete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val vm: TwoFactorViewModel = hiltViewModel()
+    val state by vm.state.collectAsStateWithLifecycle()
+    var selectedMethod by remember { mutableStateOf(TwoFactorMethod.totp) }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+
+    if (state.setupResponse != null) {
+        TwoFactorVerifyScreen(
+            vaultId = vaultId,
+            method = selectedMethod,
+            provisioningUri = state.setupResponse?.provisioningUri,
+            onVerified = { onComplete() },
+            onDismiss = onDismiss,
+            vm = vm
+        )
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Enable 2FA") },
+        text = {
+            Column {
+                Text("Authentication Method", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.height(8.dp))
+                listOf(TwoFactorMethod.totp, TwoFactorMethod.sms, TwoFactorMethod.email).forEach { method ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = selectedMethod == method,
+                            onClick = { selectedMethod = method }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            when (method) {
+                                TwoFactorMethod.totp -> "Authenticator App (TOTP)"
+                                TwoFactorMethod.sms -> "SMS Code"
+                                TwoFactorMethod.email -> "Email Code"
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+                if (selectedMethod == TwoFactorMethod.sms) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = phone, onValueChange = { phone = it },
+                        label = { Text("Phone number") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                }
+                if (selectedMethod == TwoFactorMethod.email) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = email, onValueChange = { email = it },
+                        label = { Text("Email address") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                }
+                state.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    vm.enable2FA(vaultId, selectedMethod, phone, email)
+                },
+                enabled = !state.isLoading && when (selectedMethod) {
+                    TwoFactorMethod.totp -> true
+                    TwoFactorMethod.sms -> phone.isNotBlank()
+                    TwoFactorMethod.email -> email.isNotBlank()
+                }
+            ) {
+                if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Continue")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun TwoFactorVerifyScreen(
+    vaultId: String,
+    method: TwoFactorMethod,
+    provisioningUri: String?,
+    onVerified: () -> Unit,
+    onDismiss: () -> Unit,
+    vm: TwoFactorViewModel
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var otp by remember { mutableStateOf("") }
+
+    LaunchedEffect(state.verified) {
+        if (state.verified) onVerified()
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            when (method) {
+                TwoFactorMethod.totp -> Icons.Default.Lock
+                TwoFactorMethod.sms -> Icons.Default.Email
+                TwoFactorMethod.email -> Icons.Default.Email
+            },
+            contentDescription = null, modifier = Modifier.size(56.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(16.dp))
+        Text("Verify Setup", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        when (method) {
+            TwoFactorMethod.totp -> {
+                Text("Scan the URI in your authenticator app:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (provisioningUri != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(provisioningUri, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            TwoFactorMethod.sms -> Text("A verification code has been sent to your phone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TwoFactorMethod.email -> Text("A verification code has been sent to your email.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = otp, onValueChange = { otp = it },
+            label = { Text("6-digit code") }, singleLine = true,
+            modifier = Modifier.width(200.dp),
+            textStyle = MaterialTheme.typography.headlineSmall
+        )
+        state.error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(
+            onClick = { vm.verify2FA(vaultId, otp) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = otp.length == 6 && !state.isLoading
+        ) {
+            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Text("Verify")
+        }
+    }
 }
