@@ -6,7 +6,10 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
+import com.ethosprotocol.services.PendingCheckInDao
+import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,16 +25,23 @@ class VaultViewModelTest {
     private val testDispatcher = UnconfinedTestDispatcher()
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
+    private val pendingCheckInDao: PendingCheckInDao = mockk(relaxed = true)
+    private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
-        vm = VaultViewModel(apiClient, notificationHelper)
+        mockkObject(CheckInSyncWorker.Companion)
+        every { CheckInSyncWorker.schedule(any()) } just Runs
+        vm = VaultViewModel(apiClient, notificationHelper, pendingCheckInDao, context)
     }
 
     @After
-    fun teardown() { Dispatchers.resetMain() }
+    fun teardown() {
+        Dispatchers.resetMain()
+        unmockkObject(CheckInSyncWorker.Companion)
+    }
 
     @Test
     fun `load success updates vaults`() = runTest {

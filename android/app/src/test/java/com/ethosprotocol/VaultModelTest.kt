@@ -37,7 +37,7 @@ class VaultModelTest {
         assertEquals("0.0000000 XLM", vault.formattedBalance)
     }
 
-    private fun makeVault(balance: Long = 0L, ttlRemaining: Long?) = Vault(
+    private fun makeVault(balance: Long = 0L, ttlRemaining: Long? = null) = Vault(
         id = "v1", owner = "GABC", beneficiary = "GXYZ",
         balance = balance, checkInInterval = 2_592_000L,
         lastCheckIn = "2026-04-01T00:00:00Z", ttlRemaining = ttlRemaining,
