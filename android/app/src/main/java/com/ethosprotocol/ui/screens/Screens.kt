@@ -21,6 +21,7 @@ import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLinkAction
+import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
@@ -115,7 +116,7 @@ fun VaultListScreen(
             vault = vault,
             onConfirm = {
                 pendingCheckIn = null
-                BiometricHelper(context as ComponentActivity).authenticate(
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
                     title = "Confirm Check-In",
                     subtitle = "Vault ${vault.id.take(12)}… will extend by ${formatInterval(vault.checkInInterval)}",
                     onSuccess = { vm.checkIn(vault.id) },
@@ -389,7 +390,7 @@ fun VaultDeepLinkScreen(
                         }
                         isProcessing = true
                         error = null
-                        BiometricHelper(context as ComponentActivity).authenticate(
+                        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
                             title = "Confirm Check-In",
                             subtitle = "Vault ${vault.id.take(12)}…",
                             onSuccess = {

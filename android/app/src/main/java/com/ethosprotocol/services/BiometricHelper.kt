@@ -1,12 +1,12 @@
 package com.ethosprotocol.services
 
-import androidx.activity.ComponentActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
+import androidx.fragment.app.FragmentActivity
 
-class BiometricHelper(private val activity: ComponentActivity) {
+class BiometricHelper(private val activity: FragmentActivity) {
 
     fun isAvailable(): Boolean {
         val mgr = BiometricManager.from(activity)
