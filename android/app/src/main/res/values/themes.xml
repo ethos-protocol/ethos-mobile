@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base launch theme; the app UI itself is rendered entirely with Jetpack
+         Compose, so this only needs to cover the window background shown
+         before Compose content is set. -->
+    <style name="Theme.EthosProtocol" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
