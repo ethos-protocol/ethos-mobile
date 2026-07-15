@@ -74,7 +74,11 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func registerNotificationCategories() {
-        let checkInAction = UNNotificationAction(identifier: "CHECK_IN_ACTION", title: "Check In", options: .foreground)
+        // .authenticationRequired ensures iOS forces the device to be unlocked before this
+        // action fires — otherwise anyone with the phone in hand could trigger a check-in
+        // (resetting the vault's TTL) straight from the lock screen banner, bypassing the
+        // BiometricService confirmation that guards the equivalent in-app action.
+        let checkInAction = UNNotificationAction(identifier: "CHECK_IN_ACTION", title: "Check In", options: [.foreground, .authenticationRequired])
         let category = UNNotificationCategory(identifier: "CHECK_IN", actions: [checkInAction],
                                                intentIdentifiers: [], options: [])
         UNUserNotificationCenter.current().setNotificationCategories([category])
