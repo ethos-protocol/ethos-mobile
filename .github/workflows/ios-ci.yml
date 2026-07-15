@@ -51,10 +51,15 @@ jobs:
       # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
       # for swift test's default macOS host destination.
       - name: Test (iOS Simulator)
+        # "iPhone 17" is whatever the current macos-latest runner's default
+        # Xcode ships as a simulator device; older device names get retired
+        # from new Xcode releases (this replaced "iPhone 15", which no
+        # longer exists on this runner's Xcode 26.5) and this may need
+        # bumping again after a future macos-latest/Xcode upgrade.
         run: |
           xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation
 
       - name: Install XcodeGen
