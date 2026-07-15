@@ -49,14 +49,12 @@ targets:
       - path: Sources/ViewModels
       - path: Sources/Views
     info:
-      path: EthosProtocol/Info.plist
+      # INFOPLIST_FILE and CODE_SIGN_ENTITLEMENTS are both plain SRCROOT-
+      # relative build settings. SRCROOT is the generated .xcodeproj's own
+      # directory (Xcode/, via --project Xcode), one level below where this
+      # file actually lives, so both need an explicit ../ to resolve.
+      path: ../EthosProtocol/Info.plist
     entitlements:
-      # CODE_SIGN_ENTITLEMENTS is written as a plain SRCROOT-relative build
-      # setting (unlike INFOPLIST_FILE, which XcodeGen routes through its
-      # group/file-reference path resolution and offsets correctly). SRCROOT
-      # is the generated .xcodeproj's own directory (Xcode/, via --project
-      # Xcode), one level below where this file actually lives, so it needs
-      # an explicit ../ to resolve correctly.
       path: ../EthosProtocol/EthosProtocol.entitlements
     settings:
       base:
@@ -91,9 +89,9 @@ targets:
       - path: Sources/Models
       - path: Sources/Services
     info:
-      path: TTLWidget/Info.plist
+      # See the EthosProtocol target's info.path comment above.
+      path: ../TTLWidget/Info.plist
     entitlements:
-      # See the EthosProtocol target's entitlements.path comment above.
       path: ../TTLWidget/TTLWidget.entitlements
     settings:
       base:
