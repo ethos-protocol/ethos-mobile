@@ -40,7 +40,13 @@ jobs:
       # Package.swift instead of potentially being shadowed by the generated
       # project. See project.yml for more detail.
       - name: Generate Xcode project (XcodeGen)
-        run: xcodegen generate --project Xcode
+        # XcodeGen stages the new .xcodeproj in a temp dir and copies it into
+        # the --project destination — it does not create that destination
+        # directory itself, so `Xcode/` must exist first or the copy fails
+        # with a confusing "source file doesn't exist" Cocoa error.
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
 
       # Builds the real installable app + embedded widget extension, from the
       # XcodeGen-generated project — not just the library, as the previous
