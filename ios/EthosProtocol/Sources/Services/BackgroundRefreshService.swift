@@ -23,7 +23,12 @@ final class BackgroundRefreshService {
     private func handleRefresh(task: BGAppRefreshTask) {
         scheduleAppRefresh()
 
-        let refreshTask = Task {
+        // Register the expiration handler before kicking off the async work so there's no
+        // window where the system could expire the task before we're able to cancel it.
+        var refreshTask: Task<Void, Never>?
+        task.expirationHandler = { refreshTask?.cancel() }
+
+        refreshTask = Task {
             do {
                 let vaults = try await APIClient.shared.listVaults()
                 for vault in vaults where vault.status == .active {
@@ -36,7 +41,5 @@ final class BackgroundRefreshService {
                 task.setTaskCompleted(success: false)
             }
         }
-
-        task.expirationHandler = { refreshTask.cancel() }
     }
 }
