@@ -76,6 +76,9 @@ dependencies {
     // Biometric authentication
     implementation(libs.biometric)
 
+    // Encrypted local storage (auth token)
+    implementation(libs.security.crypto)
+
     // Credentials (Passkey)
     implementation(libs.credentials)
     implementation(libs.credentials.play.services.auth)

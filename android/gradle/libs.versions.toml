@@ -16,6 +16,7 @@ coroutines = "1.9.0"
 mockk = "1.13.13"
 room = "2.6.1"
 work = "2.10.0"
+security-crypto = "1.1.0-alpha06"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -54,6 +55,7 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 androidx-test-ext = { group = "androidx.test.ext", name = "junit", version = "1.2.1" }
 espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version = "3.6.1" }
+security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "security-crypto" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
