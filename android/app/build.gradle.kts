@@ -7,6 +7,23 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Release signing credentials come from the environment (CI) or gradle.properties
+// (local ~/.gradle/gradle.properties, never committed) — never hardcoded here. When
+// any of them are absent (e.g. a plain local `assembleRelease`), the release build
+// type is simply left unsigned rather than failing the build.
+fun signingProp(envName: String, propName: String): String? =
+    System.getenv(envName)?.takeIf { it.isNotBlank() }
+        ?: (project.findProperty(propName) as String?)?.takeIf { it.isNotBlank() }
+
+val releaseKeystorePath = signingProp("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PATH")
+val releaseKeystorePassword = signingProp("ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingProp("ANDROID_KEY_ALIAS", "ANDROID_KEY_ALIAS")
+val releaseKeyPassword = signingProp("ANDROID_KEY_PASSWORD", "ANDROID_KEY_PASSWORD")
+val hasReleaseSigningConfig = !releaseKeystorePath.isNullOrBlank() &&
+    !releaseKeystorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+
 android {
     namespace = "com.ethosprotocol"
     compileSdk = 35
@@ -22,10 +39,24 @@ android {
 
     buildFeatures { compose = true; buildConfig = true }
 
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
