@@ -56,8 +56,17 @@ jobs:
         # from new Xcode releases (this replaced "iPhone 15", which no
         # longer exists on this runner's Xcode 26.5) and this may need
         # bumping again after a future macos-latest/Xcode upgrade.
+        # GitHub Actions sets CI=true for this shell, but that does NOT reach
+        # the Simulator-hosted xctest process — it runs in its own sandboxed
+        # environment, not inherited from the invoking shell. xcodebuild's
+        # documented TEST_RUNNER_ prefix is what actually forwards a variable
+        # into the test host (stripping the prefix), which is what
+        # EthosProtocolTests.swift / ICloudSyncServiceTests.swift check via
+        # ProcessInfo.processInfo.environment["CI"] to skip tests that need a
+        # signed, hosted app process (Keychain / UNUserNotificationCenter /
+        # NSUbiquitousKeyValueStore) that a bare SPM test bundle doesn't have.
         run: |
-          xcodebuild test \
+          TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation
