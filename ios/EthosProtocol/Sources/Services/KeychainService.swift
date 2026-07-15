@@ -9,7 +9,12 @@ final class KeychainService {
     private let credentialKey = "com.ethosprotocol.passkey_credential"
 
     func saveToken(_ token: String) {
-        save(token, forKey: tokenKey)
+        // The auth token must be readable by BackgroundRefreshService's BGAppRefreshTask and by
+        // the TTLWidget extension's timeline provider, both of which can run while the device is
+        // still locked. `.WhenUnlockedThisDeviceOnly` would make `loadToken()` silently return nil
+        // in that case (the request goes out with no Authorization header, and the background
+        // TTL check / widget just fail quietly) — so this needs the AfterFirstUnlock variant.
+        save(token, forKey: tokenKey, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
     }
 
     func loadToken() -> String? {
@@ -28,13 +33,13 @@ final class KeychainService {
         load(forKey: credentialKey)
     }
 
-    private func save(_ value: String, forKey key: String) {
+    private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {
         let data = Data(value.utf8)
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrAccount: key,
             kSecValueData: data,
-            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccessible: accessible
         ]
         SecItemDelete(query as CFDictionary)
         SecItemAdd(query as CFDictionary, nil)
