@@ -18,8 +18,14 @@ enum APIError: LocalizedError {
     }
 }
 
-final class APIClient {
-    static let shared = APIClient()
+// `public` here (and on listVaults() below): TTLWidget.swift calls
+// APIClient.shared.listVaults() across a real module boundary in the SPM
+// build (Package.swift declares TTLWidget as a separate target depending
+// on the EthosProtocol target) — internal (the Swift default) is invisible
+// outside the defining module. Other members stay internal since only
+// listVaults() is called from outside this module.
+public final class APIClient {
+    public static let shared = APIClient()
 
     private let baseURL: URL
     private let session: URLSession
@@ -57,7 +63,7 @@ final class APIClient {
 
     // MARK: - Vaults
 
-    func listVaults() async throws -> [Vault] {
+    public func listVaults() async throws -> [Vault] {
         try await get(path: "/vaults")
     }
 

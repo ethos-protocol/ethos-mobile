@@ -1,25 +1,30 @@
 import Foundation
 
-struct Vault: Codable, Identifiable, Equatable {
-    let id: String
-    let owner: String
-    let beneficiary: String
-    let balance: Int64
-    let checkInInterval: UInt64
-    let lastCheckIn: Date
-    let ttlRemaining: UInt64?
-    let status: VaultStatus
+// `public` here (and on the members below): TTLWidget.swift's WidgetKit
+// timeline provider reads Vault fields from APIClient.listVaults() across
+// a real module boundary in the SPM build (Package.swift declares TTLWidget
+// as a separate target depending on the EthosProtocol target) — internal
+// (the Swift default) is invisible outside the defining module.
+public struct Vault: Codable, Identifiable, Equatable {
+    public let id: String
+    public let owner: String
+    public let beneficiary: String
+    public let balance: Int64
+    public let checkInInterval: UInt64
+    public let lastCheckIn: Date
+    public let ttlRemaining: UInt64?
+    public let status: VaultStatus
 
-    enum VaultStatus: String, Codable {
+    public enum VaultStatus: String, Codable {
         case active, expired, released, paused
     }
 
-    var isExpiringSoon: Bool {
+    public var isExpiringSoon: Bool {
         guard let ttl = ttlRemaining else { return false }
         return ttl < 86_400 // < 24 hours
     }
 
-    var formattedBalance: String {
+    public var formattedBalance: String {
         let xlm = Double(balance) / 10_000_000
         return String(format: "%.7f XLM", xlm)
     }
