@@ -51,7 +51,13 @@ targets:
     info:
       path: EthosProtocol/Info.plist
     entitlements:
-      path: EthosProtocol/EthosProtocol.entitlements
+      # CODE_SIGN_ENTITLEMENTS is written as a plain SRCROOT-relative build
+      # setting (unlike INFOPLIST_FILE, which XcodeGen routes through its
+      # group/file-reference path resolution and offsets correctly). SRCROOT
+      # is the generated .xcodeproj's own directory (Xcode/, via --project
+      # Xcode), one level below where this file actually lives, so it needs
+      # an explicit ../ to resolve correctly.
+      path: ../EthosProtocol/EthosProtocol.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol
@@ -87,7 +93,8 @@ targets:
     info:
       path: TTLWidget/Info.plist
     entitlements:
-      path: TTLWidget/TTLWidget.entitlements
+      # See the EthosProtocol target's entitlements.path comment above.
+      path: ../TTLWidget/TTLWidget.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol.TTLWidget
