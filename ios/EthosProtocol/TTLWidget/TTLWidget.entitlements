@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Must match EthosProtocol.entitlements exactly — see the comment there.
+	     Lets TTLTimelineProvider (TTLWidget.swift), which calls APIClient.shared.listVaults()
+	     directly from the extension process, read the same auth token the host app saved
+	     via KeychainService. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.ethosprotocol.shared</string>
+	</array>
+</dict>
+</plist>
