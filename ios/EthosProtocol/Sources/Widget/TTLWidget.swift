@@ -1,5 +1,15 @@
 import WidgetKit
 import SwiftUI
+// The SPM package (Package.swift) compiles TTLWidget as a separate module
+// that depends on the EthosProtocol library product, so APIClient/Vault
+// need an explicit import there. The XcodeGen-generated app-extension
+// target (project.yml) instead compiles Models/APIClient directly into
+// this same module (no EthosProtocol product exists in that project), so
+// the import must be skipped there — canImport(EthosProtocol) is false in
+// that build and this block compiles out entirely.
+#if canImport(EthosProtocol)
+import EthosProtocol
+#endif
 
 // MARK: - Timeline Entry
 
