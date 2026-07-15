@@ -66,7 +66,7 @@ final class APIClient {
     }
 
     func createVault(beneficiary: String, checkInInterval: UInt64) async throws -> Vault {
-        let body = ["beneficiary": beneficiary, "check_in_interval": checkInInterval] as [String: Any]
+        let body = CreateVaultRequest(beneficiary: beneficiary, checkInInterval: checkInInterval)
         return try await post(path: "/vaults", body: body)
     }
 
@@ -189,3 +189,13 @@ final class APIClient {
 }
 
 private struct EmptyBody: Codable {}
+
+private struct CreateVaultRequest: Encodable {
+    let beneficiary: String
+    let checkInInterval: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case beneficiary
+        case checkInInterval = "check_in_interval"
+    }
+}
