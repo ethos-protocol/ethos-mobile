@@ -27,18 +27,31 @@ jobs:
       - name: Resolve package dependencies
         run: xcodebuild -resolvePackageDependencies
 
+      # Runs the existing EthosProtocolTests XCTest target against the SPM
+      # package (Package.swift) — deliberately BEFORE the Xcode project is
+      # generated below. `xcodebuild test -scheme EthosProtocol` with no
+      # -project/-workspace relies on implicit discovery, and once
+      # Xcode/EthosProtocol.xcodeproj exists, xcodebuild resolves the
+      # (identically-named) app scheme from that project instead of the SPM
+      # package's scheme — and the app scheme has no test action configured,
+      # so the step fails with "Scheme EthosProtocol is not currently
+      # configured for the test action." Keeping this step first avoids the
+      # ambiguity entirely. `swift test` isn't used here because several
+      # files import iOS-only frameworks (BackgroundTasks, WidgetKit, UIKit)
+      # that don't compile for swift test's default macOS host destination.
+      - name: Test (iOS Simulator)
+        run: |
+          xcodebuild test \
+            -scheme EthosProtocol \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -skipMacroValidation
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
       # Generates Xcode/EthosProtocol.xcodeproj from project.yml — the real,
       # installable app target (+ TTLWidget extension), which Package.swift
-      # alone cannot produce (it only declares library products). Generated
-      # deliberately into a subdirectory, not next to Package.swift: keeping
-      # this directory free of an .xcodeproj means the SPM-based `Test` step
-      # below (which relies on implicit package discovery, i.e. no
-      # -project/-workspace flag) keeps resolving unambiguously to
-      # Package.swift instead of potentially being shadowed by the generated
-      # project. See project.yml for more detail.
+      # alone cannot produce (it only declares library products).
       - name: Generate Xcode project (XcodeGen)
         # XcodeGen stages the new .xcodeproj in a temp dir and copies it into
         # the --project destination — it does not create that destination
@@ -57,19 +70,4 @@ jobs:
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocol \
             -destination 'generic/platform=iOS Simulator' \
-            -skipMacroValidation
-
-      # Runs the existing EthosProtocolTests XCTest target against the SPM
-      # package (Package.swift), unchanged from before this project.yml/.xcodeproj
-      # existed. This target isn't (yet) duplicated into the generated Xcode
-      # project — see project.yml for why — so this step is still the one
-      # source of truth for tests. `swift test` isn't used here because
-      # several files import iOS-only frameworks (BackgroundTasks, WidgetKit,
-      # UIKit) that don't compile for swift test's default macOS host
-      # destination.
-      - name: Test (iOS Simulator)
-        run: |
-          xcodebuild test \
-            -scheme EthosProtocol \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             -skipMacroValidation
