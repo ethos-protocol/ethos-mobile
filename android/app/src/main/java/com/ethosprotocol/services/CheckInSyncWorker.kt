@@ -22,12 +22,23 @@ class CheckInSyncWorker @AssistedInject constructor(
         val pending = dao.getAll()
         if (pending.isEmpty()) return Result.success()
 
-        var hasNetworkFailure = false
+        var hasRetryableFailure = false
         for (item in pending) {
-            when (apiClient.checkIn(item.vaultId)) {
+            when (val result = apiClient.checkIn(item.vaultId)) {
                 is ApiResult.Success -> dao.delete(item)
-                ApiResult.NetworkUnavailable -> hasNetworkFailure = true
-                is ApiResult.Error -> dao.delete(item)
+                ApiResult.NetworkUnavailable -> hasRetryableFailure = true
+                is ApiResult.Error -> {
+                    // A check-in is a dead-man's-switch signal: silently dropping it on a
+                    // transient failure (server error, timeout, expired auth) risks a vault
+                    // being released even though the user did check in. Only drop the queued
+                    // item when the server has definitively rejected the request as invalid
+                    // (e.g. the vault no longer exists) — everything else is retried.
+                    if (result.code in NON_RETRYABLE_ERROR_CODES) {
+                        dao.delete(item)
+                    } else {
+                        hasRetryableFailure = true
+                    }
+                }
             }
         }
 
@@ -35,11 +46,16 @@ class CheckInSyncWorker @AssistedInject constructor(
             notificationHelper.cancelQueuedCheckIn()
         }
 
-        return if (hasNetworkFailure) Result.retry() else Result.success()
+        return if (hasRetryableFailure) Result.retry() else Result.success()
     }
 
     companion object {
         const val WORK_NAME = "checkin_sync"
+
+        // Error codes where the server has told us unambiguously that this check-in can
+        // never succeed (bad request / vault no longer exists), so retrying is pointless.
+        // Everything else (5xx, 401, 0/exception) is treated as transient and retried.
+        private val NON_RETRYABLE_ERROR_CODES = setOf(400, 404, 410)
 
         fun schedule(context: Context) {
             val request = OneTimeWorkRequestBuilder<CheckInSyncWorker>()
