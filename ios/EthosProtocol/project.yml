@@ -75,11 +75,10 @@ targets:
   # separate importable library (there's no framework product in this native
   # project the way there was with the old Package.swift library products).
   # So — deliberately deviating from "sources: Sources/Widget only" — this
-  # target also compiles Sources/Models and Sources/Services directly (dual
-  # target membership with the app target, which is a normal/supported
-  # Xcode pattern) so it builds standalone. Neither directory has any
-  # dependency back on Sources/App, ViewModels, or Views (verified by grep),
-  # so this doesn't pull in anything extension-inappropriate.
+  # target also compiles Sources/Models plus the specific Services files it
+  # needs directly (dual target membership with the app target, which is a
+  # normal/supported Xcode pattern) so it builds standalone. See the sources
+  # list below for exactly which Services files and why.
   TTLWidget:
     type: app-extension
     platform: iOS
@@ -87,7 +86,16 @@ targets:
     sources:
       - path: Sources/Widget
       - path: Sources/Models
-      - path: Sources/Services
+      # Only the specific Services files TTLWidget.swift's APIClient.listVaults()
+      # call transitively needs (verified by grep) — NOT the whole Services
+      # directory. NotificationService.swift (UIApplication.shared) and
+      # BackgroundRefreshService.swift (BGTaskScheduler) use app-only APIs
+      # that are unavailable when compiled into an app-extension target and
+      # fail to build; BiometricService/PasskeyService/UniversalLinkRouter/
+      # ICloudSyncService are simply unused here.
+      - path: Sources/Services/APIClient.swift
+      - path: Sources/Services/KeychainService.swift
+      - path: Sources/Services/OfflineSupport.swift
     info:
       # See the EthosProtocol target's info.path comment above.
       path: ../TTLWidget/Info.plist
