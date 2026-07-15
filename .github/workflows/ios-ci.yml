@@ -27,16 +27,40 @@ jobs:
       - name: Resolve package dependencies
         run: xcodebuild -resolvePackageDependencies
 
-      # The package targets iOS 17 (SwiftUI + WidgetKit), so it's built and
-      # tested against an iOS Simulator destination rather than `swift build`,
-      # which would otherwise default to the macOS host platform.
-      - name: Build (iOS Simulator)
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # Generates Xcode/EthosProtocol.xcodeproj from project.yml — the real,
+      # installable app target (+ TTLWidget extension), which Package.swift
+      # alone cannot produce (it only declares library products). Generated
+      # deliberately into a subdirectory, not next to Package.swift: keeping
+      # this directory free of an .xcodeproj means the SPM-based `Test` step
+      # below (which relies on implicit package discovery, i.e. no
+      # -project/-workspace flag) keeps resolving unambiguously to
+      # Package.swift instead of potentially being shadowed by the generated
+      # project. See project.yml for more detail.
+      - name: Generate Xcode project (XcodeGen)
+        run: xcodegen generate --project Xcode
+
+      # Builds the real installable app + embedded widget extension, from the
+      # XcodeGen-generated project — not just the library, as the previous
+      # version of this job did.
+      - name: Build app (iOS Simulator)
         run: |
           xcodebuild build \
+            -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocol \
             -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation
 
+      # Runs the existing EthosProtocolTests XCTest target against the SPM
+      # package (Package.swift), unchanged from before this project.yml/.xcodeproj
+      # existed. This target isn't (yet) duplicated into the generated Xcode
+      # project — see project.yml for why — so this step is still the one
+      # source of truth for tests. `swift test` isn't used here because
+      # several files import iOS-only frameworks (BackgroundTasks, WidgetKit,
+      # UIKit) that don't compile for swift test's default macOS host
+      # destination.
       - name: Test (iOS Simulator)
         run: |
           xcodebuild test \
