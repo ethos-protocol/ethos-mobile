@@ -132,7 +132,14 @@ class ApiClient @Inject constructor(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
-            ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
+            // Ktor does not throw on non-2xx responses by default, so the status must be
+            // checked explicitly here (as get()/post() already do) — otherwise a failed
+            // deletion (401/500/etc.) is silently reported back to callers as success.
+            when (response.status.value) {
+                in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
+                401 -> ApiResult.Error("Unauthorized", 401)
+                else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
+            }
         }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
     }
 
