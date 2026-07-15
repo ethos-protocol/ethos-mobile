@@ -29,20 +29,31 @@ jobs:
 
       # Runs the existing EthosProtocolTests XCTest target against the SPM
       # package (Package.swift) — deliberately BEFORE the Xcode project is
-      # generated below. `xcodebuild test -scheme EthosProtocol` with no
-      # -project/-workspace relies on implicit discovery, and once
-      # Xcode/EthosProtocol.xcodeproj exists, xcodebuild resolves the
-      # (identically-named) app scheme from that project instead of the SPM
-      # package's scheme — and the app scheme has no test action configured,
-      # so the step fails with "Scheme EthosProtocol is not currently
-      # configured for the test action." Keeping this step first avoids the
-      # ambiguity entirely. `swift test` isn't used here because several
-      # files import iOS-only frameworks (BackgroundTasks, WidgetKit, UIKit)
-      # that don't compile for swift test's default macOS host destination.
+      # generated below (see below for why order matters).
+      #
+      # Uses the "EthosProtocol-Package" scheme, not "EthosProtocol": SwiftPM
+      # auto-generates one scheme per *product* plus one aggregate
+      # "<manifest-name>-Package" scheme covering every target in the
+      # manifest. EthosProtocolTests depends on both the EthosProtocol and
+      # TTLWidget products, so Xcode doesn't attach it to either product's
+      # own scheme — only the aggregate scheme has a test action configured.
+      # ("xcodebuild test -scheme EthosProtocol" fails with "Scheme
+      # EthosProtocol is not currently configured for the test action.")
+      #
+      # This step also has to run before Xcode/EthosProtocol.xcodeproj is
+      # generated below: once that project exists on disk, xcodebuild's
+      # implicit scheme discovery (no -project/-workspace passed) resolves
+      # to its app target scheme, which is also named "EthosProtocol" and
+      # also has no test action — a second, unrelated way to hit the same
+      # error. Running tests first avoids that ambiguity entirely.
+      #
+      # `swift test` isn't used here because several files import iOS-only
+      # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
+      # for swift test's default macOS host destination.
       - name: Test (iOS Simulator)
         run: |
           xcodebuild test \
-            -scheme EthosProtocol \
+            -scheme EthosProtocol-Package \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             -skipMacroValidation
 
