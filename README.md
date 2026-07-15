@@ -68,14 +68,17 @@ mobile/
 ## Setup
 
 ### iOS
-1. Open `mobile/ios/EthosProtocol` in Xcode 15+
-2. Set bundle ID and team in signing settings
-3. Add `API_BASE_URL` to `Info.plist`
-4. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`
-5. Enable Push Notifications + Associated Domains capabilities
+1. Install [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) — the `.xcodeproj` is generated, not checked in
+2. From `ios/EthosProtocol`, run `xcodegen generate --project Xcode` to produce `Xcode/EthosProtocol.xcodeproj` (an `EthosProtocol` app target + `TTLWidget` widget extension, per `project.yml`)
+3. Open `ios/EthosProtocol/Xcode/EthosProtocol.xcodeproj` in Xcode 15+
+4. Set your Apple Developer Team in signing settings for both the `EthosProtocol` and `TTLWidget` targets (`project.yml` leaves `DEVELOPMENT_TEAM` blank on purpose — bundle IDs `com.ethosprotocol` / `com.ethosprotocol.TTLWidget` are already set)
+5. `API_BASE_URL` is already set in `EthosProtocol/Info.plist` and `TTLWidget/Info.plist`; edit both (they're separate bundles, read independently at runtime) if you need to point at a different environment
+6. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`, listing this app's App ID under both `applinks` (Universal Links) and `webcredentials` (platform passkeys)
+7. In the Apple Developer portal, enable Push Notifications, Associated Domains, iCloud (Key-Value storage), and Keychain Sharing capabilities for the `com.ethosprotocol` App ID, and Keychain Sharing for `com.ethosprotocol.TTLWidget` — matching `EthosProtocol/EthosProtocol.entitlements` / `TTLWidget/TTLWidget.entitlements`. Set up an APNs key in App Store Connect for push.
+8. Re-run `xcodegen generate --project Xcode` any time `project.yml` changes; the generated `Xcode/` directory is disposable and shouldn't be committed
 
 ### Android
-1. Open `mobile/android` in Android Studio Hedgehog+
+1. Open `android` in Android Studio Hedgehog+
 2. Add `google-services.json` from Firebase Console
 3. Configure `assetlinks.json` at `https://ethos-protocol.app/.well-known/assetlinks.json`
 4. Set `API_BASE_URL` in `build.gradle.kts` `buildConfigField`
@@ -84,14 +87,18 @@ mobile/
 
 ### iOS
 ```bash
-cd mobile/ios/EthosProtocol
+cd ios/EthosProtocol
 swift test
 ```
 Covers: model decoding, Keychain round-trip, offline cache, Base64URL encoding.
+Tests run against the SPM package (`Package.swift`) directly and don't require the
+XcodeGen-generated project; CI runs this the same way, via `xcodebuild test` against
+an iOS Simulator destination (`swift test` alone defaults to macOS, which can't build
+the app's iOS-only framework imports).
 
 ### Android
 ```bash
-cd mobile/android
+cd android
 ./gradlew test                  # Unit tests (JVM)
 ./gradlew connectedAndroidTest  # Instrumented tests (device/emulator)
 ```
