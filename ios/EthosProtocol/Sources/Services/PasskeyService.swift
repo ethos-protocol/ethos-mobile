@@ -7,9 +7,12 @@ final class PasskeyService: NSObject {
 
     func register(username: String) async throws -> String {
         let challenge = try await APIClient.shared.getChallenge()
+        guard let challengeData = Data(base64URLEncoded: challenge.challenge) else {
+            throw PasskeyError.registrationFailed
+        }
         let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
         let request = provider.createCredentialRegistrationRequest(
-            challenge: Data(base64URLEncoded: challenge.challenge)!,
+            challenge: challengeData,
             name: username,
             userID: Data(username.utf8)
         )
@@ -26,8 +29,11 @@ final class PasskeyService: NSObject {
 
     func authenticate() async throws -> AuthToken {
         let challenge = try await APIClient.shared.getChallenge()
+        guard let challengeData = Data(base64URLEncoded: challenge.challenge) else {
+            throw PasskeyError.authenticationFailed
+        }
         let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
-        let request = provider.createCredentialAssertionRequest(challenge: Data(base64URLEncoded: challenge.challenge)!)
+        let request = provider.createCredentialAssertionRequest(challenge: challengeData)
         let credential = try await performRequest(request)
         guard let assertion = credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
             throw PasskeyError.authenticationFailed
