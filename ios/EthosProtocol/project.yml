@@ -1,0 +1,111 @@
+# XcodeGen spec for EthosProtocol.
+#
+# This generates the real, installable .xcodeproj (app target + WidgetKit
+# extension) that the hand-maintained Package.swift cannot produce on its
+# own (SwiftUI `@main App` needs to be compiled into an executable app
+# target, not linked in as an SPM library product).
+#
+# Usage:
+#   brew install xcodegen   # macOS, e.g. on a GitHub Actions macos-latest runner
+#   cd ios/EthosProtocol
+#   xcodegen generate --project Xcode
+#   open Xcode/EthosProtocol.xcodeproj
+#
+# NOTE: the generated project is deliberately written to a `Xcode/`
+# subdirectory (via `--project Xcode`) rather than next to Package.swift.
+# Keeping this directory free of an .xcodeproj means `xcodebuild`/`swift test`
+# invocations that rely on implicit SPM package discovery (i.e. that don't
+# pass -project/-workspace) keep resolving unambiguously to Package.swift,
+# so the existing `EthosProtocolTests` XCTest target keeps working exactly
+# as it did before this file existed. See ios-ci.yml and the root README
+# for how the two build systems (SPM for tests, Xcode project for the real
+# app + widget) are kept side by side.
+
+name: EthosProtocol
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    # TODO(team): set your Apple Developer Team ID before building/archiving,
+    # either here or by picking a team in Xcode's Signing & Capabilities tab
+    # for each target. Find it at https://developer.apple.com/account/#/membership.
+    # Deliberately left blank — do NOT fill this in with a placeholder/fake ID.
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  EthosProtocol:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources/App
+      - path: Sources/Models
+      - path: Sources/Services
+      - path: Sources/ViewModels
+      - path: Sources/Views
+    info:
+      path: EthosProtocol/Info.plist
+    entitlements:
+      path: EthosProtocol/EthosProtocol.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol
+        PRODUCT_NAME: EthosProtocol
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    dependencies:
+      - target: TTLWidget
+        embed: true
+        codeSign: true
+
+  # WidgetKit extension. Its Swift files (Sources/Widget/TTLWidget.swift) call
+  # APIClient.shared.listVaults() and reference the Vault model directly, with
+  # no `import EthosProtocol` — i.e. the code was written assuming Models and
+  # Services compile as part of the *same module* as the widget, not as a
+  # separate importable library (there's no framework product in this native
+  # project the way there was with the old Package.swift library products).
+  # So — deliberately deviating from "sources: Sources/Widget only" — this
+  # target also compiles Sources/Models and Sources/Services directly (dual
+  # target membership with the app target, which is a normal/supported
+  # Xcode pattern) so it builds standalone. Neither directory has any
+  # dependency back on Sources/App, ViewModels, or Views (verified by grep),
+  # so this doesn't pull in anything extension-inappropriate.
+  TTLWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources/Widget
+      - path: Sources/Models
+      - path: Sources/Services
+    info:
+      path: TTLWidget/Info.plist
+    entitlements:
+      path: TTLWidget/TTLWidget.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol.TTLWidget
+        PRODUCT_NAME: TTLWidget
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: true
+
+# No XCTest target is defined here on purpose. EthosProtocol is an
+# `application` (not framework) target, so a unit test target that wants to
+# `@testable import EthosProtocol` would need to be a *hosted* test bundle
+# (TEST_HOST/BUNDLE_LOADER pointed at the built .app binary) — a setup that
+# is fiddly to get right blind, with no Xcode available here to verify it.
+# The existing Tests/ target in Package.swift already does exactly what's
+# needed (plain XCTest, `@testable import EthosProtocol` / `TTLWidget`
+# against the SPM library products, run via `xcodebuild test` against an
+# iOS Simulator destination — see ios-ci.yml) and needs no TEST_HOST at all
+# because SPM test bundles get their own lightweight host automatically.
+# Keeping it as the single source of truth for tests avoids maintaining
+# the same test logic against two parallel build systems.
