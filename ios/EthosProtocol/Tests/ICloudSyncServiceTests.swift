@@ -10,7 +10,13 @@ final class ICloudSyncServiceTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.vault_associations")
     }
 
-    func test_toggle_enablesSync() {
+    func test_toggle_enablesSync() throws {
+        // NSUbiquitousKeyValueStore silently no-ops without an iCloud entitlement
+        // and a signed-in iCloud account — neither is available in the bare,
+        // unsigned SPM test bundle this runs in on CI (every read then just
+        // returns the default `false`, regardless of what was set).
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
         ICloudSyncService.shared.isSyncEnabled = true
         XCTAssertTrue(ICloudSyncService.shared.isSyncEnabled)
     }
