@@ -1,5 +1,6 @@
 package com.ethosprotocol.api
 
+import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
@@ -8,6 +9,7 @@ import com.ethosprotocol.models.Verify2FARequest
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.android.*
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
@@ -34,7 +36,18 @@ class ApiClient @Inject constructor(
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
-        install(Logging) { level = LogLevel.INFO }
+        install(Logging) {
+            // Full request/response bodies (bearer token, 2FA secrets, vault balances) must
+            // never be written to logcat in release builds.
+            level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
+        }
+        // No timeouts were configured previously, so a stalled connection (e.g. dead wifi
+        // captive portal) could hang a request — and the caller's loading state — forever.
+        install(HttpTimeout) {
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 15_000
+            socketTimeoutMillis = 30_000
+        }
     }
 
     // Auth
