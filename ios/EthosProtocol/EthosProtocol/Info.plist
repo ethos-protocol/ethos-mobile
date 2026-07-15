@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Ethos-Protocol</string>
+	<key>CFBundleName</key>
+	<string>EthosProtocol</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+
+	<!-- Face ID: BiometricService.swift calls LAContext.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)
+	     from Views.swift to confirm vault check-ins ("Confirm vault check-in" reason string). -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Ethos-Protocol uses Face ID to confirm vault check-ins and protect access to your vault.</string>
+
+	<!-- remote-notification: NotificationService registers for APNs and handles silent/background
+	     pushes. fetch: BackgroundRefreshService schedules a BGAppRefreshTaskRequest (see
+	     BGTaskSchedulerPermittedIdentifiers below), which requires the "fetch" background mode. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
+
+	<!-- Must exactly match BackgroundRefreshService.taskIdentifier
+	     ("app.ethos-protocol.vault-ttl-refresh"), passed to
+	     BGTaskScheduler.shared.register(forTaskWithIdentifier:) and
+	     BGAppRefreshTaskRequest(identifier:). -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>app.ethos-protocol.vault-ttl-refresh</string>
+	</array>
+
+	<!-- Custom-scheme deep links: UniversalLinkRouter.parse(url:) also recognizes
+	     ethosprotocol://vault/{vault_id}/{action} in addition to the
+	     https://ethos-protocol.app universal links handled via Associated Domains. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.ethosprotocol.deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ethosprotocol</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- APIClient.swift reads this exact key via
+	     Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL"), falling back to
+	     https://api.ethos-protocol.app/v1 if absent. Set here so the key exists by
+	     default; override per build configuration (e.g. via an .xcconfig-injected
+	     $(API_BASE_URL) build setting) for staging/debug builds if needed. -->
+	<key>API_BASE_URL</key>
+	<string>https://api.ethos-protocol.app/v1</string>
+
+	<!-- Standard HTTPS/TLS only — CryptoKit.SHA256 is used solely for local
+	     offline-cache filenames (OfflineSupport.swift), not for exportable/proprietary
+	     encryption of user data. If that ever changes (e.g. client-side encryption of
+	     vault contents beyond standard TLS), this must be revisited and an export
+	     compliance doc may be required instead. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<!-- Minimal SwiftUI launch screen (no storyboard needed, Xcode 14+ convention). -->
+	<key>UILaunchScreen</key>
+	<dict/>
+
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

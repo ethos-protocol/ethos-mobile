@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- applinks: Universal Links — EthosProtocolApp.swift handles
+	     onContinueUserActivity(NSUserActivityTypeBrowsingWeb) and passes the URL to
+	     UniversalLinkRouter, which parses https://ethos-protocol.app/vaults/... paths.
+	     Requires https://ethos-protocol.app/.well-known/apple-app-site-association
+	     to list this app's App ID under "applinks". -->
+	<!-- webcredentials: Platform Passkeys — PasskeyService.swift uses
+	     ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier:
+	     "ethos-protocol.app"). iOS requires a matching "webcredentials" Associated
+	     Domain entry (separate from applinks) plus a "webcredentials" section in the
+	     same apple-app-site-association file for platform passkeys to be usable. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:ethos-protocol.app</string>
+		<string>webcredentials:ethos-protocol.app</string>
+	</array>
+
+	<!-- NotificationService.swift calls UIApplication.shared.registerForRemoteNotifications()
+	     and NotificationService.handleDeviceToken(_:) registers the APNs token with the backend.
+	     "development" is the standard checked-in value; Xcode/App Store Connect swap this to
+	     "production" automatically for release/TestFlight/App Store builds based on the
+	     provisioning profile used at archive time. Requires an APNs key/cert configured in
+	     App Store Connect (see report — this cannot be provisioned from source alone). -->
+	<key>aps-environment</key>
+	<string>development</string>
+
+	<!-- ICloudSyncService.swift uses NSUbiquitousKeyValueStore.default to sync
+	     vault-to-passkey-credential associations (never private keys). This is iCloud
+	     Key-Value Storage, NOT CloudKit — no CloudKit container/database is referenced
+	     anywhere in the codebase, so no com.apple.developer.icloud-services /
+	     icloud-container-identifiers entitlement is declared. This is the standard
+	     Xcode-generated identifier format for "iCloud > Key-value storage". -->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+
+	<!-- Shared with the TTLWidget extension (see TTLWidget.entitlements) so
+	     KeychainService's saveToken/loadToken (used by APIClient's Authorization header)
+	     resolves to the SAME keychain item in both processes. Without this, the widget
+	     (which calls APIClient.shared.listVaults() directly from its own process) would
+	     never see the auth token the host app saved, since app and extension get distinct
+	     default keychain access groups otherwise.
+	     ASSUMPTION: "com.ethosprotocol.shared" is an invented group name, not found in
+	     source — pick any string, just keep it identical across both entitlements files
+	     and enable "Keychain Sharing" for both App IDs in the Apple Developer portal. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.ethosprotocol.shared</string>
+	</array>
+</dict>
+</plist>
