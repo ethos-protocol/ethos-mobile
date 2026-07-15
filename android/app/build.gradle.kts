@@ -66,6 +66,11 @@ android {
     }
 
     kotlinOptions {
+        // Pin explicitly so the Kotlin/KSP tasks always match compileOptions' Java 17
+        // target regardless of which JDK is actually running the Gradle daemon —
+        // without this, a build run under a JDK newer than 17 fails KSP with
+        // "Inconsistent JVM-target compatibility detected" against javac's target.
+        jvmTarget = "17"
         freeCompilerArgs += listOf(
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
         )
