@@ -160,9 +160,14 @@ final class APIClient {
     }
 
     private func execute(_ request: URLRequest) async throws -> Data {
+        // Only idempotent reads (GET) may be served from / written to the offline cache.
+        // Falling back to a cached response for a mutating request (POST/DELETE — e.g.
+        // check-in, withdraw, disable2FA) would make the app report success for an action
+        // that never actually reached the server, which is unacceptable for this app.
+        let isCacheableRead = request.httpMethod == "GET"
+
         guard NetworkMonitor.shared.isConnected else {
-            // Return cached data if available
-            if let cached = OfflineCache.shared.load(for: request.url?.absoluteString ?? "") {
+            if isCacheableRead, let cached = OfflineCache.shared.load(for: request.url?.absoluteString ?? "") {
                 return cached
             }
             throw APIError.networkUnavailable
@@ -171,9 +176,15 @@ final class APIClient {
         guard let http = response as? HTTPURLResponse else { throw APIError.serverError("Invalid response") }
         switch http.statusCode {
         case 200...299:
-            OfflineCache.shared.save(data, for: request.url?.absoluteString ?? "")
+            if isCacheableRead {
+                OfflineCache.shared.save(data, for: request.url?.absoluteString ?? "")
+            }
             return data
-        case 401: throw APIError.unauthorized
+        case 401:
+            // The token the server rejected is no longer valid — drop it locally so we
+            // don't keep sending it, and so a relaunch correctly shows the sign-in screen.
+            KeychainService.shared.deleteToken()
+            throw APIError.unauthorized
         case 404: throw APIError.notFound
         default:
             let msg = (try? JSONDecoder().decode([String: String].self, from: data))?["error"] ?? "Server error"
