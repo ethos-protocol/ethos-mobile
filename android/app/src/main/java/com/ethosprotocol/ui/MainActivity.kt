@@ -93,6 +93,10 @@ class MainActivity : FragmentActivity() {
         intent.data
             ?.takeIf { it.scheme == "https" && it.host == "ethos-protocol.app" && it.path == "/accept" }
             ?.getQueryParameter("vault_id")
+            // The activity is exported and this intent-filter accepts explicit intents from any
+            // app, not just verified browser navigations — validate before it flows into an API
+            // path (apiClient.acceptBeneficiary) or a navigation route.
+            ?.takeIf { VaultDeepLinkParser.isValidVaultId(it) }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return

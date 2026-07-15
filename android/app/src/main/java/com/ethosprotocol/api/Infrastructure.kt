@@ -3,6 +3,8 @@ package com.ethosprotocol.api
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.security.MessageDigest
@@ -38,7 +40,17 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
 
 @Singleton
 class TokenProvider @Inject constructor(@ApplicationContext private val context: Context) {
-    private val prefs = context.getSharedPreferences("ttl_auth", Context.MODE_PRIVATE)
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
+
+    private val prefs = EncryptedSharedPreferences.create(
+        context,
+        "ttl_auth_secure",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    )
 
     var token: String?
         get() = prefs.getString("token", null)
