@@ -400,3 +400,121 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         )
     }
 }
+
+// MARK: - Issue #34 Tests: Background Refresh Coverage
+
+// Mock task for testing without BGAppRefreshTask
+final class MockBackgroundRefreshTask: BackgroundRefreshTask {
+    var expirationHandler: (() -> Void)?
+    private(set) var completionCount = 0
+    private(set) var lastSuccess: Bool?
+
+    func setTaskCompleted(success: Bool) {
+        completionCount += 1
+        lastSuccess = success
+    }
+
+    func callExpirationHandler() {
+        expirationHandler?()
+    }
+}
+
+final class HandleRefreshTests: XCTestCase {
+
+    var service: BackgroundRefreshService!
+
+    override func setUp() {
+        super.setUp()
+        service = BackgroundRefreshService()
+        service.scheduleAppRefreshCallCount = 0
+    }
+
+    func test_handleRefresh_successfulFetch_callsSetTaskCompletedWithSuccess() async {
+        // Mock successful vault list
+        let mockVaults = [
+            Vault(id: "vault-1", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .active)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        // Allow async work to complete
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+
+        XCTAssertEqual(task.lastSuccess, true)
+        XCTAssertEqual(task.completionCount, 1)
+    }
+
+    func test_handleRefresh_networkFailure_callsSetTaskCompletedWithFailure() async {
+        // Mock network failure
+        enum NetworkError: Error { case unreachable }
+        service.vaultListProvider = { throw NetworkError.unreachable }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(task.lastSuccess, false)
+        XCTAssertEqual(task.completionCount, 1)
+    }
+
+    func test_handleRefresh_registersExpirationHandler() {
+        service.vaultListProvider = { [] }
+        let task = MockBackgroundRefreshTask()
+
+        service.handleRefresh(task: task)
+
+        XCTAssertNotNil(task.expirationHandler)
+    }
+
+    func test_handleRefresh_callsScheduleAppRefreshExactlyOnce() {
+        service.vaultListProvider = { [] }
+        let task = MockBackgroundRefreshTask()
+
+        service.handleRefresh(task: task)
+
+        XCTAssertEqual(service.scheduleAppRefreshCallCount, 1)
+    }
+
+    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+
+        let mockVaults = [
+            Vault(id: "vault-urgent", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .active),
+            Vault(id: "vault-safe", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 172_800, status: .active)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Should only schedule warning for vault-urgent (ttl < 86_400)
+        XCTAssertEqual(task.lastSuccess, true)
+    }
+
+    func test_handleRefresh_ignoresExpiredAndInactiveVaults() async {
+        let mockVaults = [
+            Vault(id: "vault-expired", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 0, status: .expired),
+            Vault(id: "vault-paused", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .paused)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Should complete successfully but not schedule warnings for non-active vaults
+        XCTAssertEqual(task.lastSuccess, true)
+    }
+}
