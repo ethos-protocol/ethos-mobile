@@ -25,24 +25,49 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         Task { try? await APIClient.shared.registerPushToken(token) }
     }
 
-    // Schedule a local check-in reminder
-    func scheduleCheckInReminder(vaultID: String, vaultName: String, ttlRemaining: UInt64) {
+    // Schedule a local check-in reminder scaled to the vault's check-in interval.
+    // For short intervals (< 24h), schedules two reminders: one at 10% of interval,
+    // and another closer to expiry. For longer intervals, schedules one reminder
+    // at 10% of interval (capped at 24h).
+    func scheduleCheckInReminder(vaultID: String, vaultName: String, ttlRemaining: UInt64, checkInInterval: UInt64) {
         let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ["checkin-\(vaultID)"])
+        center.removePendingNotificationRequests(withIdentifiers: ["checkin-primary-\(vaultID)", "checkin-secondary-\(vaultID)"])
 
         guard ttlRemaining > 0 else { return }
-        let fireIn = max(Int(ttlRemaining) - 86_400, 60) // 24h before expiry, min 1 min
 
-        let content = UNMutableNotificationContent()
-        content.title = "Check-in Required"
-        content.body = "Your vault expires in ~24 hours. Tap to check in now."
-        content.sound = .default
-        content.userInfo = ["vault_id": vaultID]
-        content.categoryIdentifier = "CHECK_IN"
+        // Scale primary reminder to 10% of check-in interval, capped at 24 hours
+        let primaryLeadTime = min(checkInInterval / 10, 86_400)
+        let primaryFireIn = max(Int(ttlRemaining) - Int(primaryLeadTime), 60)
 
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(fireIn), repeats: false)
-        let request = UNNotificationRequest(identifier: "checkin-\(vaultID)", content: content, trigger: trigger)
-        center.add(request)
+        // For short intervals, add a secondary reminder 2 hours before expiry
+        let hasSecondaryReminder = checkInInterval < 86_400 // < 24h
+        let secondaryFireIn = max(Int(ttlRemaining) - 7_200, 60) // 2 hours before
+
+        // Primary reminder
+        let primaryContent = UNMutableNotificationContent()
+        primaryContent.title = "Check-in Reminder"
+        primaryContent.body = "Your vault expires soon. Tap to check in and keep it active."
+        primaryContent.sound = .default
+        primaryContent.userInfo = ["vault_id": vaultID]
+        primaryContent.categoryIdentifier = "CHECK_IN"
+
+        let primaryTrigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(primaryFireIn), repeats: false)
+        let primaryRequest = UNNotificationRequest(identifier: "checkin-primary-\(vaultID)", content: primaryContent, trigger: primaryTrigger)
+        center.add(primaryRequest)
+
+        // Secondary reminder for short intervals
+        if hasSecondaryReminder && secondaryFireIn > primaryFireIn {
+            let secondaryContent = UNMutableNotificationContent()
+            secondaryContent.title = "Check-in Urgent"
+            secondaryContent.body = "Your vault expires in about 2 hours. Check in now to prevent loss of access."
+            secondaryContent.sound = .default
+            secondaryContent.userInfo = ["vault_id": vaultID]
+            secondaryContent.categoryIdentifier = "CHECK_IN"
+
+            let secondaryTrigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(secondaryFireIn), repeats: false)
+            let secondaryRequest = UNNotificationRequest(identifier: "checkin-secondary-\(vaultID)", content: secondaryContent, trigger: secondaryTrigger)
+            center.add(secondaryRequest)
+        }
     }
 
     // MARK: - UNUserNotificationCenterDelegate

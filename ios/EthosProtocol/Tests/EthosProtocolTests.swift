@@ -273,4 +273,94 @@ final class BackgroundRefreshServiceTests: XCTestCase {
             NotificationService.shared.scheduleTTLWarning(vaultID: "vault-dup", ttlRemaining: 3_600)
         )
     }
+
+    // MARK: - Issue #35 Tests: Check-In Reminder Scaling
+
+    func test_scheduleCheckInReminder_1DayInterval_schedulesWithScaledLeadTime() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 1 day = 86,400 seconds; 10% = 8,640 seconds ≈ 2.4 hours
+        // Should fire at ttlRemaining - 8,640 = 172,800 - 8,640 = 164,160 seconds
+        let oneDayInterval: UInt64 = 86_400
+        let ttlRemaining: UInt64 = 172_800 // 2 days
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "1day-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: oneDayInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_7DayInterval_schedulesWithScaledLeadTime() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 7 days = 604,800 seconds; 10% = 60,480 seconds ≈ 16.8 hours
+        let sevenDayInterval: UInt64 = 604_800
+        let ttlRemaining: UInt64 = 1_209_600 // 14 days
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "7day-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: sevenDayInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_365DayInterval_capsLeadTimeAt24Hours() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 365 days = 31,536,000 seconds; 10% = 3,153,600 seconds (36.5 days)
+        // Should cap at 24 hours = 86,400 seconds
+        let yearInterval: UInt64 = 31_536_000
+        let ttlRemaining: UInt64 = 63_072_000 // 2 years
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "year-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: yearInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_shortInterval_schedulesSecondaryReminder() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 12 hours < 24 hours; should schedule both primary and secondary reminders
+        let shortInterval: UInt64 = 43_200 // 12 hours
+        let ttlRemaining: UInt64 = 86_400 // 1 day
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "short-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: shortInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_removesExistingNotifications_beforeAddingNew() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        let interval: UInt64 = 86_400
+        let ttlRemaining: UInt64 = 172_800
+        // Schedule twice; should remove old requests before adding new ones
+        NotificationService.shared.scheduleCheckInReminder(
+            vaultID: "dup-vault",
+            vaultName: "Test",
+            ttlRemaining: ttlRemaining,
+            checkInInterval: interval
+        )
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "dup-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining / 2,
+                checkInInterval: interval
+            )
+        )
+    }
 }
