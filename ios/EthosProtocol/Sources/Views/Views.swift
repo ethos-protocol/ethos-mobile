@@ -564,57 +564,77 @@ struct VaultActionDeepLinkView: View {
     @Environment(\.dismiss) var dismiss
     @State private var isProcessing = false
     @State private var error: String?
+    @State private var isLoading = false
+    @State private var hasAttemptedLoad = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
     var body: some View {
         Group {
-            switch action {
-            case .viewDetails:
-                if let vault {
-                    VaultDetailView(vault: vault)
-                } else {
-                    vaultNotFoundContent
-                }
-            case .checkIn:
-                actionContent(
-                    title: "Check In",
-                    systemImage: "checkmark.circle.fill",
-                    description: "Confirm check-in for vault \(vaultID.prefix(16))…"
-                ) {
-                    guard let vault else { error = "Vault not found"; return }
-                    isProcessing = true
-                    error = nil
-                    Task {
-                        do {
-                            try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
-                            await vaultStore.checkIn(vault: vault)
-                            dismiss()
-                        } catch let checkInError {
-                            self.error = checkInError.localizedDescription
-                        }
-                        isProcessing = false
+            if isLoading && vault == nil {
+                ProgressView("Loading vault…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                switch action {
+                case .viewDetails:
+                    if let vault {
+                        VaultDetailView(vault: vault)
+                    } else {
+                        vaultNotFoundContent
                     }
-                }
-            case .withdraw:
-                actionContent(
-                    title: "Withdraw",
-                    systemImage: "arrow.up.circle.fill",
-                    description: "Withdraw funds from vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Withdrawal is not yet available in the mobile app."
-                }
-            case .manageBeneficiary:
-                actionContent(
-                    title: "Manage Beneficiary",
-                    systemImage: "person.2.fill",
-                    description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Beneficiary management is not yet available in the mobile app."
+                case .checkIn:
+                    actionContent(
+                        title: "Check In",
+                        systemImage: "checkmark.circle.fill",
+                        description: "Confirm check-in for vault \(vaultID.prefix(16))…"
+                    ) {
+                        guard let vault else { error = "Vault not found"; return }
+                        isProcessing = true
+                        error = nil
+                        Task {
+                            do {
+                                try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
+                                await vaultStore.checkIn(vault: vault)
+                                dismiss()
+                            } catch let checkInError {
+                                self.error = checkInError.localizedDescription
+                            }
+                            isProcessing = false
+                        }
+                    }
+                case .withdraw:
+                    actionContent(
+                        title: "Withdraw",
+                        systemImage: "arrow.up.circle.fill",
+                        description: "Withdraw funds from vault \(vaultID.prefix(16))…"
+                    ) {
+                        error = "Withdrawal is not yet available in the mobile app."
+                    }
+                case .manageBeneficiary:
+                    actionContent(
+                        title: "Manage Beneficiary",
+                        systemImage: "person.2.fill",
+                        description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
+                    ) {
+                        error = "Beneficiary management is not yet available in the mobile app."
+                    }
                 }
             }
         }
-        .task { if vaultStore.vaults.isEmpty { await vaultStore.load() } }
+        .task {
+            await loadVaultIfNeeded()
+        }
+    }
+
+    private func loadVaultIfNeeded() async {
+        guard !hasAttemptedLoad else { return }
+        hasAttemptedLoad = true
+
+        if vault == nil {
+            isLoading = true
+            await vaultStore.load()
+            isLoading = false
+        }
     }
 
     private var vaultNotFoundContent: some View {
