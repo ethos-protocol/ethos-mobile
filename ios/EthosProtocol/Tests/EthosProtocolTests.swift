@@ -234,6 +234,71 @@ final class UniversalLinkRouterTests: XCTestCase {
         let b = UniversalLinkRouter.shared
         XCTAssertTrue(a === b)
     }
+
+    // MARK: - #37 Validation Tests (Security)
+
+    func test_parse_vaultInvitation_withPathTraversal_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/../../../etc/passwd/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withPercentEncoding_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault%2Fabc/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withOversizedID_returnsNil() {
+        let oversizedID = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/vaults/\(oversizedID)/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withInvalidCharacters_returnsNil() {
+        let invalidChars = ["vault@abc", "vault#123", "vault$xyz", "vault%test", "vault abc"]
+        for invalidID in invalidChars {
+            let url = URL(string: "https://ethos-protocol.app/vaults/\(invalidID)/invite")!
+            XCTAssertNil(router.parse(url: url), "Should reject invalid vault ID: \(invalidID)")
+        }
+    }
+
+    func test_parse_beneficiaryAcceptance_withInvalidVaultID_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault@evil/accept?token=tok-valid")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_withInvalidToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-valid/accept?token=tok@evil")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_withOversizedToken_returnsNil() {
+        let oversizedToken = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-abc/accept?token=\(oversizedToken)")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultDeepLink_withInvalidVaultID_returnsNil() {
+        let url = URL(string: "ethosprotocol://vault/vault@invalid/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultDeepLink_withOversizedID_returnsNil() {
+        let oversizedID = String(repeating: "x", count: 129)
+        let url = URL(string: "ethosprotocol://vault/\(oversizedID)/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withValidID_succeeds() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/valid-vault_123/invite")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .vaultInvitation(vaultID: "valid-vault_123"))
+    }
+
+    func test_parse_beneficiaryAcceptance_withValidIDAndToken_succeeds() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-ABC123/accept?token=token-XYZ789")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .beneficiaryAcceptance(vaultID: "vault-ABC123", token: "token-XYZ789"))
+    }
 }
 
 // MARK: - #844 Background Refresh Tests
