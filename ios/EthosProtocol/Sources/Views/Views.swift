@@ -179,6 +179,9 @@ struct VaultDetailView: View {
     @State private var show2FASetup = false
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
+    @State private var showDeposit = false
+    @State private var showWithdraw = false
+    @State private var showManageBeneficiary = false
 
     var body: some View {
         List {
@@ -218,6 +221,22 @@ struct VaultDetailView: View {
                     Text(error).foregroundStyle(.red).font(.caption)
                 }
             }
+
+            Section("Funds") {
+                Button(action: { showDeposit = true }) {
+                    Label("Deposit", systemImage: "plus.circle.fill")
+                }
+                Button(action: { showWithdraw = true }) {
+                    Label("Withdraw", systemImage: "arrow.up.circle.fill")
+                }
+                .disabled(vault.status != .active)
+            }
+
+            Section {
+                Button(action: { showManageBeneficiary = true }) {
+                    Label("Manage Beneficiary", systemImage: "person.2.fill")
+                }
+            }
         }
         .navigationTitle("Vault")
         .navigationBarTitleDisplayMode(.inline)
@@ -232,6 +251,15 @@ struct VaultDetailView: View {
                 secret: nil,
                 onVerified: { Task { await load2FAStatus() } }
             )
+        }
+        .sheet(isPresented: $showDeposit) {
+            DepositView(vault: vault)
+        }
+        .sheet(isPresented: $showWithdraw) {
+            NavigationStack { WithdrawView(vault: vault) }
+        }
+        .sheet(isPresented: $showManageBeneficiary) {
+            NavigationStack { ManageBeneficiaryView(vault: vault) }
         }
     }
 
@@ -323,6 +351,222 @@ struct CreateVaultView: View {
                 dismiss()
             } catch { self.error = error.localizedDescription }
             isCreating = false
+        }
+    }
+}
+
+// MARK: - Deposit
+
+struct DepositView: View {
+    let vault: Vault
+    @EnvironmentObject var vaultStore: VaultStore
+    @Environment(\.dismiss) var dismiss
+    @State private var amountText = ""
+    @State private var isDepositing = false
+    @State private var error: String?
+
+    private var amountStroops: Int64? { VaultAmount.parseStroops(amountText) }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Vault") {
+                    LabeledContent("Current Balance", value: vault.formattedBalance)
+                }
+                Section("Amount") {
+                    TextField("XLM amount", text: $amountText)
+                        .keyboardType(.decimalPad)
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+            }
+            .navigationTitle("Deposit")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isDepositing ? "Depositing…" : "Deposit") { deposit() }
+                        .disabled(amountStroops == nil || isDepositing)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .overlay { if isDepositing { ProgressView() } }
+        }
+    }
+
+    private func deposit() {
+        guard let amount = amountStroops else { return }
+        isDepositing = true; error = nil
+        Task {
+            await vaultStore.deposit(vault: vault, amount: amount)
+            if let storeError = vaultStore.error {
+                error = storeError
+            } else {
+                dismiss()
+            }
+            isDepositing = false
+        }
+    }
+}
+
+// MARK: - Withdraw
+
+struct WithdrawView: View {
+    let vault: Vault
+    @EnvironmentObject var vaultStore: VaultStore
+    @Environment(\.dismiss) var dismiss
+    @State private var amountText = ""
+    @State private var isWithdrawing = false
+    @State private var error: String?
+
+    private var amountStroops: Int64? { VaultAmount.parseStroops(amountText) }
+
+    private var isAmountValid: Bool {
+        guard let amount = amountStroops else { return false }
+        return VaultAmount.hasSufficientBalance(amount: amount, vaultBalance: vault.balance)
+    }
+
+    var body: some View {
+        Form {
+            Section("Vault") {
+                LabeledContent("Available Balance", value: vault.formattedBalance)
+            }
+            Section("Amount") {
+                TextField("XLM amount", text: $amountText)
+                    .keyboardType(.decimalPad)
+                if let amount = amountStroops, amount > vault.balance {
+                    Text("Amount exceeds available balance.").foregroundStyle(.red).font(.caption)
+                }
+            }
+            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+        }
+        .navigationTitle("Withdraw")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(isWithdrawing ? "Withdrawing…" : "Withdraw") { withdraw() }
+                    .disabled(!isAmountValid || isWithdrawing)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+        .overlay { if isWithdrawing { ProgressView() } }
+    }
+
+    private func withdraw() {
+        guard let amount = amountStroops else { return }
+        isWithdrawing = true; error = nil
+        Task {
+            do {
+                try await BiometricService.shared.authenticate(reason: "Confirm vault withdrawal")
+                await vaultStore.withdraw(vault: vault, amount: amount)
+                if let storeError = vaultStore.error {
+                    error = storeError
+                } else {
+                    dismiss()
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isWithdrawing = false
+        }
+    }
+}
+
+// MARK: - Manage Beneficiary
+
+struct ManageBeneficiaryView: View {
+    let vault: Vault
+    @EnvironmentObject var vaultStore: VaultStore
+    @Environment(\.dismiss) var dismiss
+    @State private var newBeneficiary = ""
+    @State private var showConfirmation = false
+    @State private var isUpdating = false
+    @State private var error: String?
+    @State private var updated = false
+
+    private var isAddressValid: Bool {
+        BeneficiaryUpdate.isValidNewBeneficiary(newBeneficiary, currentBeneficiary: vault.beneficiary)
+    }
+
+    var body: some View {
+        Group {
+            if showConfirmation {
+                confirmationContent
+            } else {
+                formContent
+            }
+        }
+        .navigationTitle("Manage Beneficiary")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var formContent: some View {
+        Form {
+            Section("Current Beneficiary") {
+                Text(vault.beneficiary).font(.system(.body, design: .monospaced))
+            }
+            Section("New Beneficiary") {
+                TextField("Stellar address", text: $newBeneficiary)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+            }
+            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+        }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Continue") { showConfirmation = true }.disabled(!isAddressValid)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+
+    private var confirmationContent: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "person.2.fill").font(.system(size: 56)).foregroundStyle(.blue)
+            Text("Confirm New Beneficiary").font(.title.bold())
+            VStack(alignment: .leading, spacing: 8) {
+                Text("From").foregroundStyle(.secondary).font(.caption)
+                Text(vault.beneficiary).font(.system(.body, design: .monospaced))
+                Text("To").foregroundStyle(.secondary).font(.caption)
+                Text(newBeneficiary).font(.system(.body, design: .monospaced))
+            }
+            if updated {
+                Label("Beneficiary Updated", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            } else {
+                if let error { Text(error).foregroundStyle(.red).font(.caption) }
+                Button(action: confirm) {
+                    Text(isUpdating ? "Updating…" : "Confirm Change").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isUpdating)
+                Button("Back") { showConfirmation = false }.disabled(isUpdating)
+            }
+        }
+        .padding(32)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        }
+    }
+
+    private func confirm() {
+        isUpdating = true; error = nil
+        Task {
+            do {
+                try await BiometricService.shared.authenticate(reason: "Confirm beneficiary change")
+                await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: newBeneficiary)
+                if let storeError = vaultStore.error {
+                    error = storeError
+                } else {
+                    updated = true
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isUpdating = false
         }
     }
 }
@@ -597,20 +841,16 @@ struct VaultActionDeepLinkView: View {
                     }
                 }
             case .withdraw:
-                actionContent(
-                    title: "Withdraw",
-                    systemImage: "arrow.up.circle.fill",
-                    description: "Withdraw funds from vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Withdrawal is not yet available in the mobile app."
+                if let vault {
+                    WithdrawView(vault: vault)
+                } else {
+                    vaultNotFoundContent
                 }
             case .manageBeneficiary:
-                actionContent(
-                    title: "Manage Beneficiary",
-                    systemImage: "person.2.fill",
-                    description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Beneficiary management is not yet available in the mobile app."
+                if let vault {
+                    ManageBeneficiaryView(vault: vault)
+                } else {
+                    vaultNotFoundContent
                 }
             }
         }

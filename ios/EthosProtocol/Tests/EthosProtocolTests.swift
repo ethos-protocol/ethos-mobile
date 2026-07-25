@@ -274,3 +274,120 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         )
     }
 }
+
+// MARK: - #16 Targeted Vault Refresh Tests
+//
+// VaultStore.refreshSingle(vaultID:) and checkIn(vault:) both hit APIClient,
+// which isn't mockable in this bare SPM test bundle (no test-injectable
+// URLSession / DI seam, and no live server to hit in CI). What's fully
+// unit-testable is the in-place list update those calls funnel through:
+// applyUpdate(_:) is what guarantees a targeted refresh only touches the one
+// vault that changed instead of the whole list.
+
+@MainActor
+final class VaultStoreTests: XCTestCase {
+
+    func test_applyUpdate_onlyModifiesMatchingVault() {
+        let store = VaultStore()
+        let vaultA = makeVault(id: "vault-a", balance: 10_000_000)
+        let vaultB = makeVault(id: "vault-b", balance: 20_000_000)
+        store.vaults = [vaultA, vaultB]
+
+        let updatedA = makeVault(id: "vault-a", balance: 99_000_000)
+        store.applyUpdate(updatedA)
+
+        XCTAssertEqual(store.vaults.count, 2)
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-a" }?.balance, 99_000_000)
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-b" }?.balance, 20_000_000)
+    }
+
+    func test_applyUpdate_preservesOrderOfUnrelatedVaults() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a"), makeVault(id: "vault-b"), makeVault(id: "vault-c")]
+        store.applyUpdate(makeVault(id: "vault-b", balance: 5_000_000))
+        XCTAssertEqual(store.vaults.map(\.id), ["vault-a", "vault-b", "vault-c"])
+    }
+
+    func test_applyUpdate_unknownVaultID_appendsRatherThanReplaces() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a")]
+        store.applyUpdate(makeVault(id: "vault-new"))
+        XCTAssertEqual(store.vaults.count, 2)
+        XCTAssertTrue(store.vaults.contains { $0.id == "vault-new" })
+    }
+
+    private func makeVault(id: String, balance: Int64 = 0) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: balance,
+              checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: 100_000, status: .active)
+    }
+}
+
+// MARK: - #13/#14 Deposit & Withdraw Amount Validation Tests
+
+final class VaultAmountTests: XCTestCase {
+
+    func test_parseStroops_validAmount_convertsXLMToStroops() {
+        XCTAssertEqual(VaultAmount.parseStroops("1.5"), 15_000_000)
+    }
+
+    func test_parseStroops_wholeNumber_convertsCorrectly() {
+        XCTAssertEqual(VaultAmount.parseStroops("10"), 100_000_000)
+    }
+
+    func test_parseStroops_zero_returnsNil() {
+        XCTAssertNil(VaultAmount.parseStroops("0"))
+    }
+
+    func test_parseStroops_negative_returnsNil() {
+        XCTAssertNil(VaultAmount.parseStroops("-5"))
+    }
+
+    func test_parseStroops_nonNumeric_returnsNil() {
+        XCTAssertNil(VaultAmount.parseStroops("abc"))
+    }
+
+    func test_parseStroops_empty_returnsNil() {
+        XCTAssertNil(VaultAmount.parseStroops(""))
+    }
+
+    func test_hasSufficientBalance_amountUnderBalance_returnsTrue() {
+        XCTAssertTrue(VaultAmount.hasSufficientBalance(amount: 5_000_000, vaultBalance: 10_000_000))
+    }
+
+    func test_hasSufficientBalance_amountEqualsBalance_returnsTrue() {
+        XCTAssertTrue(VaultAmount.hasSufficientBalance(amount: 10_000_000, vaultBalance: 10_000_000))
+    }
+
+    func test_hasSufficientBalance_amountExceedsBalance_returnsFalse() {
+        XCTAssertFalse(VaultAmount.hasSufficientBalance(amount: 15_000_000, vaultBalance: 10_000_000))
+    }
+
+    func test_hasSufficientBalance_zeroAmount_returnsFalse() {
+        XCTAssertFalse(VaultAmount.hasSufficientBalance(amount: 0, vaultBalance: 10_000_000))
+    }
+}
+
+// MARK: - #15 Beneficiary Management Validation Tests
+
+final class BeneficiaryUpdateTests: XCTestCase {
+
+    func test_isValidNewBeneficiary_differentAddress_returnsTrue() {
+        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("GNEW123", currentBeneficiary: "GOLD456"))
+    }
+
+    func test_isValidNewBeneficiary_sameAddress_returnsFalse() {
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("GOLD456", currentBeneficiary: "GOLD456"))
+    }
+
+    func test_isValidNewBeneficiary_emptyInput_returnsFalse() {
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("", currentBeneficiary: "GOLD456"))
+    }
+
+    func test_isValidNewBeneficiary_whitespaceOnly_returnsFalse() {
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("   ", currentBeneficiary: "GOLD456"))
+    }
+
+    func test_isValidNewBeneficiary_trimsWhitespaceBeforeComparison() {
+        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("  GNEW123  ", currentBeneficiary: "GOLD456"))
+    }
+}

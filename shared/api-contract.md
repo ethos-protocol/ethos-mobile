@@ -24,6 +24,7 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 | POST | `/vaults/{id}/checkin` | Check in (extend TTL) |
 | POST | `/vaults/{id}/deposit` | Deposit funds |
 | POST | `/vaults/{id}/withdraw` | Withdraw funds |
+| POST | `/vaults/{id}/beneficiary` | Update vault beneficiary (owner-only) |
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
 
 ### Notifications
@@ -60,3 +61,9 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 ```json
 { "token": "string", "expires_at": "ISO8601" }
 ```
+
+### BeneficiaryUpdateRequest
+```json
+{ "beneficiary": "string" }
+```
+Response: the updated `Vault` object (see above), reflecting the new `beneficiary` value.
