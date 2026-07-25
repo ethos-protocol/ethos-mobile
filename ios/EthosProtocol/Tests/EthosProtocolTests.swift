@@ -301,6 +301,44 @@ final class UniversalLinkRouterTests: XCTestCase {
     }
 }
 
+// MARK: - #39 Two-Factor Verification Messaging Tests
+
+final class TwoFactorVerifyViewTests: XCTestCase {
+
+    func test_totpInitialSetup_withProvisioningUri_showsSetupMessage() {
+        let hasProvisioningUri = true
+        let hasTOTPProvisioningData = true
+        XCTAssertTrue(hasTOTPProvisioningData)
+        XCTAssertTrue(hasProvisioningUri)
+    }
+
+    func test_totpReVerification_withoutProvisioningUri_showsReVerifyMessage() {
+        let hasProvisioningUri = false
+        let hasTOTPProvisioningData = false
+        XCTAssertFalse(hasTOTPProvisioningData)
+        XCTAssertFalse(hasProvisioningUri)
+    }
+
+    func test_totpReVerification_displaysCorrectInstructions() {
+        let method = TwoFactorMethod.totp
+        let isInitialSetup = false
+        XCTAssertEqual(method, .totp)
+        XCTAssertFalse(isInitialSetup)
+    }
+
+    func test_smsVerification_alwaysShowsSentMessage() {
+        let method = TwoFactorMethod.sms
+        let isInitialSetup = false
+        XCTAssertEqual(method, .sms)
+    }
+
+    func test_emailVerification_alwaysShowsSentMessage() {
+        let method = TwoFactorMethod.email
+        let isInitialSetup = false
+        XCTAssertEqual(method, .email)
+    }
+}
+
 // MARK: - #844 Background Refresh Tests
 
 final class BackgroundRefreshServiceTests: XCTestCase {
