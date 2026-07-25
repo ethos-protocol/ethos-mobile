@@ -191,6 +191,7 @@ struct VaultDetailView: View {
     @State private var show2FASetup = false
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
+    @State private var twoFactorLoadError: String?
 
     var body: some View {
         List {
@@ -204,7 +205,20 @@ struct VaultDetailView: View {
             }
 
             Section("Two-Factor Authentication") {
-                if let status = twoFactorStatus {
+                if let error = twoFactorLoadError {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Failed to load 2FA status")
+                            .foregroundStyle(.red)
+                            .font(.subheadline.bold())
+                        Text(error)
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                        Button(action: { Task { await load2FAStatus() } }) {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else if let status = twoFactorStatus {
                     if status.enabled {
                         LabeledContent("2FA", value: status.method.map { "\($0.rawValue.uppercased())" } ?? "Enabled")
                         LabeledContent("Verified", value: status.verified ? "Yes" : "No")
@@ -248,9 +262,11 @@ struct VaultDetailView: View {
     }
 
     private func load2FAStatus() async {
+        twoFactorLoadError = nil
         do {
             twoFactorStatus = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
         } catch {
+            twoFactorLoadError = error.localizedDescription
             twoFactorStatus = nil
         }
     }
