@@ -110,7 +110,19 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: true
 
-# No XCTest target is defined here on purpose. EthosProtocol is an
+  EthosProtocolUITests:
+    type: ui-test-bundle
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/UI
+    settings:
+      base:
+        TEST_TARGET_NAME: EthosProtocol
+    dependencies:
+      - target: EthosProtocol
+
+# No unit XCTest target is defined here on purpose. EthosProtocol is an
 # `application` (not framework) target, so a unit test target that wants to
 # `@testable import EthosProtocol` would need to be a *hosted* test bundle
 # (TEST_HOST/BUNDLE_LOADER pointed at the built .app binary) — a setup that
@@ -120,5 +132,9 @@ targets:
 # against the SPM library products, run via `xcodebuild test` against an
 # iOS Simulator destination — see ios-ci.yml) and needs no TEST_HOST at all
 # because SPM test bundles get their own lightweight host automatically.
-# Keeping it as the single source of truth for tests avoids maintaining
+# Keeping it as the single source of truth for unit tests avoids maintaining
 # the same test logic against two parallel build systems.
+#
+# XCUITests (EthosProtocolUITests above), however, require a running app to
+# interact with and cannot be run as plain SPM test bundles. See ios-ci.yml
+# for the step that runs UI tests.

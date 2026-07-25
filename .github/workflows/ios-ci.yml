@@ -96,3 +96,15 @@ jobs:
             -scheme EthosProtocol \
             -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation
+
+      # Runs UI tests (EthosProtocolUITests) against the built app.
+      # XCUITests interact with the app at runtime (unlike unit tests),
+      # so they must run after the app is built. These tests cover the core
+      # user flows: authentication, vault management, check-in, and deep-link entry.
+      - name: Test UI (iOS Simulator)
+        run: |
+          xcodebuild test \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocolUITests \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -skipMacroValidation
