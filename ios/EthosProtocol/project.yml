@@ -110,15 +110,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: true
 
-# No XCTest target is defined here on purpose. EthosProtocol is an
-# `application` (not framework) target, so a unit test target that wants to
-# `@testable import EthosProtocol` would need to be a *hosted* test bundle
-# (TEST_HOST/BUNDLE_LOADER pointed at the built .app binary) — a setup that
-# is fiddly to get right blind, with no Xcode available here to verify it.
-# The existing Tests/ target in Package.swift already does exactly what's
-# needed (plain XCTest, `@testable import EthosProtocol` / `TTLWidget`
-# against the SPM library products, run via `xcodebuild test` against an
-# iOS Simulator destination — see ios-ci.yml) and needs no TEST_HOST at all
-# because SPM test bundles get their own lightweight host automatically.
-# Keeping it as the single source of truth for tests avoids maintaining
-# the same test logic against two parallel build systems.
+  EthosProtocolTests:
+    type: unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/HostedTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ethosprotocol.tests
+        PRODUCT_NAME: EthosProtocolTests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/EthosProtocol.app/EthosProtocol
+        BUNDLE_LOADER: $(TEST_HOST)
+    dependencies:
+      - target: EthosProtocol
+
+# The SPM-based test bundle (Package.swift) remains the primary test target for
+# fast unit tests that don't require a real app host process (model tests, service
+# mocks, etc). The hosted EthosProtocolTests target above is used only for tests
+# that require real Keychain access (KeychainService) or UNUserNotificationCenter
+# (NotificationService/BackgroundRefreshService), which are skipped from CI in the
+# SPM bundle due to "no host app" limitations. Both test bundles coexist and are
+# run in CI — see ios-ci.yml for how they're orchestrated.
