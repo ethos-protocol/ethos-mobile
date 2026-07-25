@@ -32,7 +32,9 @@ final class UniversalLinkRouter {
             let parts = url.pathComponents.filter { $0 != "/" }
             guard parts.count == 2, let action = VaultAction(rawValue: parts[1]) else { return nil }
             guard isValidIdentifier(parts[0]) else { return nil }
-            return .vaultAction(vaultID: parts[0], action: action)
+            let link = DeepLink.vaultAction(vaultID: parts[0], action: action)
+            logDeepLink(link)
+            return link
         }
 
         guard url.host == "ethos-protocol.app" else { return nil }
@@ -42,7 +44,9 @@ final class UniversalLinkRouter {
         // /vaults/{vaultID}/invite
         if parts.count == 3, parts[0] == "vaults", parts[2] == "invite" {
             guard isValidIdentifier(parts[1]) else { return nil }
-            return .vaultInvitation(vaultID: parts[1])
+            let link = DeepLink.vaultInvitation(vaultID: parts[1])
+            logDeepLink(link)
+            return link
         }
 
         // /vaults/{vaultID}/accept?token={token}
@@ -50,9 +54,33 @@ final class UniversalLinkRouter {
             guard isValidIdentifier(parts[1]) else { return nil }
             let token = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
             guard !token.isEmpty, isValidIdentifier(token) else { return nil }
-            return .beneficiaryAcceptance(vaultID: parts[1], token: token)
+            let link = DeepLink.beneficiaryAcceptance(vaultID: parts[1], token: token)
+            logDeepLink(link)
+            return link
         }
 
         return nil
+    }
+
+    private func logDeepLink(_ link: DeepLink) {
+        let event: DeepLinkLogger.DeepLinkEvent
+        switch link {
+        case .vaultInvitation:
+            event = .vaultInvitation
+        case .beneficiaryAcceptance:
+            event = .beneficiaryAcceptance
+        case .vaultAction(_, let action):
+            switch action {
+            case .checkIn:
+                event = .vaultActionCheckIn
+            case .withdraw:
+                event = .vaultActionWithdraw
+            case .viewDetails:
+                event = .vaultActionViewDetails
+            case .manageBeneficiary:
+                event = .vaultActionManageBeneficiary
+            }
+        }
+        DeepLinkLogger.shared.log(event: event)
     }
 }
