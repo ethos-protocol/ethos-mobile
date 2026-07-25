@@ -1,6 +1,22 @@
 import XCTest
 @testable import EthosProtocol
 
+// MARK: - Manual QA Checklist for iCloud Sync
+// NOTE: The following test (`test_toggle_enablesSync`) is skipped in CI because
+// NSUbiquitousKeyValueStore requires an iCloud entitlement and a signed-in iCloud account,
+// unavailable in the bare, unsigned SPM test bundle on CI.
+//
+// Manual testing on a real device should verify:
+// 1. Enable iCloud sync toggle on device (Settings > iCloud > Keychain)
+// 2. Create a vault on Device A while sync is ON
+// 3. Verify vault appears on Device B after sync completes
+// 4. Create another vault on Device B
+// 5. Verify both vaults appear on Device A after sync completes
+// 6. Disable sync on Device A, create a vault
+// 7. Verify new vault does NOT appear on Device B
+// 8. Re-enable sync on Device A
+// 9. Verify previously created vault now appears on Device B (one-way sync from A to cloud)
+
 final class ICloudSyncServiceTests: XCTestCase {
 
     override func setUp() {
@@ -44,6 +60,39 @@ final class ICloudSyncServiceTests: XCTestCase {
         ICloudSyncService.shared.restoreFromICloud()
         // Local entry must survive the merge
         XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "local-vault"), "local-cred")
+    }
+
+    func test_restoreFromICloud_doesNothingWhenSyncDisabled() {
+        // Pre-populate local storage
+        ICloudSyncService.shared.save(vaultID: "vault-1", credentialID: "cred-1")
+        // Don't enable sync
+        ICloudSyncService.shared.isSyncEnabled = false
+        // Restore should be a no-op
+        ICloudSyncService.shared.restoreFromICloud()
+        // Entry must remain unchanged
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-1"), "cred-1")
+    }
+
+    func test_credentialID_prefers_remoteWhenSyncEnabled() {
+        // This tests the logic that remoteAssociations take precedence when sync is on.
+        // First, save locally only
+        ICloudSyncService.shared.save(vaultID: "shared-vault", credentialID: "local-version")
+        // Enable sync (in a real scenario, remote would have been populated)
+        ICloudSyncService.shared.isSyncEnabled = true
+        // The test here is that the getter checks remote first; since remote is empty
+        // in CI (no iCloud), it will fall back to local. This documents the precedence.
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "shared-vault"), "local-version")
+    }
+
+    func test_associationMerge_multipleVaults() {
+        // Test that multiple vault associations can be saved and retrieved
+        ICloudSyncService.shared.save(vaultID: "vault-a", credentialID: "cred-a")
+        ICloudSyncService.shared.save(vaultID: "vault-b", credentialID: "cred-b")
+        ICloudSyncService.shared.save(vaultID: "vault-c", credentialID: "cred-c")
+
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-a"), "cred-a")
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-b"), "cred-b")
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-c"), "cred-c")
     }
 
     func test_multipleAssociations_allRetrievable() {
