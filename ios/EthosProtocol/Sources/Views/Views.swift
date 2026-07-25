@@ -12,6 +12,44 @@ struct RootView: View {
     }
 }
 
+// MARK: - Copyable ID View
+
+struct CopyableIDView: View {
+    let fullID: String
+    let displayLength: Int
+    @State private var showCopiedFeedback = false
+
+    var displayID: String {
+        String(fullID.prefix(displayLength)) + "…"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(displayID).font(.headline)
+            Button(action: copyToClipboard) {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            }
+            .accessibilityLabel("Copy full ID")
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(action: copyToClipboard) {
+                Label("Copy Full ID", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    private func copyToClipboard() {
+        UIPasteboard.general.string = fullID
+        showCopiedFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            showCopiedFeedback = false
+        }
+    }
+}
+
 // MARK: - Auth
 
 struct AuthView: View {
@@ -135,7 +173,7 @@ struct VaultRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(vault.id.prefix(12) + "…").font(.headline)
+                CopyableIDView(fullID: vault.id, displayLength: 12)
                 Spacer()
                 StatusBadge(status: vault.status)
             }
@@ -185,7 +223,11 @@ struct VaultDetailView: View {
             Section("Overview") {
                 LabeledContent("Balance", value: vault.formattedBalance)
                 LabeledContent("Status", value: vault.status.rawValue.capitalized)
-                LabeledContent("Beneficiary", value: vault.beneficiary.prefix(16) + "…")
+                HStack {
+                    Text("Beneficiary")
+                    Spacer()
+                    CopyableIDView(fullID: vault.beneficiary, displayLength: 16)
+                }
                 if let ttl = vault.ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
@@ -544,9 +586,12 @@ struct VaultInvitationView: View {
         VStack(spacing: 24) {
             Image(systemName: "envelope.open.fill").font(.system(size: 56)).foregroundStyle(.blue)
             Text("Vault Invitation").font(.title.bold())
-            Text("You have been invited to a vault.\nVault ID: \(vaultID.prefix(16))…")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                Text("You have been invited to a vault.")
+                    .foregroundStyle(.secondary)
+                CopyableIDView(fullID: vaultID, displayLength: 16)
+            }
+            .multilineTextAlignment(.center)
             Button("Open App") { dismiss() }
                 .buttonStyle(.borderedProminent)
         }
@@ -684,9 +729,12 @@ struct BeneficiaryAcceptanceView: View {
         VStack(spacing: 24) {
             Image(systemName: "checkmark.seal.fill").font(.system(size: 56)).foregroundStyle(.green)
             Text("Accept Beneficiary Role").font(.title.bold())
-            Text("You have been nominated as a beneficiary for vault \(vaultID.prefix(16))…")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                Text("You have been nominated as a beneficiary for vault:")
+                    .foregroundStyle(.secondary)
+                CopyableIDView(fullID: vaultID, displayLength: 16)
+            }
+            .multilineTextAlignment(.center)
             if accepted {
                 Label("Accepted", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             } else {
