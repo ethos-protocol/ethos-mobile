@@ -134,15 +134,25 @@ struct VaultRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(vault.id.prefix(12) + "…").font(.headline)
+            HStack(spacing: 12) {
+                Text(vault.id.prefix(12) + "…")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Spacer()
                 StatusBadge(status: vault.status)
             }
-            Text(vault.formattedBalance).font(.subheadline).foregroundStyle(.secondary)
+            Text(vault.formattedBalance)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             if vault.isExpiringSoon {
                 Label("Expiring soon!", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         }
         .padding(.vertical, 4)
@@ -154,6 +164,8 @@ struct StatusBadge: View {
     var body: some View {
         Text(status.rawValue.capitalized)
             .font(.caption.bold())
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
             .padding(.horizontal, 8).padding(.vertical, 2)
             .background(color.opacity(0.15))
             .foregroundStyle(color)
@@ -451,14 +463,29 @@ struct TwoFactorVerifyView: View {
 
             if method == .totp, let uri = provisioningUri {
                 VStack(spacing: 8) {
-                    Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
-                    Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Text("Scan this URI in your authenticator app:")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.9)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(uri)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                     if let secret {
-                        Label(secret, systemImage: "key.fill").font(.system(.caption, design: .monospaced))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Label(secret, systemImage: "key.fill")
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                        }
                     }
                 }
             } else {
-                Text("A verification code has been sent to your \(methodLabel).").foregroundStyle(.secondary)
+                Text("A verification code has been sent to your \(methodLabel).")
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.9)
             }
 
             TextField("Enter 6-digit code", text: $otp)
