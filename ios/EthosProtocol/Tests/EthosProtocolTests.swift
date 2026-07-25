@@ -154,6 +154,42 @@ final class TTLWidgetTests: XCTestCase {
         let entry = VaultEntry(date: .now, vaultName: "Test", ttlRemaining: 172_800, isExpiringSoon: false)
         XCTAssertFalse(entry.isExpiringSoon)
     }
+
+    // MARK: - Issue #33 Tests: TTL-Aware Refresh Policy
+
+    func test_nextUpdateInterval_longTTL_returns15Minutes() {
+        // ttl >= 1 hour: refresh every 15 min (minimal budget usage)
+        let ttlLong: UInt64 = 86_400 // 24 hours
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlLong)
+        XCTAssertEqual(interval, 15)
+    }
+
+    func test_nextUpdateInterval_mediumTTL_scalesToShorterInterval() {
+        // 1-6 hours: refresh every 10 min (increased monitoring)
+        let ttlMedium: UInt64 = 18_000 // 5 hours
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlMedium)
+        XCTAssertEqual(interval, 10)
+    }
+
+    func test_nextUpdateInterval_shortTTL_scalesToEvenShorter() {
+        // 30 min-1 hour: refresh every 5 min (close monitoring)
+        let ttlShort: UInt64 = 1_800 // 30 minutes
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlShort)
+        XCTAssertEqual(interval, 5)
+    }
+
+    func test_nextUpdateInterval_criticalTTL_minimumRefreshRate() {
+        // < 30 min: refresh every 2 min (maximum monitoring, respects WidgetKit budget)
+        let ttlCritical: UInt64 = 600 // 10 minutes
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlCritical)
+        XCTAssertEqual(interval, 2)
+    }
+
+    func test_nextUpdateInterval_nilTTL_defaultsTo15Minutes() {
+        // No vault data: default to conservative 15 min
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: nil)
+        XCTAssertEqual(interval, 15)
+    }
 }
 
 // MARK: - #843 Universal Link Routing Tests
