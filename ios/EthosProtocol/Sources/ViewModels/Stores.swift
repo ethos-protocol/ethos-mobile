@@ -1,6 +1,17 @@
 import Foundation
 import Combine
 
+// Runs `mutation` only if the current Task hasn't been cancelled. Guards
+// @Published/@State writes that happen after an `await` — if whatever launched
+// the request has since gone away and cancelled its Task (e.g. a view
+// disappeared), the stale write is dropped instead of mutating state nobody is
+// observing anymore. See VaultStore/AuthStore and VaultDetailView.
+@MainActor
+func ifNotCancelled(_ mutation: () -> Void) {
+    guard !Task.isCancelled else { return }
+    mutation()
+}
+
 @MainActor
 final class AuthStore: ObservableObject {
     @Published var isAuthenticated = false
@@ -16,10 +27,13 @@ final class AuthStore: ObservableObject {
         do {
             let token = try await PasskeyService.shared.authenticate()
             KeychainService.shared.saveToken(token.token)
-            isAuthenticated = true
+            ifNotCancelled { isAuthenticated = true }
         } catch {
-            self.error = error.localizedDescription
+            ifNotCancelled { self.error = error.localizedDescription }
         }
+        // Unlike the writes above, always reset regardless of cancellation: it's
+        // a loading-spinner flag, not stale request data, and leaving it true
+        // would strand the UI mid-spin if this Task gets cancelled.
         isLoading = false
     }
 
@@ -28,9 +42,9 @@ final class AuthStore: ObservableObject {
         do {
             let credID = try await PasskeyService.shared.register(username: username)
             KeychainService.shared.saveCredentialID(credID)
-            await signIn()
+            if !Task.isCancelled { await signIn() }
         } catch {
-            self.error = error.localizedDescription
+            ifNotCancelled { self.error = error.localizedDescription }
         }
         isLoading = false
     }
@@ -51,12 +65,15 @@ final class VaultStore: ObservableObject {
     func load() async {
         isLoading = true; error = nil
         do {
-            vaults = try await APIClient.shared.listVaults()
-            scheduleReminders()
+            let fetched = try await APIClient.shared.listVaults()
+            ifNotCancelled {
+                vaults = fetched
+                scheduleReminders()
+            }
         } catch APIError.networkUnavailable {
             // Vaults already populated from offline cache via APIClient
         } catch {
-            self.error = error.localizedDescription
+            ifNotCancelled { self.error = error.localizedDescription }
         }
         isLoading = false
     }
@@ -64,8 +81,10 @@ final class VaultStore: ObservableObject {
     func checkIn(vault: Vault) async {
         do {
             try await APIClient.shared.checkIn(vaultID: vault.id)
-            await load()
-        } catch { self.error = error.localizedDescription }
+            if !Task.isCancelled { await load() }
+        } catch {
+            ifNotCancelled { self.error = error.localizedDescription }
+        }
     }
 
     private func scheduleReminders() {

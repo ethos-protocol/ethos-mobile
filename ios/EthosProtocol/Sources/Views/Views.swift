@@ -179,6 +179,17 @@ struct VaultDetailView: View {
     @State private var show2FASetup = false
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
+    @State private var ttlRemaining: UInt64?
+
+    // How often to re-fetch the live TTL from the server while this view is on
+    // screen (the `ttlRemaining` a vault list row shows can go stale between the
+    // last listVaults() fetch and the user opening this detail screen).
+    static let ttlRefreshInterval: UInt64 = 60_000_000_000 // 60s, in nanoseconds
+
+    init(vault: Vault) {
+        self.vault = vault
+        _ttlRemaining = State(initialValue: vault.ttlRemaining)
+    }
 
     var body: some View {
         List {
@@ -186,7 +197,7 @@ struct VaultDetailView: View {
                 LabeledContent("Balance", value: vault.formattedBalance)
                 LabeledContent("Status", value: vault.status.rawValue.capitalized)
                 LabeledContent("Beneficiary", value: vault.beneficiary.prefix(16) + "…")
-                if let ttl = vault.ttlRemaining {
+                if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
             }
@@ -221,6 +232,10 @@ struct VaultDetailView: View {
         }
         .navigationTitle("Vault")
         .navigationBarTitleDisplayMode(.inline)
+        // `.task` auto-cancels when the view disappears, so this polling loop
+        // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
+        // on navigating away instead of continuing to run in the background.
+        .task { await refreshTTLPeriodically() }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
         }
@@ -235,21 +250,35 @@ struct VaultDetailView: View {
         }
     }
 
-    private func load2FAStatus() async {
-        do {
-            twoFactorStatus = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
-        } catch {
-            twoFactorStatus = nil
+    private func refreshTTLPeriodically() async {
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 
+    private func refreshTTL() async {
+        guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
+        ifNotCancelled { ttlRemaining = ttl }
+    }
+
+    private func load2FAStatus() async {
+        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
+        ifNotCancelled { twoFactorStatus = status }
+    }
+
+    // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
+    // polling above, this is a mutating request already in flight — cancelling
+    // the Task wouldn't stop the server from processing it, it would just make
+    // the app forget whether it succeeded. `ifNotCancelled` still guards the
+    // state write in case cancellation reaches here some other way.
     private func disable2FA() {
         Task {
             do {
                 try await APIClient.shared.disable2FA(vaultID: vault.id)
-                await load2FAStatus()
+                if !Task.isCancelled { await load2FAStatus() }
             } catch {
-                biometricError = error.localizedDescription
+                ifNotCancelled { biometricError = error.localizedDescription }
             }
         }
     }
@@ -260,11 +289,11 @@ struct VaultDetailView: View {
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
-                await vaultStore.checkIn(vault: vault)
+                if !Task.isCancelled { await vaultStore.checkIn(vault: vault) }
             } catch {
-                biometricError = error.localizedDescription
+                ifNotCancelled { biometricError = error.localizedDescription }
             }
-            isCheckingIn = false
+            ifNotCancelled { isCheckingIn = false }
         }
     }
 
@@ -294,6 +323,11 @@ struct CreateVaultView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                    if !beneficiary.isEmpty && !isBeneficiaryValid {
+                        Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
                 Section("Check-in Interval") {
                     Slider(value: $intervalDays, in: 1...365, step: 1)
@@ -304,7 +338,7 @@ struct CreateVaultView: View {
             .navigationTitle("New Vault")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }.disabled(beneficiary.isEmpty || isCreating)
+                    Button("Create") { create() }.disabled(!isBeneficiaryValid || isCreating)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -313,7 +347,12 @@ struct CreateVaultView: View {
         }
     }
 
+    private var isBeneficiaryValid: Bool {
+        StellarAddress.isValidPublicKey(beneficiary)
+    }
+
     private func create() {
+        guard isBeneficiaryValid else { return }
         isCreating = true
         Task {
             do {
