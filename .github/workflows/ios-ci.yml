@@ -13,6 +13,21 @@ defaults:
 jobs:
   build-and-test:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          # Latest iOS with latest simulator device. This is the primary target
+          # and catches regressions in the latest runtime and language features.
+          - simulator-name: "iPhone 17"
+            simulator-os: "latest"
+            name-suffix: "(latest)"
+          # iOS 17 (deployment floor) to catch API availability and layout issues
+          # that only manifest on older supported iOS versions. This ensures we
+          # catch regressions in APIs only available on newer iOS (e.g., an API
+          # call that was backported, or a UI layout that breaks on older SwiftUI).
+          - simulator-name: "iPhone 15 Pro"
+            simulator-os: "17.0"
+            name-suffix: "(deployment floor)"
     steps:
       - uses: actions/checkout@v4
 
@@ -50,12 +65,7 @@ jobs:
       # `swift test` isn't used here because several files import iOS-only
       # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
       # for swift test's default macOS host destination.
-      - name: Test (iOS Simulator)
-        # "iPhone 17" is whatever the current macos-latest runner's default
-        # Xcode ships as a simulator device; older device names get retired
-        # from new Xcode releases (this replaced "iPhone 15", which no
-        # longer exists on this runner's Xcode 26.5) and this may need
-        # bumping again after a future macos-latest/Xcode upgrade.
+      - name: Test (iOS Simulator) ${{ matrix.name-suffix }}
         # GitHub Actions sets CI=true for this shell, but that does NOT reach
         # the Simulator-hosted xctest process — it runs in its own sandboxed
         # environment, not inherited from the invoking shell. xcodebuild's
@@ -68,7 +78,7 @@ jobs:
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=${{ matrix.simulator-name }},OS=${{ matrix.simulator-os }}' \
             -skipMacroValidation
 
       - name: Install XcodeGen
@@ -101,10 +111,10 @@ jobs:
       # XCUITests interact with the app at runtime (unlike unit tests),
       # so they must run after the app is built. These tests cover the core
       # user flows: authentication, vault management, check-in, and deep-link entry.
-      - name: Test UI (iOS Simulator)
+      - name: Test UI (iOS Simulator) ${{ matrix.name-suffix }}
         run: |
           xcodebuild test \
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocolUITests \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=${{ matrix.simulator-name }},OS=${{ matrix.simulator-os }}' \
             -skipMacroValidation
