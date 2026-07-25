@@ -63,6 +63,7 @@ struct AuthView: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 64))
                     .foregroundStyle(.blue)
+                    .accessibilityHidden(true)
                 Text("Ethos-Protocol").font(.largeTitle.bold())
                 Text("Secure digital inheritance").foregroundStyle(.secondary)
 
@@ -148,6 +149,7 @@ struct VaultListView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showCreate = true }) { Image(systemName: "plus") }
+                        .accessibilityLabel("Create new vault")
                 }
                 ToolbarItem(placement: .secondaryAction) {
                     Button("Sign Out") { authStore.signOut() }
@@ -488,6 +490,7 @@ struct TwoFactorVerifyView: View {
             Image(systemName: iconName)
                 .font(.system(size: 56))
                 .foregroundStyle(.blue)
+                .accessibilityLabel("Two-factor authentication via \(methodLabel)")
 
             Text("Verify Setup").font(.title.bold())
 
@@ -584,7 +587,10 @@ struct VaultInvitationView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "envelope.open.fill").font(.system(size: 56)).foregroundStyle(.blue)
+            Image(systemName: "envelope.open.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text("Vault Invitation").font(.title.bold())
             VStack(spacing: 8) {
                 Text("You have been invited to a vault.")
@@ -700,7 +706,11 @@ struct VaultActionDeepLinkView: View {
         onAction: @escaping () -> Void
     ) -> some View {
         VStack(spacing: 24) {
-            Image(systemName: systemImage).font(.system(size: 56)).foregroundStyle(.blue)
+            Image(systemName: systemImage)
+                .font(.system(size: 56))
+                .foregroundStyle(.blue)
+                .accessibilityLabel(title)
+                .accessibilityHidden(false)
             Text(title).font(.title.bold())
             Text(description).multilineTextAlignment(.center).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
@@ -727,7 +737,10 @@ struct BeneficiaryAcceptanceView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "checkmark.seal.fill").font(.system(size: 56)).foregroundStyle(.green)
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
             Text("Accept Beneficiary Role").font(.title.bold())
             VStack(spacing: 8) {
                 Text("You have been nominated as a beneficiary for vault:")
