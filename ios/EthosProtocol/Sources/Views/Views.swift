@@ -318,7 +318,10 @@ struct CreateVaultView: View {
         Task {
             do {
                 let interval = UInt64(intervalDays * 86_400)
-                _ = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
+                let vault = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
+                if let credentialID = KeychainService.shared.loadCredentialID() {
+                    ICloudSyncService.shared.save(vaultID: vault.id, credentialID: credentialID)
+                }
                 await vaultStore.load()
                 dismiss()
             } catch { self.error = error.localizedDescription }
@@ -690,6 +693,9 @@ struct BeneficiaryAcceptanceView: View {
         Task {
             do {
                 try await APIClient.shared.acceptBeneficiary(vaultID: vaultID, token: token)
+                if let credentialID = KeychainService.shared.loadCredentialID() {
+                    ICloudSyncService.shared.save(vaultID: vaultID, credentialID: credentialID)
+                }
                 accepted = true
             } catch {
                 self.error = error.localizedDescription
