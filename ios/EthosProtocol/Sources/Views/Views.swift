@@ -89,6 +89,7 @@ struct VaultListView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -112,7 +113,14 @@ struct VaultListView: View {
                     Button(action: { showCreate = true }) { Image(systemName: "plus") }
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Sign Out") { authStore.signOut() }
+                    Menu {
+                        NavigationLink(destination: SettingsView()) {
+                            Label("Settings", systemImage: "gear")
+                        }
+                        Button("Sign Out") { authStore.signOut() }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
             .task { await vaultStore.load() }
