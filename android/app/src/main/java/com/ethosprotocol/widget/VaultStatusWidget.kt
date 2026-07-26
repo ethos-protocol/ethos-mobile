@@ -15,6 +15,8 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import java.time.Duration
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 class VaultStatusWidget : AppWidgetProvider() {
@@ -65,6 +67,21 @@ class VaultStatusWidget : AppWidgetProvider() {
             val ids = manager.getAppWidgetIds(ComponentName(context, VaultStatusWidget::class.java))
             ids.forEach { updateWidget(context, manager, it) }
         }
+
+        /** Formats an ISO-8601 timestamp as a relative time ("2 hours ago") for widget display. */
+        internal fun formatLastCheckIn(isoTimestamp: String, now: Instant = Instant.now()): String {
+            val checkInInstant = runCatching { Instant.parse(isoTimestamp) }.getOrNull() ?: return isoTimestamp
+            val seconds = Duration.between(checkInInstant, now).seconds.coerceAtLeast(0)
+            return when {
+                seconds < 60 -> "Just now"
+                seconds < 3_600 -> relative(seconds / 60, "minute")
+                seconds < 86_400 -> relative(seconds / 3_600, "hour")
+                else -> relative(seconds / 86_400, "day")
+            }
+        }
+
+        private fun relative(value: Long, unit: String): String =
+            "$value $unit${if (value == 1L) "" else "s"} ago"
     }
 }
 
@@ -84,7 +101,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 applicationContext,
                 vaultName = vault.id.take(12) + "…",
                 ttlRemaining = ttl,
-                lastCheckIn = vault.lastCheckIn
+                lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
             )
             VaultStatusWidget.refreshAll(applicationContext)
         }
