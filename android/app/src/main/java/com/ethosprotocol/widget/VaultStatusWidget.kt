@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.widget.RemoteViews
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
@@ -27,26 +28,35 @@ class VaultStatusWidget : AppWidgetProvider() {
 
     companion object {
         private const val PREFS = "vault_widget_prefs"
+        private const val KEY_VAULT_ID = "vault_id"
         private const val KEY_VAULT_NAME = "vault_name"
         private const val KEY_TTL = "ttl_remaining"
         private const val KEY_LAST_CHECK_IN = "last_check_in"
 
-        fun saveVaultData(context: Context, vaultName: String, ttlRemaining: String, lastCheckIn: String) {
+        fun saveVaultData(context: Context, vaultId: String, vaultName: String, ttlRemaining: String, lastCheckIn: String) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_VAULT_ID, vaultId)
                 .putString(KEY_VAULT_NAME, vaultName)
                 .putString(KEY_TTL, ttlRemaining)
                 .putString(KEY_LAST_CHECK_IN, lastCheckIn)
                 .apply()
         }
 
+        /** Builds the deep link used to open a widget tap directly onto the vault it displayed. */
+        internal fun deepLinkUri(vaultId: String): String = "ethosprotocol://vault/$vaultId/view-details"
+
         fun updateWidget(context: Context, manager: AppWidgetManager, widgetId: Int) {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val vaultId = prefs.getString(KEY_VAULT_ID, null)
             val vaultName = prefs.getString(KEY_VAULT_NAME, "—") ?: "—"
             val ttl = prefs.getString(KEY_TTL, "Unknown") ?: "Unknown"
             val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, "Never") ?: "Never"
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (!vaultId.isNullOrEmpty()) {
+                    data = Uri.parse(deepLinkUri(vaultId))
+                }
             }
             val pendingIntent = PendingIntent.getActivity(
                 context, 0, openIntent,
@@ -99,6 +109,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
             val ttl = formatTtl(vault.ttlRemaining)
             VaultStatusWidget.saveVaultData(
                 applicationContext,
+                vaultId = vault.id,
                 vaultName = vault.id.take(12) + "…",
                 ttlRemaining = ttl,
                 lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
