@@ -15,6 +15,7 @@ import EthosProtocol
 
 struct VaultEntry: TimelineEntry {
     let date: Date
+    let vaultID: String
     let vaultName: String
     let ttlRemaining: UInt64?
     let isExpiringSoon: Bool
@@ -24,11 +25,11 @@ struct VaultEntry: TimelineEntry {
 
 struct TTLTimelineProvider: TimelineProvider {
     func placeholder(in context: Context) -> VaultEntry {
-        VaultEntry(date: .now, vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false)
+        VaultEntry(date: .now, vaultID: "vault-placeholder", vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (VaultEntry) -> Void) {
-        completion(VaultEntry(date: .now, vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false))
+        completion(VaultEntry(date: .now, vaultID: "vault-placeholder", vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<VaultEntry>) -> Void) {
@@ -42,12 +43,13 @@ struct TTLTimelineProvider: TimelineProvider {
                     .min(by: { ($0.ttlRemaining ?? UInt64.max) < ($1.ttlRemaining ?? UInt64.max) })
                 entry = VaultEntry(
                     date: .now,
+                    vaultID: critical?.id ?? "",
                     vaultName: critical.map { String($0.id.prefix(12)) + "…" } ?? "No Active Vault",
                     ttlRemaining: critical?.ttlRemaining,
                     isExpiringSoon: critical?.isExpiringSoon ?? false
                 )
             } catch {
-                entry = VaultEntry(date: .now, vaultName: "Unavailable", ttlRemaining: nil, isExpiringSoon: false)
+                entry = VaultEntry(date: .now, vaultID: "", vaultName: "Unavailable", ttlRemaining: nil, isExpiringSoon: false)
             }
 
             let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: .now)!
@@ -84,6 +86,7 @@ struct TTLWidgetView: View {
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
     }
 
     private func formatDuration(_ seconds: UInt64) -> String {

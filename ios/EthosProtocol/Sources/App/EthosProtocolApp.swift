@@ -7,6 +7,15 @@ struct EthosProtocolApp: App {
 
     init() {
         BackgroundRefreshService.shared.registerBackgroundTask()
+        ICloudSyncService.shared.restoreFromICloud()
+
+        NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: .main
+        ) { _ in
+            ICloudSyncService.shared.restoreFromICloud()
+        }
     }
 
     var body: some Scene {
