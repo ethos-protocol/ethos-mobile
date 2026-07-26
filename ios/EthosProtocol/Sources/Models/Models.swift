@@ -30,6 +30,35 @@ public struct Vault: Codable, Identifiable, Equatable {
     }
 }
 
+// Shared amount parsing/validation for the deposit and withdraw flows, which both
+// take a user-entered XLM string and need to convert/validate it against the
+// vault's stroop-denominated balance the same way.
+enum VaultAmount {
+    static let stroopsPerXLM = 10_000_000.0
+
+    /// Parses a user-entered XLM amount string into stroops, or nil if the input
+    /// isn't a positive, finite number.
+    static func parseStroops(_ input: String) -> Int64? {
+        guard let value = Double(input), value.isFinite, value > 0 else { return nil }
+        let stroops = value * stroopsPerXLM
+        guard stroops <= Double(Int64.max) else { return nil }
+        return Int64(stroops)
+    }
+
+    static func hasSufficientBalance(amount: Int64, vaultBalance: Int64) -> Bool {
+        amount > 0 && amount <= vaultBalance
+    }
+}
+
+enum BeneficiaryUpdate {
+    /// A new beneficiary address is only valid if it's non-empty (after trimming)
+    /// and actually differs from the vault's current beneficiary.
+    static func isValidNewBeneficiary(_ input: String, currentBeneficiary: String) -> Bool {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != currentBeneficiary
+    }
+}
+
 struct AuthChallenge: Codable {
     let challenge: String
     let expiresAt: Date

@@ -99,6 +99,10 @@ public final class APIClient {
         try await post(path: "/vaults/\(vaultID)/withdraw", body: ["amount": amount])
     }
 
+    func updateBeneficiary(vaultID: String, newBeneficiary: String) async throws -> Vault {
+        try await post(path: "/vaults/\(vaultID)/beneficiary", body: ["beneficiary": newBeneficiary])
+    }
+
     func acceptBeneficiary(vaultID: String, token: String) async throws {
         let body = ["vault_id": vaultID, "token": token]
         let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/accept", body: body)

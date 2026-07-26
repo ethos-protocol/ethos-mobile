@@ -95,4 +95,14 @@ final class VaultStore: ObservableObject {
             }
         }
     }
+
+    private func scheduleReminders() {
+        for vault in vaults { scheduleReminder(for: vault) }
+    }
+
+    private func scheduleReminder(for vault: Vault) {
+        guard vault.status == .active, let ttl = vault.ttlRemaining else { return }
+        NotificationService.shared.scheduleCheckInReminder(
+            vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl)
+    }
 }
