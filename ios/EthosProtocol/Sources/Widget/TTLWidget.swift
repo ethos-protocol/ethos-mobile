@@ -52,8 +52,26 @@ struct TTLTimelineProvider: TimelineProvider {
                 entry = VaultEntry(date: .now, vaultID: "", vaultName: "Unavailable", ttlRemaining: nil, isExpiringSoon: false)
             }
 
-            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: .now)!
+            // Compute refresh interval based on vault urgency: refresh more frequently as TTL approaches zero.
+            // Scale from 15 min (normal) down to 1 min (critical), respecting WidgetKit's budget guidance.
+            let nextUpdateMinutes = computeNextUpdateInterval(ttlRemaining: entry.ttlRemaining)
+            let nextUpdate = Calendar.current.date(byAdding: .minute, value: nextUpdateMinutes, to: .now)!
             completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+        }
+    }
+
+    // Compute the next-update interval (in minutes) based on TTL urgency.
+    // Returns values between 1 and 15, scaling down as ttlRemaining approaches zero.
+    func computeNextUpdateInterval(ttlRemaining: UInt64?) -> Int {
+        guard let ttl = ttlRemaining else { return 15 }
+
+        // Scale based on time remaining until expiry
+        switch ttl {
+        case 3_600...: return 15  // >= 1 hour: refresh every 15 min
+        case 3_600..<21_600: return 10  // 1-6 hours: refresh every 10 min
+        case 1_800..<3_600: return 5  // 30 min-1 hour: refresh every 5 min
+        case 0..<1_800: return 2  // < 30 min: refresh every 2 min
+        default: return 15
         }
     }
 }

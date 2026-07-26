@@ -72,7 +72,7 @@ final class VaultStore: ObservableObject {
         for vault in vaults where vault.status == .active {
             if let ttl = vault.ttlRemaining {
                 NotificationService.shared.scheduleCheckInReminder(
-                    vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl)
+                    vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl, checkInInterval: vault.checkInInterval)
             }
         }
     }

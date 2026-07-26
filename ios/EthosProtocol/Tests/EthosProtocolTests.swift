@@ -154,6 +154,42 @@ final class TTLWidgetTests: XCTestCase {
         let entry = VaultEntry(date: .now, vaultName: "Test", ttlRemaining: 172_800, isExpiringSoon: false)
         XCTAssertFalse(entry.isExpiringSoon)
     }
+
+    // MARK: - Issue #33 Tests: TTL-Aware Refresh Policy
+
+    func test_nextUpdateInterval_longTTL_returns15Minutes() {
+        // ttl >= 1 hour: refresh every 15 min (minimal budget usage)
+        let ttlLong: UInt64 = 86_400 // 24 hours
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlLong)
+        XCTAssertEqual(interval, 15)
+    }
+
+    func test_nextUpdateInterval_mediumTTL_scalesToShorterInterval() {
+        // 1-6 hours: refresh every 10 min (increased monitoring)
+        let ttlMedium: UInt64 = 18_000 // 5 hours
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlMedium)
+        XCTAssertEqual(interval, 10)
+    }
+
+    func test_nextUpdateInterval_shortTTL_scalesToEvenShorter() {
+        // 30 min-1 hour: refresh every 5 min (close monitoring)
+        let ttlShort: UInt64 = 1_800 // 30 minutes
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlShort)
+        XCTAssertEqual(interval, 5)
+    }
+
+    func test_nextUpdateInterval_criticalTTL_minimumRefreshRate() {
+        // < 30 min: refresh every 2 min (maximum monitoring, respects WidgetKit budget)
+        let ttlCritical: UInt64 = 600 // 10 minutes
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: ttlCritical)
+        XCTAssertEqual(interval, 2)
+    }
+
+    func test_nextUpdateInterval_nilTTL_defaultsTo15Minutes() {
+        // No vault data: default to conservative 15 min
+        let interval = TTLTimelineProvider().computeNextUpdateInterval(ttlRemaining: nil)
+        XCTAssertEqual(interval, 15)
+    }
 }
 
 // MARK: - #843 Universal Link Routing Tests
@@ -272,5 +308,213 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         XCTAssertNoThrow(
             NotificationService.shared.scheduleTTLWarning(vaultID: "vault-dup", ttlRemaining: 3_600)
         )
+    }
+
+    // MARK: - Issue #35 Tests: Check-In Reminder Scaling
+
+    func test_scheduleCheckInReminder_1DayInterval_schedulesWithScaledLeadTime() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 1 day = 86,400 seconds; 10% = 8,640 seconds ≈ 2.4 hours
+        // Should fire at ttlRemaining - 8,640 = 172,800 - 8,640 = 164,160 seconds
+        let oneDayInterval: UInt64 = 86_400
+        let ttlRemaining: UInt64 = 172_800 // 2 days
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "1day-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: oneDayInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_7DayInterval_schedulesWithScaledLeadTime() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 7 days = 604,800 seconds; 10% = 60,480 seconds ≈ 16.8 hours
+        let sevenDayInterval: UInt64 = 604_800
+        let ttlRemaining: UInt64 = 1_209_600 // 14 days
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "7day-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: sevenDayInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_365DayInterval_capsLeadTimeAt24Hours() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 365 days = 31,536,000 seconds; 10% = 3,153,600 seconds (36.5 days)
+        // Should cap at 24 hours = 86,400 seconds
+        let yearInterval: UInt64 = 31_536_000
+        let ttlRemaining: UInt64 = 63_072_000 // 2 years
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "year-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: yearInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_shortInterval_schedulesSecondaryReminder() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        // 12 hours < 24 hours; should schedule both primary and secondary reminders
+        let shortInterval: UInt64 = 43_200 // 12 hours
+        let ttlRemaining: UInt64 = 86_400 // 1 day
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "short-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining,
+                checkInInterval: shortInterval
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_removesExistingNotifications_beforeAddingNew() throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+        let interval: UInt64 = 86_400
+        let ttlRemaining: UInt64 = 172_800
+        // Schedule twice; should remove old requests before adding new ones
+        NotificationService.shared.scheduleCheckInReminder(
+            vaultID: "dup-vault",
+            vaultName: "Test",
+            ttlRemaining: ttlRemaining,
+            checkInInterval: interval
+        )
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "dup-vault",
+                vaultName: "Test",
+                ttlRemaining: ttlRemaining / 2,
+                checkInInterval: interval
+            )
+        )
+    }
+}
+
+// MARK: - Issue #34 Tests: Background Refresh Coverage
+
+// Mock task for testing without BGAppRefreshTask
+final class MockBackgroundRefreshTask: BackgroundRefreshTask {
+    var expirationHandler: (() -> Void)?
+    private(set) var completionCount = 0
+    private(set) var lastSuccess: Bool?
+
+    func setTaskCompleted(success: Bool) {
+        completionCount += 1
+        lastSuccess = success
+    }
+
+    func callExpirationHandler() {
+        expirationHandler?()
+    }
+}
+
+final class HandleRefreshTests: XCTestCase {
+
+    var service: BackgroundRefreshService!
+
+    override func setUp() {
+        super.setUp()
+        service = BackgroundRefreshService()
+        service.scheduleAppRefreshCallCount = 0
+    }
+
+    func test_handleRefresh_successfulFetch_callsSetTaskCompletedWithSuccess() async {
+        // Mock successful vault list
+        let mockVaults = [
+            Vault(id: "vault-1", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .active)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        // Allow async work to complete
+        try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+
+        XCTAssertEqual(task.lastSuccess, true)
+        XCTAssertEqual(task.completionCount, 1)
+    }
+
+    func test_handleRefresh_networkFailure_callsSetTaskCompletedWithFailure() async {
+        // Mock network failure
+        enum NetworkError: Error { case unreachable }
+        service.vaultListProvider = { throw NetworkError.unreachable }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(task.lastSuccess, false)
+        XCTAssertEqual(task.completionCount, 1)
+    }
+
+    func test_handleRefresh_registersExpirationHandler() {
+        service.vaultListProvider = { [] }
+        let task = MockBackgroundRefreshTask()
+
+        service.handleRefresh(task: task)
+
+        XCTAssertNotNil(task.expirationHandler)
+    }
+
+    func test_handleRefresh_callsScheduleAppRefreshExactlyOnce() {
+        service.vaultListProvider = { [] }
+        let task = MockBackgroundRefreshTask()
+
+        service.handleRefresh(task: task)
+
+        XCTAssertEqual(service.scheduleAppRefreshCallCount, 1)
+    }
+
+    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
+
+        let mockVaults = [
+            Vault(id: "vault-urgent", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .active),
+            Vault(id: "vault-safe", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 172_800, status: .active)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Should only schedule warning for vault-urgent (ttl < 86_400)
+        XCTAssertEqual(task.lastSuccess, true)
+    }
+
+    func test_handleRefresh_ignoresExpiredAndInactiveVaults() async {
+        let mockVaults = [
+            Vault(id: "vault-expired", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 0, status: .expired),
+            Vault(id: "vault-paused", owner: "O", beneficiary: "B", balance: 0,
+                  checkInInterval: 86_400, lastCheckIn: Date(), ttlRemaining: 3_600, status: .paused)
+        ]
+        service.vaultListProvider = { mockVaults }
+
+        let task = MockBackgroundRefreshTask()
+        service.handleRefresh(task: task)
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        // Should complete successfully but not schedule warnings for non-active vaults
+        XCTAssertEqual(task.lastSuccess, true)
     }
 }

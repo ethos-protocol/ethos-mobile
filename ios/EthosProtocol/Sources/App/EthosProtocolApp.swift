@@ -24,6 +24,7 @@ struct EthosProtocolApp: App {
                 .environmentObject(authStore)
                 .environmentObject(vaultStore)
                 .task {
+                    NotificationService.shared.registerNotificationCategories()
                     await NotificationService.shared.requestPermission()
                     BackgroundRefreshService.shared.scheduleAppRefresh()
                 }
