@@ -5,6 +5,7 @@ import androidx.credentials.*
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.models.AuthChallenge
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
 import org.json.JSONArray
@@ -13,25 +14,16 @@ import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val RP_ID = "ethos-protocol.app"
+
 @Singleton
 class PasskeyService @Inject constructor(
     private val apiClient: ApiClient,
     private val tokenProvider: TokenProvider
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
-        val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = JSONObject().apply {
-            put("challenge", challenge)
-            put("rp", JSONObject().put("id", "ethos-protocol.app").put("name", "Ethos-Protocol"))
-            put("user", JSONObject()
-                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
-                .put("name", username).put("displayName", username))
-            put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
-            put("authenticatorSelection", JSONObject()
-                .put("authenticatorAttachment", "platform")
-                .put("requireResidentKey", true)
-                .put("userVerification", "required"))
-        }.toString()
+        val challenge = requireSuccess(apiClient.getChallenge())
+        val requestJson = buildRegistrationRequestJson(challenge, username)
 
         val credManager = CredentialManager.create(activity)
         val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
@@ -46,9 +38,9 @@ class PasskeyService @Inject constructor(
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
-        val challenge = requireSuccess(apiClient.getChallenge()).challenge
+        val challenge = requireSuccess(apiClient.getChallenge())
         val requestJson = JSONObject()
-            .put("challenge", challenge).put("rpId", "ethos-protocol.app")
+            .put("challenge", challenge.challenge).put("rpId", RP_ID)
             .put("userVerification", "required").toString()
 
         val credManager = CredentialManager.create(activity)
@@ -71,3 +63,26 @@ class PasskeyService @Inject constructor(
         }
     }
 }
+
+// Top-level (rather than private to the class) and `internal` so PasskeyServiceTest can
+// verify the WebAuthn JSON shape directly, without driving a real CredentialManager ceremony.
+internal fun buildRegistrationRequestJson(challenge: AuthChallenge, username: String): String =
+    JSONObject().apply {
+        put("challenge", challenge.challenge)
+        put("rp", JSONObject().put("id", RP_ID).put("name", "Ethos-Protocol"))
+        put("user", JSONObject()
+            .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
+            .put("name", username).put("displayName", username))
+        put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
+        put("authenticatorSelection", JSONObject()
+            .put("authenticatorAttachment", "platform")
+            .put("requireResidentKey", true)
+            .put("userVerification", "required"))
+        // Without this, CredentialManager has no way to know the user already has a
+        // passkey for this account, so it happily creates a second one with no warning.
+        if (challenge.existingCredentialIds.isNotEmpty()) {
+            put("excludeCredentials", JSONArray(challenge.existingCredentialIds.map {
+                JSONObject().put("type", "public-key").put("id", it)
+            }))
+        }
+    }.toString()
