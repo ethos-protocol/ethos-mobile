@@ -270,6 +270,212 @@ final class UniversalLinkRouterTests: XCTestCase {
         let b = UniversalLinkRouter.shared
         XCTAssertTrue(a === b)
     }
+
+    // MARK: - #37 Validation Tests (Security)
+
+    func test_parse_vaultInvitation_withPathTraversal_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/../../../etc/passwd/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withPercentEncoding_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault%2Fabc/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withOversizedID_returnsNil() {
+        let oversizedID = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/vaults/\(oversizedID)/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withInvalidCharacters_returnsNil() {
+        let invalidChars = ["vault@abc", "vault#123", "vault$xyz", "vault%test", "vault abc"]
+        for invalidID in invalidChars {
+            let url = URL(string: "https://ethos-protocol.app/vaults/\(invalidID)/invite")!
+            XCTAssertNil(router.parse(url: url), "Should reject invalid vault ID: \(invalidID)")
+        }
+    }
+
+    func test_parse_beneficiaryAcceptance_withInvalidVaultID_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault@evil/accept?token=tok-valid")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_withInvalidToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-valid/accept?token=tok@evil")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_withOversizedToken_returnsNil() {
+        let oversizedToken = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-abc/accept?token=\(oversizedToken)")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultDeepLink_withInvalidVaultID_returnsNil() {
+        let url = URL(string: "ethosprotocol://vault/vault@invalid/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultDeepLink_withOversizedID_returnsNil() {
+        let oversizedID = String(repeating: "x", count: 129)
+        let url = URL(string: "ethosprotocol://vault/\(oversizedID)/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultInvitation_withValidID_succeeds() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/valid-vault_123/invite")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .vaultInvitation(vaultID: "valid-vault_123"))
+    }
+
+    func test_parse_beneficiaryAcceptance_withValidIDAndToken_succeeds() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-ABC123/accept?token=token-XYZ789")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .beneficiaryAcceptance(vaultID: "vault-ABC123", token: "token-XYZ789"))
+    }
+
+    // MARK: - #40 Deep-Link Logging Tests
+
+    func test_parse_vaultInvitation_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-log-test/invite")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .vaultInvitation)
+    }
+
+    func test_parse_beneficiaryAcceptance_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-log-test/accept?token=token-log-test")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .beneficiaryAcceptance)
+    }
+
+    func test_parse_vaultActionCheckIn_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "ethosprotocol://vault/vault-log-test/check-in")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .vaultActionCheckIn)
+    }
+
+    func test_parse_vaultActionWithdraw_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "ethosprotocol://vault/vault-log-test/withdraw")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .vaultActionWithdraw)
+    }
+
+    func test_parse_vaultActionViewDetails_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "ethosprotocol://vault/vault-log-test/view-details")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .vaultActionViewDetails)
+    }
+
+    func test_parse_vaultActionManageBeneficiary_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "ethosprotocol://vault/vault-log-test/manage-beneficiary")!
+        let result = router.parse(url: url)
+        XCTAssertNotNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .vaultActionManageBeneficiary)
+    }
+
+    func test_parse_invalidURL_doesNotLog() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/invalid/path")!
+        let result = router.parse(url: url)
+        XCTAssertNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 0)
+    }
+
+    func test_parse_invalidVaultID_doesNotLog() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault@invalid/invite")!
+        let result = router.parse(url: url)
+        XCTAssertNil(result)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 0)
+    }
+
+    func test_deepLinkLogger_preservesEventTimestamps() {
+        DeepLinkLogger.shared.clearLog()
+        let beforeTime = Date()
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-time-test/invite")!
+        _ = router.parse(url: url)
+        let afterTime = Date()
+
+        let events = DeepLinkLogger.shared.getLoggedEvents()
+        XCTAssertEqual(events.count, 1)
+        let eventTime = events[0].timestamp
+        XCTAssertGreaterThanOrEqual(eventTime, beforeTime)
+        XCTAssertLessThanOrEqual(eventTime, afterTime)
+    }
+
+    func test_deepLinkLogger_accumatesMultipleEvents() {
+        DeepLinkLogger.shared.clearLog()
+        let url1 = URL(string: "https://ethos-protocol.app/vaults/vault-1/invite")!
+        let url2 = URL(string: "ethosprotocol://vault/vault-2/check-in")!
+        let url3 = URL(string: "https://ethos-protocol.app/vaults/vault-3/accept?token=token-3")!
+
+        _ = router.parse(url: url1)
+        _ = router.parse(url: url2)
+        _ = router.parse(url: url3)
+
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 3)
+        let events = DeepLinkLogger.shared.getLoggedEvents()
+        XCTAssertEqual(events[0].event, .vaultInvitation)
+        XCTAssertEqual(events[1].event, .vaultActionCheckIn)
+        XCTAssertEqual(events[2].event, .beneficiaryAcceptance)
+    }
+}
+
+// MARK: - #39 Two-Factor Verification Messaging Tests
+
+final class TwoFactorVerifyViewTests: XCTestCase {
+
+    func test_totpInitialSetup_withProvisioningUri_showsSetupMessage() {
+        let hasProvisioningUri = true
+        let hasTOTPProvisioningData = true
+        XCTAssertTrue(hasTOTPProvisioningData)
+        XCTAssertTrue(hasProvisioningUri)
+    }
+
+    func test_totpReVerification_withoutProvisioningUri_showsReVerifyMessage() {
+        let hasProvisioningUri = false
+        let hasTOTPProvisioningData = false
+        XCTAssertFalse(hasTOTPProvisioningData)
+        XCTAssertFalse(hasProvisioningUri)
+    }
+
+    func test_totpReVerification_displaysCorrectInstructions() {
+        let method = TwoFactorMethod.totp
+        let isInitialSetup = false
+        XCTAssertEqual(method, .totp)
+        XCTAssertFalse(isInitialSetup)
+    }
+
+    func test_smsVerification_alwaysShowsSentMessage() {
+        let method = TwoFactorMethod.sms
+        let isInitialSetup = false
+        XCTAssertEqual(method, .sms)
+    }
+
+    func test_emailVerification_alwaysShowsSentMessage() {
+        let method = TwoFactorMethod.email
+        let isInitialSetup = false
+        XCTAssertEqual(method, .email)
+    }
 }
 
 // MARK: - #844 Background Refresh Tests

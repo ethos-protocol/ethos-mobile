@@ -89,6 +89,7 @@ struct VaultListView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -112,7 +113,14 @@ struct VaultListView: View {
                     Button(action: { showCreate = true }) { Image(systemName: "plus") }
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Sign Out") { authStore.signOut() }
+                    Menu {
+                        NavigationLink(destination: SettingsView()) {
+                            Label("Settings", systemImage: "gear")
+                        }
+                        Button("Sign Out") { authStore.signOut() }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
             .task { await vaultStore.load() }
@@ -444,24 +452,30 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
+    private var isInitialSetup: Bool {
+        provisioningUri != nil || secret != nil
+    }
+
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: iconName)
                 .font(.system(size: 56))
                 .foregroundStyle(.blue)
 
-            Text("Verify Setup").font(.title.bold())
+            Text(titleText).font(.title.bold())
 
-            if method == .totp, let uri = provisioningUri {
-                VStack(spacing: 8) {
+            VStack(spacing: 8) {
+                if method == .totp, let uri = provisioningUri {
                     Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
                     Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     if let secret {
                         Label(secret, systemImage: "key.fill").font(.system(.caption, design: .monospaced))
                     }
+                } else if method == .totp {
+                    Text("Enter the 6-digit code from your authenticator app.").foregroundStyle(.secondary)
+                } else {
+                    Text("A verification code has been sent to your \(methodLabel).").foregroundStyle(.secondary)
                 }
-            } else {
-                Text("A verification code has been sent to your \(methodLabel).").foregroundStyle(.secondary)
             }
 
             TextField("Enter 6-digit code", text: $otp)
@@ -485,6 +499,16 @@ struct TwoFactorVerifyView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        }
+    }
+
+    private var titleText: String {
+        if method == .totp && isInitialSetup {
+            return "Verify Setup"
+        } else if method == .totp {
+            return "Re-verify Authenticator"
+        } else {
+            return "Verify Setup"
         }
     }
 
