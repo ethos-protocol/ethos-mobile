@@ -133,3 +133,15 @@ jobs:
             -scheme EthosProtocol \
             -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation
+
+      # Runs hosted tests that require a real app process (Keychain, UNUserNotificationCenter).
+      # These tests are in EthosProtocolTests target within the Xcode project, not in the SPM
+      # test bundle, because they need TEST_HOST (real app host entitlements/process).
+      # Test results from the SPM tests (above) + hosted tests (here) combine to give full CI coverage.
+      - name: Test (Keychain & Notifications - Hosted, iOS Simulator)
+        run: |
+          xcodebuild test \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocolTests \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -skipMacroValidation
