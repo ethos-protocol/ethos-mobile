@@ -24,8 +24,10 @@ import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
+import com.ethosprotocol.ui.screens.DepositScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
+import com.ethosprotocol.ui.screens.WithdrawScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -187,6 +189,30 @@ private fun AppNavigation(
             VaultDeepLinkScreen(
                 vaultId = vaultId,
                 actionPath = action,
+                onDone = { navController.popBackStack() },
+                onDeposit = { id -> navController.navigate("deposit/$id") },
+                onWithdraw = { id -> navController.navigate("withdraw/$id/0") }
+            )
+        }
+        // Deposit route: reached from VaultDeepLinkScreen (deposit action) or directly.
+        composable("deposit/{vaultId}") { backStack ->
+            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+            DepositScreen(
+                vaultId = vaultId,
+                onDone = { navController.popBackStack() }
+            )
+        }
+        // Withdraw route: vaultBalance is passed as a stroop-encoded Long string so the
+        // WithdrawScreen can enforce the client-side balance guard without a separate
+        // ViewModel load. The deep-link entry point passes 0 (balance unknown from the
+        // push notification context); the UI displays the field but the server always
+        // enforces the real balance server-side.
+        composable("withdraw/{vaultId}/{vaultBalance}") { backStack ->
+            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+            val vaultBalance = backStack.arguments?.getString("vaultBalance")?.toLongOrNull() ?: 0L
+            WithdrawScreen(
+                vaultId = vaultId,
+                vaultBalanceStroops = vaultBalance,
                 onDone = { navController.popBackStack() }
             )
         }

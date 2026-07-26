@@ -41,6 +41,25 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         )
     }
 
+    AuthScreenContent(
+        isLoading = state.isLoading,
+        error = state.error,
+        onSignIn = { vm.signIn(activity) },
+        onRegister = { showRegister = true }
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without an Activity context or Hilt DI graph.
+ */
+@Composable
+fun AuthScreenContent(
+    isLoading: Boolean,
+    error: String?,
+    onSignIn: () -> Unit,
+    onRegister: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -54,21 +73,21 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(32.dp))
 
-        state.error?.let {
+        error?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
 
         Button(
-            onClick = { vm.signIn(activity) },
+            onClick = onSignIn,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = { showRegister = true }) { Text("Create account") }
+        TextButton(onClick = onRegister) { Text("Create account") }
     }
 }
 
@@ -270,6 +289,27 @@ fun BeneficiaryAcceptanceScreen(
         if (state.isAccepted) onAccepted()
     }
 
+    BeneficiaryAcceptanceScreenContent(
+        vaultId = vaultId,
+        isLoading = state.isLoading,
+        error = state.error,
+        onAccept = { vm.accept(vaultId) },
+        onDecline = onDecline
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without a Hilt DI graph.
+ */
+@Composable
+fun BeneficiaryAcceptanceScreenContent(
+    vaultId: String,
+    isLoading: Boolean,
+    error: String?,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -298,24 +338,24 @@ fun BeneficiaryAcceptanceScreen(
             readOnly = true,
             modifier = Modifier.fillMaxWidth()
         )
-        state.error?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
         Button(
-            onClick = { vm.accept(vaultId) },
+            onClick = onAccept,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Accept")
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = onDecline,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
             Text("Decline")
         }
@@ -329,6 +369,8 @@ fun VaultDeepLinkScreen(
     vaultId: String,
     actionPath: String,
     onDone: () -> Unit,
+    onDeposit: (vaultId: String) -> Unit = {},
+    onWithdraw: (vaultId: String) -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val action = VaultDeepLinkAction.fromPathSegment(actionPath)
@@ -365,6 +407,73 @@ fun VaultDeepLinkScreen(
         null
     }
 
+    val actionLabel = when (action) {
+        VaultDeepLinkAction.CHECK_IN -> "Check In"
+        VaultDeepLinkAction.WITHDRAW -> "Withdraw"
+        VaultDeepLinkAction.MANAGE_BENEFICIARY -> "Manage Beneficiary"
+        else -> title
+    }
+
+    VaultDeepLinkScreenContent(
+        title = title,
+        description = description,
+        error = displayError,
+        actionLabel = actionLabel,
+        isProcessing = isProcessing,
+        actionEnabled = !isProcessing && (action != VaultDeepLinkAction.CHECK_IN || vault != null),
+        onAction = {
+            when (action) {
+                VaultDeepLinkAction.CHECK_IN -> {
+                    if (vault == null) {
+                        error = "Vault not found"
+                        return@VaultDeepLinkScreenContent
+                    }
+                    isProcessing = true
+                    error = null
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Confirm Check-In",
+                        subtitle = "Vault ${vault.id.take(12)}…",
+                        onSuccess = {
+                            vm.checkIn(vault.id)
+                            isProcessing = false
+                            onDone()
+                        },
+                        onError = { err ->
+                            error = err
+                            isProcessing = false
+                        }
+                    )
+                }
+                VaultDeepLinkAction.WITHDRAW -> {
+                    if (vault == null) error = "Vault not found"
+                    else onWithdraw(vault.id)
+                }
+                VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
+                    error = "Beneficiary management is not yet available in the mobile app."
+                }
+                else -> Unit
+            }
+        },
+        onDone = onDone
+    )
+}
+
+/**
+ * Stateless content layer for [VaultDeepLinkScreen].
+ * Extracted so Paparazzi snapshot tests can render deep-link action screens
+ * on the JVM without a ViewModel, BiometricHelper, or Activity context.
+ */
+@Composable
+fun VaultDeepLinkScreenContent(
+    title: String,
+    description: String,
+    error: String?,
+    actionLabel: String,
+    isProcessing: Boolean,
+    actionEnabled: Boolean,
+    onAction: () -> Unit,
+    onDone: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -375,52 +484,17 @@ fun VaultDeepLinkScreen(
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        displayError?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
-        when (action) {
-            VaultDeepLinkAction.CHECK_IN -> {
-                Button(
-                    onClick = {
-                        if (vault == null) {
-                            error = "Vault not found"
-                            return@Button
-                        }
-                        isProcessing = true
-                        error = null
-                        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                            title = "Confirm Check-In",
-                            subtitle = "Vault ${vault.id.take(12)}…",
-                            onSuccess = {
-                                vm.checkIn(vault.id)
-                                isProcessing = false
-                                onDone()
-                            },
-                            onError = { err ->
-                                error = err
-                                isProcessing = false
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isProcessing && vault != null
-                ) { Text(if (isProcessing) "Processing…" else "Check In") }
-            }
-            VaultDeepLinkAction.WITHDRAW -> {
-                Button(
-                    onClick = { error = "Withdrawal is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Withdraw") }
-            }
-            VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
-                Button(
-                    onClick = { error = "Beneficiary management is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Manage Beneficiary") }
-            }
-            VaultDeepLinkAction.VIEW_DETAILS, null -> Unit
+        Button(
+            onClick = onAction,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = actionEnabled
+        ) {
+            Text(if (isProcessing) "Processing…" else actionLabel)
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
@@ -610,6 +684,271 @@ private fun TwoFactorVerifyScreen(
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
+        }
+    }
+}
+
+// MARK: - Deposit Screen
+
+/**
+ * Full Deposit screen wired to [DepositViewModel] via Hilt.
+ *
+ * The screen is reached either from the vault detail action list or from the
+ * deep-link action router (deposit action). It navigates back via [onDone] on
+ * success.
+ */
+@Composable
+fun DepositScreen(
+    vaultId: String,
+    vm: com.ethosprotocol.ui.DepositViewModel = hiltViewModel(),
+    onDone: () -> Unit
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var amountInput by remember { mutableStateOf("") }
+
+    // Navigate away as soon as the deposit succeeds
+    LaunchedEffect(state.isSuccess) {
+        if (state.isSuccess) onDone()
+    }
+
+    DepositScreenContent(
+        vaultId = vaultId,
+        amountInput = amountInput,
+        isLoading = state.isLoading,
+        error = state.error,
+        onAmountChange = { amountInput = it },
+        onDeposit = { vm.deposit(vaultId, amountInput) },
+        onDone = onDone
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without a Hilt DI graph.
+ */
+@Composable
+fun DepositScreenContent(
+    vaultId: String,
+    amountInput: String,
+    isLoading: Boolean,
+    error: String?,
+    onAmountChange: (String) -> Unit,
+    onDeposit: () -> Unit,
+    onDone: () -> Unit
+) {
+    val isAmountValid = amountInput.toDoubleOrNull()?.let { it > 0 } == true
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Deposit") },
+                navigationIcon = {
+                    IconButton(onClick = onDone) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Vault: ${vaultId.take(12)}…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = amountInput,
+                onValueChange = onAmountChange,
+                label = { Text("Amount (XLM)") },
+                placeholder = { Text("0.0000000") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
+                ),
+                isError = amountInput.isNotEmpty() && !isAmountValid
+            )
+
+            if (amountInput.isNotEmpty() && !isAmountValid) {
+                Text(
+                    "Enter a valid positive XLM amount.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            Button(
+                onClick = onDeposit,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isAmountValid && !isLoading
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Deposit")
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Withdraw Screen
+
+/**
+ * Full Withdraw screen wired to [WithdrawViewModel] via Hilt.
+ *
+ * The screen enforces:
+ *  - Amount must be a positive number in XLM.
+ *  - Amount must not exceed the vault's current balance (client-side guard;
+ *    the server enforces this too).
+ *  - Biometric auth is required before the API call is dispatched.
+ *
+ * Navigates back via [onDone] on success.
+ */
+@Composable
+fun WithdrawScreen(
+    vaultId: String,
+    vaultBalanceStroops: Long,
+    vm: com.ethosprotocol.ui.WithdrawViewModel = hiltViewModel(),
+    onDone: () -> Unit
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var amountInput by remember { mutableStateOf("") }
+    var biometricError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(state.isSuccess) {
+        if (state.isSuccess) onDone()
+    }
+
+    // Formatted balance shown to the user (same formula as Vault.formattedBalance)
+    val availableBalance = remember(vaultBalanceStroops) {
+        "%.7f XLM".format(vaultBalanceStroops / 10_000_000.0)
+    }
+
+    WithdrawScreenContent(
+        vaultId = vaultId,
+        availableBalance = availableBalance,
+        amountInput = amountInput,
+        isLoading = state.isLoading,
+        error = state.error ?: biometricError,
+        onAmountChange = { amountInput = it },
+        onWithdraw = {
+            // Biometric gate is required before dispatching a withdrawal.
+            biometricError = null
+            BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                title = "Confirm Withdrawal",
+                subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
+                onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
+                onError = { err -> biometricError = err }
+            )
+        },
+        onDone = onDone
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without a Hilt DI graph.
+ */
+@Composable
+fun WithdrawScreenContent(
+    vaultId: String,
+    availableBalance: String,
+    amountInput: String,
+    isLoading: Boolean,
+    error: String?,
+    onAmountChange: (String) -> Unit,
+    onWithdraw: () -> Unit,
+    onDone: () -> Unit
+) {
+    val amountDouble = amountInput.toDoubleOrNull()
+    val isAmountValid = amountDouble != null && amountDouble > 0
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Withdraw") },
+                navigationIcon = {
+                    IconButton(onClick = onDone) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "Vault: ${vaultId.take(12)}…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                "Available: $availableBalance",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = amountInput,
+                onValueChange = onAmountChange,
+                label = { Text("Amount (XLM)") },
+                placeholder = { Text("0.0000000") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
+                ),
+                isError = amountInput.isNotEmpty() && !isAmountValid
+            )
+
+            if (amountInput.isNotEmpty() && !isAmountValid) {
+                Text(
+                    "Enter a valid positive XLM amount.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            Button(
+                onClick = onWithdraw,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isAmountValid && !isLoading
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Withdraw")
+                }
+            }
+
+            Text(
+                "Biometric confirmation is required before the withdrawal is submitted.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
