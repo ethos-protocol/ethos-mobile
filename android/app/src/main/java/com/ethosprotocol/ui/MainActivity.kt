@@ -32,7 +32,8 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
-    private var pendingBeneficiaryAcceptVaultId by mutableStateOf<String?>(null)
+    // Pair<vaultId, token> extracted from the beneficiary-accept deep link.
+    private var pendingBeneficiaryAccept by mutableStateOf<Pair<String, String>?>(null)
     private var pendingVaultDeepLink by mutableStateOf<VaultDeepLink?>(null)
     private var showPermissionRationale by mutableStateOf(false)
 
@@ -58,9 +59,9 @@ class MainActivity : FragmentActivity() {
                     }
                 )
                 AppNavigation(
-                    beneficiaryAcceptVaultId = pendingBeneficiaryAcceptVaultId,
+                    beneficiaryAccept = pendingBeneficiaryAccept,
                     vaultDeepLink = pendingVaultDeepLink,
-                    onBeneficiaryAcceptConsumed = { pendingBeneficiaryAcceptVaultId = null },
+                    onBeneficiaryAcceptConsumed = { pendingBeneficiaryAccept = null },
                     onVaultDeepLinkConsumed = { pendingVaultDeepLink = null }
                 )
             }
@@ -79,24 +80,31 @@ class MainActivity : FragmentActivity() {
         intent.data?.let { uri ->
             VaultDeepLinkParser.parse(uri)?.let {
                 pendingVaultDeepLink = it
-                pendingBeneficiaryAcceptVaultId = null
+                pendingBeneficiaryAccept = null
                 return
             }
         }
-        extractBeneficiaryAcceptVaultId(intent)?.let {
-            pendingBeneficiaryAcceptVaultId = it
+        extractBeneficiaryAccept(intent)?.let {
+            pendingBeneficiaryAccept = it
             pendingVaultDeepLink = null
         }
     }
 
-    private fun extractBeneficiaryAcceptVaultId(intent: Intent): String? =
-        intent.data
-            ?.takeIf { it.scheme == "https" && it.host == "ethos-protocol.app" && it.path == "/accept" }
-            ?.getQueryParameter("vault_id")
-            // The activity is exported and this intent-filter accepts explicit intents from any
-            // app, not just verified browser navigations — validate before it flows into an API
-            // path (apiClient.acceptBeneficiary) or a navigation route.
-            ?.takeIf { VaultDeepLinkParser.isValidVaultId(it) }
+    // Returns (vaultId, token) parsed from https://ethos-protocol.app/vaults/{id}/accept?token={token}.
+    // Both values are validated before use; null is returned if either is missing or invalid.
+    private fun extractBeneficiaryAccept(intent: Intent): Pair<String, String>? {
+        val uri = intent.data ?: return null
+        if (uri.scheme != "https" || uri.host != "ethos-protocol.app") return null
+        val segments = uri.pathSegments
+        // Expect /vaults/{vaultId}/accept
+        if (segments.size != 3 || segments[0] != "vaults" || segments[2] != "accept") return null
+        val vaultId = segments[1].takeIf { VaultDeepLinkParser.isValidVaultId(it) } ?: return null
+        // Token is required — a missing or invalid token means the link is malformed.
+        val token = uri.getQueryParameter("token")
+            ?.takeIf { VaultDeepLinkParser.isValidVaultId(it) } // same allowlist: alphanum, dash, underscore
+            ?: return null
+        return vaultId to token
+    }
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
@@ -138,7 +146,7 @@ private fun NotificationPermissionEffect(
 
 @Composable
 private fun AppNavigation(
-    beneficiaryAcceptVaultId: String?,
+    beneficiaryAccept: Pair<String, String>?,
     vaultDeepLink: VaultDeepLink?,
     onBeneficiaryAcceptConsumed: () -> Unit,
     onVaultDeepLinkConsumed: () -> Unit
@@ -152,9 +160,10 @@ private fun AppNavigation(
         else navController.navigate("auth") { popUpTo("vaults") { inclusive = true } }
     }
 
-    LaunchedEffect(beneficiaryAcceptVaultId, authState.isAuthenticated) {
-        if (beneficiaryAcceptVaultId != null && authState.isAuthenticated) {
-            navController.navigate("accept/$beneficiaryAcceptVaultId")
+    LaunchedEffect(beneficiaryAccept, authState.isAuthenticated) {
+        if (beneficiaryAccept != null && authState.isAuthenticated) {
+            val (vaultId, token) = beneficiaryAccept
+            navController.navigate("accept/$vaultId/$token")
             onBeneficiaryAcceptConsumed()
         }
     }
@@ -173,10 +182,12 @@ private fun AppNavigation(
         composable("vaults") {
             VaultListScreen(onVaultClick = { /* navigate to detail */ })
         }
-        composable("accept/{vaultId}") { backStack ->
+        composable("accept/{vaultId}/{token}") { backStack ->
             val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+            val token = backStack.arguments?.getString("token") ?: return@composable
             BeneficiaryAcceptanceScreen(
                 vaultId = vaultId,
+                token = token,
                 onAccepted = { navController.popBackStack() },
                 onDecline = { navController.popBackStack() }
             )

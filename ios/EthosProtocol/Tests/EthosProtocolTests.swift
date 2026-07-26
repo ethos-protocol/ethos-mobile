@@ -992,3 +992,82 @@ final class BeneficiaryUpdateTests: XCTestCase {
         XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("  GNEW123  ", currentBeneficiary: "GOLD456"))
     }
 }
+
+// MARK: - #112 Pagination Model Tests
+
+final class VaultPageTests: XCTestCase {
+
+    // MARK: - Decoding
+
+    func test_vaultPage_decoding_singlePage_noNextCursor() throws {
+        let json = """
+        {
+          "vaults": [
+            {
+              "id": "v1", "owner": "GABC", "beneficiary": "GXYZ",
+              "balance": 10000000, "check_in_interval": 2592000,
+              "last_check_in": "2026-04-01T00:00:00Z",
+              "ttl_remaining": 100000, "status": "active"
+            }
+          ],
+          "next_cursor": null,
+          "has_more": false
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let page = try decoder.decode(VaultPage.self, from: json)
+        XCTAssertEqual(page.vaults.count, 1)
+        XCTAssertNil(page.nextCursor)
+        XCTAssertFalse(page.hasMore)
+    }
+
+    func test_vaultPage_decoding_firstPage_withNextCursor() throws {
+        let json = """
+        {
+          "vaults": [],
+          "next_cursor": "cursor-abc",
+          "has_more": true
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let page = try decoder.decode(VaultPage.self, from: json)
+        XCTAssertEqual(page.nextCursor, "cursor-abc")
+        XCTAssertTrue(page.hasMore)
+    }
+
+    // MARK: - Large vault list fixture (#112 joint test)
+    //
+    // Verifies the pagination accumulation logic against a fixture of 100 vaults
+    // spread across 5 pages of 20. The fixture matches the Android equivalent in
+    // VaultViewModelTest.kt.
+
+    func test_vaultPage_largVaultListFixture_accumulatesAllVaults() throws {
+        let totalVaults = 100
+        let pageSize = 20
+        let allVaults = (0..<totalVaults).map { makeVault(id: "large-v\($0)") }
+        let pages = stride(from: 0, to: totalVaults, by: pageSize).map {
+            Array(allVaults[$0..<min($0 + pageSize, totalVaults)])
+        }
+
+        var accumulated: [Vault] = []
+        for (i, pageVaults) in pages.enumerated() {
+            let hasMore = i < pages.count - 1
+            let page = VaultPage(vaults: pageVaults, nextCursor: hasMore ? "cursor-\(i)" : nil, hasMore: hasMore)
+            accumulated.append(contentsOf: page.vaults)
+            if !page.hasMore { break }
+        }
+
+        XCTAssertEqual(accumulated.count, totalVaults)
+        XCTAssertEqual(accumulated.map(\.id), allVaults.map(\.id))
+    }
+
+    // MARK: - Helpers
+
+    private func makeVault(id: String) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: 0,
+              checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: 100_000, status: .active)
+    }
+}

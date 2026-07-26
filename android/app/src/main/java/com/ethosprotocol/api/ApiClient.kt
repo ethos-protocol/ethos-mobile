@@ -37,8 +37,12 @@ class ApiClient @Inject constructor(
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
         install(Logging) {
-            // Full request/response bodies (bearer token, 2FA secrets, vault balances) must
-            // never be written to logcat in release builds.
+            // Logging Redaction Policy (#111) — see shared/api-contract.md §Logging Redaction Policy.
+            // Full request/response bodies (bearer token, 2FA secrets, vault balances, beneficiary
+            // addresses, acceptance tokens) must never be written to logcat in any build.
+            // LogLevel.INFO logs only HTTP method + URL + status — no body, no sensitive headers.
+            // LogLevel.NONE in release ensures zero leakage even if a future log level change
+            // is accidentally introduced in debug code that ships to release.
             level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
         }
         // No timeouts were configured previously, so a stalled connection (e.g. dead wifi
@@ -57,6 +61,19 @@ class ApiClient @Inject constructor(
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
+
+    /**
+     * Paginated variant of listVaults (#112).
+     * Pass [after] = page.nextCursor to fetch subsequent pages.
+     * Continue while [VaultPage.hasMore] == true.
+     */
+    suspend fun listVaults(limit: Int = 20, after: String? = null): ApiResult<VaultPage> {
+        val path = buildString {
+            append("/vaults?limit=$limit")
+            if (after != null) append("&after=$after")
+        }
+        return get(path)
+    }
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")
     suspend fun createVault(req: CreateVaultRequest): ApiResult<Vault> = post("/vaults", req)
     suspend fun checkIn(vaultId: String): ApiResult<Unit> = post("/vaults/$vaultId/checkin", Unit)
@@ -66,8 +83,11 @@ class ApiClient @Inject constructor(
         post("/vaults/$vaultId/withdraw", mapOf("amount" to amount))
 
     // Beneficiary
-    suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
-        post("/vaults/$vaultId/accept", Unit)
+    // token: the acceptance token parsed from the /accept deep-link URL
+    // (e.g. https://ethos-protocol.app/vaults/{id}/accept?token=<token>).
+    // Required by the server — see shared/api-contract.md §POST /vaults/{id}/accept.
+    suspend fun acceptBeneficiary(vaultId: String, token: String): ApiResult<Unit> =
+        post("/vaults/$vaultId/accept", BeneficiaryAcceptRequest(vaultId = vaultId, token = token))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
