@@ -724,3 +724,154 @@ final class HandleRefreshTests: XCTestCase {
         XCTAssertEqual(task.lastSuccess, true)
     }
 }
+
+// MARK: - #22 Beneficiary Address Validation Tests
+
+final class StellarAddressTests: XCTestCase {
+    // Verified valid StrKey ed25519 public keys (correct length, "G" prefix,
+    // version byte, and CRC16/XModem checksum).
+    private let validAddress = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    private let validAddress2 = "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX"
+
+    func test_isValidPublicKey_acceptsWellFormedAddresses() {
+        XCTAssertTrue(StellarAddress.isValidPublicKey(validAddress))
+        XCTAssertTrue(StellarAddress.isValidPublicKey(validAddress2))
+    }
+
+    func test_isValidPublicKey_rejectsBadChecksum() {
+        // Same as validAddress2 but with the final checksum character flipped.
+        XCTAssertFalse(StellarAddress.isValidPublicKey("GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZA"))
+    }
+
+    func test_isValidPublicKey_rejectsWrongPrefix() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey("M" + validAddress.dropFirst()))
+    }
+
+    func test_isValidPublicKey_rejectsTooShort() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey(String(validAddress.dropLast())))
+    }
+
+    func test_isValidPublicKey_rejectsTooLong() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey(validAddress + "A"))
+    }
+
+    func test_isValidPublicKey_rejectsLowercase() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey(validAddress.lowercased()))
+    }
+
+    func test_isValidPublicKey_rejectsNonBase32Characters() {
+        var chars = Array(validAddress)
+        chars[10] = "0" // '0' is not in the Stellar base32 alphabet (A-Z, 2-7)
+        XCTAssertFalse(StellarAddress.isValidPublicKey(String(chars)))
+    }
+
+    func test_isValidPublicKey_rejectsEmptyString() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey(""))
+    }
+}
+
+// MARK: - #18 Retry With Exponential Backoff Tests
+
+final class RetryPolicyTests: XCTestCase {
+    private struct DummyError: Error {}
+
+    func test_withRetry_succeedsAfterTransientFailures_withinMaxAttempts() async throws {
+        var attempts = 0
+        var recordedDelays: [TimeInterval] = []
+        let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.5, sleep: { seconds in
+            recordedDelays.append(seconds)
+        })
+
+        let result: Int = try await withRetry(policy, isRetryable: { _ in true }) {
+            attempts += 1
+            if attempts < 3 { throw DummyError() }
+            return 42
+        }
+
+        XCTAssertEqual(result, 42)
+        XCTAssertEqual(attempts, 3)
+        // Exponential backoff: baseDelay * 2^0, baseDelay * 2^1
+        XCTAssertEqual(recordedDelays, [0.5, 1.0])
+    }
+
+    func test_withRetry_exhaustsMaxAttempts_thenThrows() async {
+        var attempts = 0
+        let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01, sleep: { _ in })
+
+        do {
+            let _: Int = try await withRetry(policy, isRetryable: { _ in true }) {
+                attempts += 1
+                throw DummyError()
+            }
+            XCTFail("Expected withRetry to throw after exhausting all attempts")
+        } catch {
+            XCTAssertTrue(error is DummyError)
+        }
+        XCTAssertEqual(attempts, 3)
+    }
+
+    func test_withRetry_doesNotRetry_whenErrorIsNotRetryable() async {
+        var attempts = 0
+        let policy = RetryPolicy(maxAttempts: 3, baseDelay: 0.01, sleep: { _ in })
+
+        do {
+            let _: Int = try await withRetry(policy, isRetryable: { _ in false }) {
+                attempts += 1
+                throw DummyError()
+            }
+            XCTFail("Expected withRetry to throw immediately for a non-retryable error")
+        } catch {
+            XCTAssertTrue(error is DummyError)
+        }
+        XCTAssertEqual(attempts, 1)
+    }
+
+    // "Never retry mutations" invariant: APIClient only routes GET requests
+    // through withRetry.
+    func test_isRetryable_onlyAppliesToGET() {
+        XCTAssertTrue(APIClient.isRetryable(method: "GET"))
+        XCTAssertFalse(APIClient.isRetryable(method: "POST"))
+        XCTAssertFalse(APIClient.isRetryable(method: "DELETE"))
+        XCTAssertFalse(APIClient.isRetryable(method: "PUT"))
+        XCTAssertFalse(APIClient.isRetryable(method: nil))
+    }
+}
+
+// MARK: - #17 Live TTL Refresh Tests
+
+final class VaultDetailTTLRefreshTests: XCTestCase {
+    func test_ttlRefreshInterval_isSixtySeconds() {
+        XCTAssertEqual(VaultDetailView.ttlRefreshInterval, 60_000_000_000)
+    }
+}
+
+// MARK: - #19 Task Cancellation Tests
+
+final class CancellationTests: XCTestCase {
+    // Reference type so it can be captured and mutated from inside the @Sendable
+    // Task closure below without fighting Swift's exclusivity/Sendable checks.
+    private final class Box: @unchecked Sendable {
+        var value = 0
+    }
+
+    func test_ifNotCancelled_runsMutation_whenTaskNotCancelled() async {
+        let box = Box()
+        let task = Task { @MainActor in
+            ifNotCancelled { box.value = 1 }
+        }
+        await task.value
+        XCTAssertEqual(box.value, 1)
+    }
+
+    func test_ifNotCancelled_skipsMutation_whenTaskCancelledMidRequest() async {
+        let box = Box()
+        let task = Task { @MainActor in
+            // Simulate an in-flight request being awaited when cancellation arrives.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            ifNotCancelled { box.value = 1 }
+        }
+        task.cancel()
+        await task.value
+        XCTAssertEqual(box.value, 0)
+    }
+}

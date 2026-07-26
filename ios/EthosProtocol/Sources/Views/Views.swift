@@ -296,6 +296,10 @@ struct VaultDetailView: View {
         }
         .navigationTitle("Vault")
         .navigationBarTitleDisplayMode(.inline)
+        // `.task` auto-cancels when the view disappears, so this polling loop
+        // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
+        // on navigating away instead of continuing to run in the background.
+        .task { await refreshTTLPeriodically() }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
         }
@@ -320,13 +324,28 @@ struct VaultDetailView: View {
         }
     }
 
+    private func refreshTTL() async {
+        guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
+        ifNotCancelled { ttlRemaining = ttl }
+    }
+
+    private func load2FAStatus() async {
+        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
+        ifNotCancelled { twoFactorStatus = status }
+    }
+
+    // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
+    // polling above, this is a mutating request already in flight — cancelling
+    // the Task wouldn't stop the server from processing it, it would just make
+    // the app forget whether it succeeded. `ifNotCancelled` still guards the
+    // state write in case cancellation reaches here some other way.
     private func disable2FA() {
         Task {
             do {
                 try await APIClient.shared.disable2FA(vaultID: vault.id)
-                await load2FAStatus()
+                if !Task.isCancelled { await load2FAStatus() }
             } catch {
-                biometricError = error.localizedDescription
+                ifNotCancelled { biometricError = error.localizedDescription }
             }
         }
     }
@@ -337,11 +356,11 @@ struct VaultDetailView: View {
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
-                await vaultStore.checkIn(vault: vault)
+                if !Task.isCancelled { await vaultStore.checkIn(vault: vault) }
             } catch {
-                biometricError = error.localizedDescription
+                ifNotCancelled { biometricError = error.localizedDescription }
             }
-            isCheckingIn = false
+            ifNotCancelled { isCheckingIn = false }
         }
     }
 
@@ -371,6 +390,11 @@ struct CreateVaultView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                    if !beneficiary.isEmpty && !isBeneficiaryValid {
+                        Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
                 Section("Check-in Interval") {
                     Slider(value: $intervalDays, in: 1...365, step: 1)
@@ -381,7 +405,7 @@ struct CreateVaultView: View {
             .navigationTitle("New Vault")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }.disabled(beneficiary.isEmpty || isCreating)
+                    Button("Create") { create() }.disabled(!isBeneficiaryValid || isCreating)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -390,7 +414,12 @@ struct CreateVaultView: View {
         }
     }
 
+    private var isBeneficiaryValid: Bool {
+        StellarAddress.isValidPublicKey(beneficiary)
+    }
+
     private func create() {
+        guard isBeneficiaryValid else { return }
         isCreating = true
         Task {
             do {
