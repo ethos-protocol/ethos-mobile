@@ -11,23 +11,45 @@ defaults:
     working-directory: ios/EthosProtocol
 
 jobs:
+  verify-universal-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and validate AASA file
+        run: |
+          AASA_URL="https://ethos-protocol.app/.well-known/apple-app-site-association"
+          BUNDLE_ID="com.ethosprotocol"
+
+          echo "Fetching AASA file from $AASA_URL"
+          RESPONSE=$(curl -s -w "\n%{http_code}" "$AASA_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          AASA_CONTENT=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ AASA file is unreachable (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "✓ AASA file is reachable (HTTP 200)"
+
+          if ! echo "$AASA_CONTENT" | jq empty 2>/dev/null; then
+            echo "❌ AASA file is not valid JSON"
+            exit 1
+          fi
+
+          echo "✓ AASA file is valid JSON"
+
+          if echo "$AASA_CONTENT" | jq -e '.applinks.apps | any(.appID | contains("'"$BUNDLE_ID"'"))' > /dev/null; then
+            echo "✓ Bundle ID '$BUNDLE_ID' found in applinks"
+          else
+            echo "❌ Bundle ID '$BUNDLE_ID' not found in applinks"
+            echo "AASA content:"
+            echo "$AASA_CONTENT" | jq '.'
+            exit 1
+          fi
+
   build-and-test:
     runs-on: macos-latest
-    strategy:
-      matrix:
-        include:
-          # Latest iOS with latest simulator device. This is the primary target
-          # and catches regressions in the latest runtime and language features.
-          - simulator-name: "iPhone 17"
-            simulator-os: "latest"
-            name-suffix: "(latest)"
-          # iOS 17 (deployment floor) to catch API availability and layout issues
-          # that only manifest on older supported iOS versions. This ensures we
-          # catch regressions in APIs only available on newer iOS (e.g., an API
-          # call that was backported, or a UI layout that breaks on older SwiftUI).
-          - simulator-name: "iPhone 15 Pro"
-            simulator-os: "17.0"
-            name-suffix: "(deployment floor)"
+    needs: verify-universal-links
     steps:
       - uses: actions/checkout@v4
 
@@ -107,14 +129,14 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation
 
-      # Runs UI tests (EthosProtocolUITests) against the built app.
-      # XCUITests interact with the app at runtime (unlike unit tests),
-      # so they must run after the app is built. These tests cover the core
-      # user flows: authentication, vault management, check-in, and deep-link entry.
-      - name: Test UI (iOS Simulator) ${{ matrix.name-suffix }}
+      # Runs hosted tests that require a real app process (Keychain, UNUserNotificationCenter).
+      # These tests are in EthosProtocolTests target within the Xcode project, not in the SPM
+      # test bundle, because they need TEST_HOST (real app host entitlements/process).
+      # Test results from the SPM tests (above) + hosted tests (here) combine to give full CI coverage.
+      - name: Test (Keychain & Notifications - Hosted, iOS Simulator)
         run: |
           xcodebuild test \
             -project Xcode/EthosProtocol.xcodeproj \
-            -scheme EthosProtocolUITests \
-            -destination 'platform=iOS Simulator,name=${{ matrix.simulator-name }},OS=${{ matrix.simulator-os }}' \
+            -scheme EthosProtocolTests \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation

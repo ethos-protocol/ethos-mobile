@@ -10,6 +10,13 @@ final class ICloudSyncService {
     private let enabledKey = "com.ethosprotocol.icloud_sync_enabled"
     private let associationsKey = "com.ethosprotocol.vault_associations"
 
+    // MARK: - Association Model
+
+    struct VaultAssociation: Codable, Equatable {
+        let credentialID: String
+        let timestamp: TimeInterval
+    }
+
     // MARK: - Toggle
 
     var isSyncEnabled: Bool {
@@ -26,48 +33,54 @@ final class ICloudSyncService {
     /// Save a vault-to-credential association locally; push to iCloud if sync is on.
     func save(vaultID: String, credentialID: String) {
         var assoc = loadLocalAssociations()
-        assoc[vaultID] = credentialID
+        assoc[vaultID] = VaultAssociation(credentialID: credentialID, timestamp: Date().timeIntervalSince1970)
         persist(assoc)
         if isSyncEnabled { pushAssociations(assoc) }
     }
 
     /// Return the credential ID associated with a vault, checking iCloud first when sync is on.
     func credentialID(for vaultID: String) -> String? {
-        if isSyncEnabled, let remote = remoteAssociations()[vaultID] { return remote }
-        return loadLocalAssociations()[vaultID]
+        if isSyncEnabled, let remoteAssociation = remoteAssociations()[vaultID] { return remoteAssociation.credentialID }
+        return loadLocalAssociations()[vaultID]?.credentialID
     }
 
-    /// Pull associations from iCloud and merge into local storage.
+    /// Pull associations from iCloud and merge into local storage using last-write-wins strategy.
     func restoreFromICloud() {
         guard isSyncEnabled else { return }
         let remote = remoteAssociations()
         var local = loadLocalAssociations()
-        for (k, v) in remote { local[k] = v }
+        for (k, remoteValue) in remote {
+            if let localValue = local[k] {
+                local[k] = remoteValue.timestamp > localValue.timestamp ? remoteValue : localValue
+            } else {
+                local[k] = remoteValue
+            }
+        }
         persist(local)
     }
 
     // MARK: - Private helpers
 
-    private func loadLocalAssociations() -> [String: String] {
+    private func loadLocalAssociations() -> [String: VaultAssociation] {
         guard let data = UserDefaults.standard.data(forKey: associationsKey),
-              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+              let dict = try? JSONDecoder().decode([String: VaultAssociation].self, from: data) else { return [:] }
         return dict
     }
 
-    private func persist(_ associations: [String: String]) {
+    private func persist(_ associations: [String: VaultAssociation]) {
         guard let data = try? JSONEncoder().encode(associations) else { return }
         UserDefaults.standard.set(data, forKey: associationsKey)
     }
 
-    private func pushAssociations(_ associations: [String: String]) {
+    private func pushAssociations(_ associations: [String: VaultAssociation]) {
         guard let data = try? JSONEncoder().encode(associations) else { return }
         store.set(data, forKey: associationsKey)
         store.synchronize()
     }
 
-    private func remoteAssociations() -> [String: String] {
+    private func remoteAssociations() -> [String: VaultAssociation] {
         guard let data = store.data(forKey: associationsKey),
-              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+              let dict = try? JSONDecoder().decode([String: VaultAssociation].self, from: data) else { return [:] }
         return dict
     }
 }

@@ -15,6 +15,7 @@ import EthosProtocol
 
 struct VaultEntry: TimelineEntry {
     let date: Date
+    let vaultID: String
     let vaultName: String
     let ttlRemaining: UInt64?
     let isExpiringSoon: Bool
@@ -24,11 +25,11 @@ struct VaultEntry: TimelineEntry {
 
 struct TTLTimelineProvider: TimelineProvider {
     func placeholder(in context: Context) -> VaultEntry {
-        VaultEntry(date: .now, vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false)
+        VaultEntry(date: .now, vaultID: "vault-placeholder", vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false)
     }
 
     func getSnapshot(in context: Context, completion: @escaping (VaultEntry) -> Void) {
-        completion(VaultEntry(date: .now, vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false))
+        completion(VaultEntry(date: .now, vaultID: "vault-placeholder", vaultName: "My Vault", ttlRemaining: 86_400, isExpiringSoon: false))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<VaultEntry>) -> Void) {
@@ -42,16 +43,35 @@ struct TTLTimelineProvider: TimelineProvider {
                     .min(by: { ($0.ttlRemaining ?? UInt64.max) < ($1.ttlRemaining ?? UInt64.max) })
                 entry = VaultEntry(
                     date: .now,
+                    vaultID: critical?.id ?? "",
                     vaultName: critical.map { String($0.id.prefix(12)) + "…" } ?? "No Active Vault",
                     ttlRemaining: critical?.ttlRemaining,
                     isExpiringSoon: critical?.isExpiringSoon ?? false
                 )
             } catch {
-                entry = VaultEntry(date: .now, vaultName: "Unavailable", ttlRemaining: nil, isExpiringSoon: false)
+                entry = VaultEntry(date: .now, vaultID: "", vaultName: "Unavailable", ttlRemaining: nil, isExpiringSoon: false)
             }
 
-            let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: .now)!
+            // Compute refresh interval based on vault urgency: refresh more frequently as TTL approaches zero.
+            // Scale from 15 min (normal) down to 1 min (critical), respecting WidgetKit's budget guidance.
+            let nextUpdateMinutes = computeNextUpdateInterval(ttlRemaining: entry.ttlRemaining)
+            let nextUpdate = Calendar.current.date(byAdding: .minute, value: nextUpdateMinutes, to: .now)!
             completion(Timeline(entries: [entry], policy: .after(nextUpdate)))
+        }
+    }
+
+    // Compute the next-update interval (in minutes) based on TTL urgency.
+    // Returns values between 1 and 15, scaling down as ttlRemaining approaches zero.
+    func computeNextUpdateInterval(ttlRemaining: UInt64?) -> Int {
+        guard let ttl = ttlRemaining else { return 15 }
+
+        // Scale based on time remaining until expiry
+        switch ttl {
+        case 3_600...: return 15  // >= 1 hour: refresh every 15 min
+        case 3_600..<21_600: return 10  // 1-6 hours: refresh every 10 min
+        case 1_800..<3_600: return 5  // 30 min-1 hour: refresh every 5 min
+        case 0..<1_800: return 2  // < 30 min: refresh every 2 min
+        default: return 15
         }
     }
 }
@@ -84,6 +104,7 @@ struct TTLWidgetView: View {
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
+        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
     }
 
     private func formatDuration(_ seconds: UInt64) -> String {
