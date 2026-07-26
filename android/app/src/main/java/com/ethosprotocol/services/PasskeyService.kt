@@ -38,7 +38,7 @@ class PasskeyService @Inject constructor(
         // need to immediately run a second CredentialManager ceremony (and second
         // biometric prompt) just to sign in with the passkey we just created.
         val authToken = requireSuccess(apiClient.registerPasskey(regReq))
-        tokenProvider.token = authToken.token
+        tokenProvider.setSession(authToken)
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
@@ -55,7 +55,7 @@ class PasskeyService @Inject constructor(
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON"),
             signature = json.getJSONObject("response").getString("signature")
         )
-        tokenProvider.token = requireSuccess(apiClient.verifyPasskey(verifyReq)).token
+        tokenProvider.setSession(requireSuccess(apiClient.verifyPasskey(verifyReq)))
     }
 
     private fun <T> requireSuccess(result: ApiResult<T>): T {

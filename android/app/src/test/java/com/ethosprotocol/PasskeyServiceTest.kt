@@ -46,7 +46,7 @@ class PasskeyServiceTest {
         assertTrue(result.isSuccess)
         coVerify(exactly = 1) { credentialManager.createCredential(any(), any()) }
         coVerify(exactly = 0) { credentialManager.getCredential(any(), any()) }
-        verify(exactly = 1) { tokenProvider.token = "session-token" }
+        verify(exactly = 1) { tokenProvider.setSession(authToken) }
     }
 
     private fun registrationResponseJson(): String =

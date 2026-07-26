@@ -8,6 +8,7 @@ import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.android.*
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
@@ -30,9 +31,12 @@ class ApiClient @Inject constructor(
     private val tokenProvider: TokenProvider,
     private val networkMonitor: NetworkMonitor,
     private val offlineCache: OfflineCache,
-    private val baseUrl: String
+    private val baseUrl: String,
+    // Overridable so tests can substitute a MockEngine instead of hitting real Android
+    // networking; production callers (AppModule) get the real Android engine for free.
+    engine: HttpClientEngine = Android.create()
 ) {
-    private val client = HttpClient(Android) {
+    private val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
@@ -54,6 +58,7 @@ class ApiClient @Inject constructor(
     suspend fun getChallenge(): ApiResult<AuthChallenge> = get("/auth/challenge")
     suspend fun verifyPasskey(req: PasskeyVerifyRequest): ApiResult<AuthToken> = post("/auth/verify", req)
     suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<AuthToken> = post("/auth/register", req)
+    suspend fun refreshToken(): ApiResult<AuthToken> = post("/auth/refresh", Unit, skipTokenRefresh = true)
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
@@ -88,6 +93,7 @@ class ApiClient @Inject constructor(
 
     // Internals
     private suspend inline fun <reified T> get(path: String): ApiResult<T> {
+        ensureFreshToken()
         if (!networkMonitor.isConnected) {
             val cached = offlineCache.load(path)
             return if (cached != null) ApiResult.Success(Json.decodeFromString(cached))
@@ -101,14 +107,21 @@ class ApiClient @Inject constructor(
                     offlineCache.save(path, Json.encodeToString(kotlinx.serialization.serializer(), body))
                     ApiResult.Success(body)
                 }
-                401 -> ApiResult.Error("Unauthorized", 401)
+                // The token the server rejected is no longer valid — clear it locally so it
+                // isn't kept being sent, and so the UI correctly routes back to AuthScreen.
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
     }
 
-    private suspend inline fun <reified B, reified T> post(path: String, body: B): ApiResult<T> {
+    private suspend inline fun <reified B, reified T> post(
+        path: String,
+        body: B,
+        skipTokenRefresh: Boolean = false
+    ): ApiResult<T> {
+        if (!skipTokenRefresh) ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         return runCatching {
             val response = client.post("$baseUrl$path") {
@@ -118,13 +131,14 @@ class ApiClient @Inject constructor(
             }
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> ApiResult.Error("Unauthorized", 401)
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
+        ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         return runCatching {
             val response = client.delete("$baseUrl$path") {
@@ -137,10 +151,19 @@ class ApiClient @Inject constructor(
             // deletion (401/500/etc.) is silently reported back to callers as success.
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> ApiResult.Error("Unauthorized", 401)
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+    }
+
+    // Best-effort: refreshes the stored token when it's near its expiry so the request
+    // about to be made uses a live token instead of one about to be rejected with a 401.
+    // A refresh failure just falls through and lets the actual request surface the error.
+    private suspend fun ensureFreshToken() {
+        if (tokenProvider.token == null || !tokenProvider.isNearExpiry()) return
+        val result = refreshToken()
+        if (result is ApiResult.Success) tokenProvider.setSession(result.data)
     }
 
     private fun HttpRequestBuilder.bearerAuth() {
