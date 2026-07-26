@@ -129,6 +129,9 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
+    // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
+    // block access to the app, consistent with the "secure digital inheritance" posture.
+    @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
 
     var body: some View {
         NavigationStack {
@@ -172,6 +175,12 @@ struct VaultListView: View {
             }
             .onChange(of: vaultStore.pendingDeepLink) { _, link in
                 if link != nil { showDeepLinkSheet = true }
+            }
+            // #118: Non-blocking jailbreak warning — dismissible by the user.
+            .alert("Security Warning", isPresented: $showIntegrityWarning) {
+                Button("I Understand", role: .cancel) { showIntegrityWarning = false }
+            } message: {
+                Text("This device appears to be jailbroken. Your vault data, passkeys, and 2FA secrets may be at greater risk. Consider using a stock device for maximum security.")
             }
         }
     }
@@ -364,10 +373,14 @@ struct VaultDetailView: View {
     // the Task wouldn't stop the server from processing it, it would just make
     // the app forget whether it succeeded. `ifNotCancelled` still guards the
     // state write in case cancellation reaches here some other way.
+    //
+    // #120: Biometric gate is enforced via Disable2FACoordinator before the API
+    // call.  Disabling 2FA is at least as security-sensitive as a check-in — it
+    // must require explicit user confirmation.
     private func disable2FA() {
         Task {
             do {
-                try await APIClient.shared.disable2FA(vaultID: vault.id)
+                try await Disable2FACoordinator().run(vaultID: vault.id)
                 if !Task.isCancelled { await load2FAStatus() }
             } catch {
                 ifNotCancelled { biometricError = error.localizedDescription }
@@ -791,6 +804,9 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
+    // #119: Escalating cooldown after repeated OTP failures.
+    @StateObject private var rateLimiter = OTPRateLimiter()
+
     private var isInitialSetup: Bool {
         provisioningUri != nil || secret != nil
     }
@@ -828,6 +844,19 @@ struct TwoFactorVerifyView: View {
                 .frame(maxWidth: 200)
                 .multilineTextAlignment(.center)
                 .font(.title2)
+                .disabled(rateLimiter.isBlocked)
+
+            // #119: Show remaining cooldown when the user is locked out.
+            if rateLimiter.isBlocked {
+                Label("Too many attempts — wait \(rateLimiter.cooldownSecondsRemaining)s",
+                      systemImage: "timer")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if rateLimiter.failureCount > 0 {
+                Text("\(rateLimiter.failureCount) failed attempt\(rateLimiter.failureCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
 
@@ -836,7 +865,7 @@ struct TwoFactorVerifyView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(otp.count != 6 || isVerifying)
+            .disabled(otp.count != 6 || isVerifying || rateLimiter.isBlocked)
         }
         .padding(32)
         .navigationTitle("Verify 2FA")
@@ -877,10 +906,12 @@ struct TwoFactorVerifyView: View {
         Task {
             do {
                 try await APIClient.shared.verify2FA(vaultID: vaultID, otp: otp)
+                rateLimiter.reset()   // #119: Reset on success
                 onVerified()
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
+                rateLimiter.recordFailure()   // #119: Record failure and possibly start cooldown
             }
             isVerifying = false
         }

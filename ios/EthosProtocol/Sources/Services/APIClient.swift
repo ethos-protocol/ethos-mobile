@@ -35,8 +35,19 @@ public final class APIClient {
     private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
             ?? "https://api.ethos-protocol.app/v1"
+        // #117: Create a URLSession backed by PinningDelegate.
+        // The delegate enforces public-key pinning against the hash(es) listed in
+        // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
+        // present: the current certificate and the next backup certificate — see
+        // CertificatePinning.swift for the rotation strategy.
+        let pinningDelegate = PinningDelegate()
+        let session = URLSession(
+            configuration: .default,
+            delegate: pinningDelegate,
+            delegateQueue: nil
+        )
         self.init(baseURL: URL(string: urlString)!,
-                  session: URLSession(configuration: .default),
+                  session: session,
                   retryPolicy: .networkDefault)
     }
 
