@@ -42,7 +42,8 @@ data class AuthUiState(
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val apiClient: ApiClient
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -62,8 +63,13 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> handleAuthFailure(e) }
     }
 
-    fun signOut() {
+    fun signOut() = viewModelScope.launch {
+        // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
+        // tokenProvider.token when building the request, so clearing first would send
+        // the delete unauthenticated. Best-effort: sign-out proceeds locally either way.
+        tokenProvider.pushToken?.let { apiClient.unregisterPushToken(it) }
         tokenProvider.clear()
+        tokenProvider.pushToken = null
         _state.update { it.copy(isAuthenticated = false) }
     }
 
