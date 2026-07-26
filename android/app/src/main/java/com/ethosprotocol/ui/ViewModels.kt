@@ -2,9 +2,12 @@ package com.ethosprotocol.ui
 
 import android.app.Activity
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
@@ -49,19 +52,28 @@ class AuthViewModel @Inject constructor(
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
             .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
-            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+            .onFailure { e -> handleAuthFailure(e) }
     }
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.register(activity, username)
             .onSuccess { signIn(activity) }
-            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+            .onFailure { e -> handleAuthFailure(e) }
     }
 
     fun signOut() {
         tokenProvider.clear()
         _state.update { it.copy(isAuthenticated = false) }
+    }
+
+    private fun handleAuthFailure(e: Throwable) {
+        if (BuildConfig.DEBUG) Log.w(TAG, "auth failed", e)
+        _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
+    }
+
+    companion object {
+        private const val TAG = "AuthViewModel"
     }
 }
 

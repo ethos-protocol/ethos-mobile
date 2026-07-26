@@ -1,5 +1,6 @@
 package com.ethosprotocol.api
 
+import android.util.Log
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.TwoFactorStatus
@@ -32,6 +33,10 @@ class ApiClient @Inject constructor(
     private val offlineCache: OfflineCache,
     private val baseUrl: String
 ) {
+    companion object {
+        private const val TAG = "ApiClient"
+    }
+
     private val client = HttpClient(Android) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
@@ -105,7 +110,7 @@ class ApiClient @Inject constructor(
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> post(path: String, body: B): ApiResult<T> {
@@ -121,7 +126,7 @@ class ApiClient @Inject constructor(
                 401 -> ApiResult.Error("Unauthorized", 401)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
@@ -140,7 +145,7 @@ class ApiClient @Inject constructor(
                 401 -> ApiResult.Error("Unauthorized", 401)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private fun HttpRequestBuilder.bearerAuth() {

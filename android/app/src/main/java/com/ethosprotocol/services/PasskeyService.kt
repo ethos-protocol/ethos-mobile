@@ -2,11 +2,13 @@ package com.ethosprotocol.services
 
 import android.app.Activity
 import androidx.credentials.*
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Base64
@@ -43,7 +45,7 @@ class PasskeyService @Inject constructor(
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
         requireSuccess(apiClient.registerPasskey(regReq))
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
@@ -61,13 +63,13 @@ class PasskeyService @Inject constructor(
             signature = json.getJSONObject("response").getString("signature")
         )
         tokenProvider.token = requireSuccess(apiClient.verifyPasskey(verifyReq)).token
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     private fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> error(result.message)
-            ApiResult.NetworkUnavailable -> error("No network connection")
+            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }
 }
