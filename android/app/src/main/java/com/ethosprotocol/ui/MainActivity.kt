@@ -8,11 +8,11 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -32,8 +32,12 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
-    private var pendingBeneficiaryAcceptVaultId by mutableStateOf<String?>(null)
-    private var pendingVaultDeepLink by mutableStateOf<VaultDeepLink?>(null)
+    // DeepLinkViewModel is scoped to this Activity and backed by SavedStateHandle, so both
+    // pending deep-link fields survive configuration changes and process death/recreation.
+    // Previously these were plain mutableStateOf fields on the Activity itself, which meant
+    // a deep-link tap during authentication would be silently lost on process recreation. (#93)
+    private val deepLinkViewModel: DeepLinkViewModel by viewModels()
+
     private var showPermissionRationale by mutableStateOf(false)
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -43,10 +47,21 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIncomingIntent(intent)
+
+        // Only handle the launch intent on a fresh start (savedInstanceState == null).
+        // On recreation (config change or process death), SavedStateHandle already holds
+        // the pending state — re-parsing the original launch intent would overwrite it.
+        if (savedInstanceState == null) {
+            handleIncomingIntent(intent)
+        }
 
         setContent {
             EthosProtocolTheme {
+                val beneficiaryAcceptVaultId by deepLinkViewModel.pendingBeneficiaryAcceptVaultId
+                    .collectAsStateWithLifecycle()
+                val vaultDeepLink by deepLinkViewModel.pendingVaultDeepLink
+                    .collectAsStateWithLifecycle()
+
                 NotificationPermissionEffect(
                     showRationale = showPermissionRationale,
                     onRationaleShown = { showPermissionRationale = false },
@@ -58,10 +73,10 @@ class MainActivity : FragmentActivity() {
                     }
                 )
                 AppNavigation(
-                    beneficiaryAcceptVaultId = pendingBeneficiaryAcceptVaultId,
-                    vaultDeepLink = pendingVaultDeepLink,
-                    onBeneficiaryAcceptConsumed = { pendingBeneficiaryAcceptVaultId = null },
-                    onVaultDeepLinkConsumed = { pendingVaultDeepLink = null }
+                    beneficiaryAcceptVaultId = beneficiaryAcceptVaultId,
+                    vaultDeepLink = vaultDeepLink,
+                    onBeneficiaryAcceptConsumed = { deepLinkViewModel.consumeBeneficiaryAccept() },
+                    onVaultDeepLinkConsumed = { deepLinkViewModel.consumeVaultDeepLink() }
                 )
             }
         }
@@ -75,17 +90,17 @@ class MainActivity : FragmentActivity() {
         handleIncomingIntent(intent)
     }
 
-    private fun handleIncomingIntent(intent: Intent) {
+    internal fun handleIncomingIntent(intent: Intent) {
         intent.data?.let { uri ->
             VaultDeepLinkParser.parse(uri)?.let {
-                pendingVaultDeepLink = it
-                pendingBeneficiaryAcceptVaultId = null
+                deepLinkViewModel.setPendingVaultDeepLink(it)
+                deepLinkViewModel.setPendingBeneficiaryAccept(null)
                 return
             }
         }
         extractBeneficiaryAcceptVaultId(intent)?.let {
-            pendingBeneficiaryAcceptVaultId = it
-            pendingVaultDeepLink = null
+            deepLinkViewModel.setPendingBeneficiaryAccept(it)
+            deepLinkViewModel.setPendingVaultDeepLink(null)
         }
     }
 
