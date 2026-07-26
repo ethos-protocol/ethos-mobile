@@ -31,7 +31,7 @@ class PasskeyService @Inject constructor(
         val json = JSONObject(resp.registrationResponseJson)
         val regReq = PasskeyRegisterRequest(
             credentialId = json.getString("id"),
-            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            publicKey = extractCosePublicKey(json.getJSONObject("response").getString("attestationObject")),
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
         // The backend returns a session token straight from registration, so there's no
@@ -89,3 +89,99 @@ internal fun buildRegistrationRequestJson(challenge: AuthChallenge, username: St
             }))
         }
     }.toString()
+
+// The backend expects the WebAuthn COSE_Key (RFC 9052) extracted from the attestation
+// object's authData, base64url-encoded — not the raw attestation object, which was being
+// sent under `public_key` before (see docs/mobile-passkey-flow.md's description of
+// extracting a separate public key rather than forwarding the attestation object as-is).
+// `internal` (not private) so PasskeyServiceTest can verify it against a synthetic fixture.
+internal fun extractCosePublicKey(attestationObjectB64: String): String {
+    val attestationBytes = decodeBase64Url(attestationObjectB64)
+    val attestationMap = CborReader(attestationBytes).readItem() as? Map<*, *>
+        ?: error("Invalid attestation object: not a CBOR map")
+    val authData = attestationMap["authData"] as? ByteArray
+        ?: error("attestationObject missing authData")
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(cosePublicKeyBytes(authData))
+}
+
+// authData layout (WebAuthn §6.1): rpIdHash(32) | flags(1) | signCount(4) |
+// [attestedCredentialData: aaguid(16) | credIdLen(2) | credId(credIdLen) | credentialPublicKey (COSE_Key, CBOR)]
+private fun cosePublicKeyBytes(authData: ByteArray): ByteArray {
+    require(authData.size > 37) { "authData too short to contain attested credential data" }
+    val flags = authData[32].toInt()
+    require((flags and 0x40) != 0) { "authData has no attested credential data (AT flag unset)" }
+    var offset = 37 + 16 // rpIdHash + flags + signCount, then aaguid
+    val credentialIdLength = ((authData[offset].toInt() and 0xFF) shl 8) or (authData[offset + 1].toInt() and 0xFF)
+    offset += 2 + credentialIdLength
+    // The COSE_Key may be followed by an extensions CBOR item (if the ED flag is set);
+    // reading exactly one CBOR item from this offset yields just the public key.
+    val coseKeyReader = CborReader(authData, offset)
+    coseKeyReader.readItem()
+    return authData.copyOfRange(offset, coseKeyReader.position)
+}
+
+private fun decodeBase64Url(value: String): ByteArray {
+    val padded = value.padEnd((value.length + 3) / 4 * 4, '=')
+    return Base64.getUrlDecoder().decode(padded)
+}
+
+// Minimal CBOR (RFC 8949) decoder covering just what's needed to read a WebAuthn
+// attestationObject and a COSE_Key map: unsigned/negative integers, byte/text strings,
+// arrays, and maps. Not a general-purpose CBOR implementation (no floats, no
+// indefinite-length items — neither appears in this data).
+private class CborReader(private val data: ByteArray, startPos: Int = 0) {
+    var position = startPos
+        private set
+
+    fun readItem(): Any? {
+        val initial = data[position].toInt() and 0xFF
+        val majorType = initial shr 5
+        val info = initial and 0x1F
+        position++
+        val length = readLength(info)
+        return when (majorType) {
+            0 -> length
+            1 -> -1L - length
+            2 -> readBytes(length.toInt())
+            3 -> String(readBytes(length.toInt()), Charsets.UTF_8)
+            4 -> (0 until length).map { readItem() }
+            5 -> {
+                val map = LinkedHashMap<Any?, Any?>()
+                repeat(length.toInt()) { map[readItem()] = readItem() }
+                map
+            }
+            6 -> readItem() // tag: decode and return the wrapped item, ignore the tag itself
+            7 -> when (info) {
+                20 -> false
+                21 -> true
+                22 -> null
+                else -> length
+            }
+            else -> error("Unsupported CBOR major type $majorType")
+        }
+    }
+
+    private fun readLength(info: Int): Long = when (info) {
+        in 0..23 -> info.toLong()
+        24 -> readUInt(1)
+        25 -> readUInt(2)
+        26 -> readUInt(4)
+        27 -> readUInt(8)
+        else -> error("Unsupported CBOR length encoding: $info")
+    }
+
+    private fun readUInt(numBytes: Int): Long {
+        var result = 0L
+        repeat(numBytes) {
+            result = (result shl 8) or (data[position].toLong() and 0xFF)
+            position++
+        }
+        return result
+    }
+
+    private fun readBytes(length: Int): ByteArray {
+        val result = data.copyOfRange(position, position + length)
+        position += length
+        return result
+    }
+}
