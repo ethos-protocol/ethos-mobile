@@ -115,6 +115,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
             )
             VaultStatusWidget.refreshAll(applicationContext)
+            schedule(applicationContext, determineUpdateInterval(vault.ttlRemaining))
         }
         return Result.success()
     }
@@ -129,8 +130,23 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME = "vault_widget_update"
 
-        fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(15, TimeUnit.MINUTES)
+        // WorkManager enforces a 15-minute floor on periodic work, so that's the shortest
+        // interval available for a vault close to expiring. Once it's not urgent, back off
+        // to a much longer interval to conserve battery (coordinated with iOS's #33 gap).
+        private const val URGENT_INTERVAL_MINUTES = 15L
+        private const val NORMAL_INTERVAL_MINUTES = 60L
+        private const val URGENCY_THRESHOLD_SECONDS = 86_400L // 24h, matches Vault.isExpiringSoon
+
+        /** Picks the widget refresh interval based on how close the most urgent vault is to expiring. */
+        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long =
+            if ((ttlRemainingSeconds ?: Long.MAX_VALUE) < URGENCY_THRESHOLD_SECONDS) {
+                URGENT_INTERVAL_MINUTES
+            } else {
+                NORMAL_INTERVAL_MINUTES
+            }
+
+        fun schedule(context: Context, intervalMinutes: Long = NORMAL_INTERVAL_MINUTES) {
+            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -139,7 +155,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
         }
