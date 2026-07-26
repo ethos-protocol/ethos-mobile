@@ -6,6 +6,7 @@ import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.ui.AuthViewModel
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -66,6 +67,20 @@ class AuthViewModelTest {
         vm.signOut()
 
         verify { tokenProvider.clear() }
+        assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `signIn cancelled mid-request does not surface an error`() = runTest {
+        // Simulates the screen (and viewModelScope) being torn down while
+        // passkeyService.authenticate() is in flight — the coroutine should stop
+        // silently instead of writing a stray error/loading update to dead state.
+        coEvery { passkeyService.authenticate(any()) } throws CancellationException("scope cancelled")
+
+        vm.signIn(mockk(relaxed = true))
+
+        assertNull(vm.state.value.error)
+        assertTrue(vm.state.value.isLoading)
         assertFalse(vm.state.value.isAuthenticated)
     }
 }

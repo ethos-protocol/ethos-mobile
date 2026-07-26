@@ -11,6 +11,7 @@ import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingCheckInDao
 import android.content.Context
 import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -63,6 +64,19 @@ class VaultViewModelTest {
 
         assertTrue(vm.state.value.isOffline)
         assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `load cancelled mid-request does not surface an error`() = runTest {
+        // Simulates the screen (and viewModelScope) being torn down while
+        // apiClient.listVaults() is in flight — the coroutine should stop silently
+        // instead of writing a stray error/loading update to dead state.
+        coEvery { apiClient.listVaults() } throws CancellationException("scope cancelled")
+
+        vm.load()
+
+        assertNull(vm.state.value.error)
+        assertTrue(vm.state.value.isLoading)
     }
 
     @Test
