@@ -1,10 +1,27 @@
 import BackgroundTasks
 import Foundation
 
+// Protocol for testable refresh task lifecycle
+protocol BackgroundRefreshTask {
+    var expirationHandler: (() -> Void)? { get set }
+    func setTaskCompleted(success: Bool)
+}
+
+extension BGAppRefreshTask: BackgroundRefreshTask {}
+
+// Closure for injecting dependencies during testing
+typealias VaultListProvider = () async throws -> [Vault]
+
 // Requires "app.ethos-protocol.vault-ttl-refresh" in BGTaskSchedulerPermittedIdentifiers (Info.plist).
 final class BackgroundRefreshService {
     static let shared = BackgroundRefreshService()
     static let taskIdentifier = "app.ethos-protocol.vault-ttl-refresh"
+
+    // Injected dependency for testing; defaults to APIClient.shared.listVaults()
+    var vaultListProvider: VaultListProvider = { try await APIClient.shared.listVaults() }
+
+    // Tracks whether scheduleAppRefresh was called (for testing)
+    private(set) var scheduleAppRefreshCallCount = 0
 
     private init() {}
 
@@ -15,12 +32,13 @@ final class BackgroundRefreshService {
     }
 
     func scheduleAppRefresh() {
+        scheduleAppRefreshCallCount += 1
         let request = BGAppRefreshTaskRequest(identifier: Self.taskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 3_600) // poll every hour
         try? BGTaskScheduler.shared.submit(request)
     }
 
-    private func handleRefresh(task: BGAppRefreshTask) {
+    func handleRefresh(task: BackgroundRefreshTask) {
         scheduleAppRefresh()
 
         // Register the expiration handler before kicking off the async work so there's no
@@ -30,7 +48,7 @@ final class BackgroundRefreshService {
 
         refreshTask = Task {
             do {
-                let vaults = try await APIClient.shared.listVaults()
+                let vaults = try await vaultListProvider()
                 for vault in vaults where vault.status == .active {
                     if let ttl = vault.ttlRemaining, ttl < 86_400 {
                         NotificationService.shared.scheduleTTLWarning(vaultID: vault.id, ttlRemaining: ttl)

@@ -30,12 +30,23 @@ public final class APIClient {
     private let baseURL: URL
     private let session: URLSession
     private let decoder: JSONDecoder
+    private let retryPolicy: RetryPolicy
 
-    private init() {
+    private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
             ?? "https://api.ethos-protocol.app/v1"
-        baseURL = URL(string: urlString)!
-        session = URLSession(configuration: .default)
+        self.init(baseURL: URL(string: urlString)!,
+                  session: URLSession(configuration: .default),
+                  retryPolicy: .networkDefault)
+    }
+
+    // `internal` (not `private`): lets tests construct an APIClient with a mock
+    // URLSession / RetryPolicy via `@testable import`. `.shared` remains the only
+    // production entry point.
+    init(baseURL: URL, session: URLSession, retryPolicy: RetryPolicy = .networkDefault) {
+        self.baseURL = baseURL
+        self.session = session
+        self.retryPolicy = retryPolicy
         decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
@@ -182,7 +193,15 @@ public final class APIClient {
             }
             throw APIError.networkUnavailable
         }
-        let (data, response) = try await session.data(for: request)
+
+        let (data, response): (Data, URLResponse)
+        if Self.isRetryable(method: request.httpMethod) {
+            (data, response) = try await withRetry(retryPolicy, isRetryable: Self.isTransientNetworkError) {
+                try await session.data(for: request)
+            }
+        } else {
+            (data, response) = try await session.data(for: request)
+        }
         guard let http = response as? HTTPURLResponse else { throw APIError.serverError("Invalid response") }
         switch http.statusCode {
         case 200...299:
@@ -206,6 +225,24 @@ public final class APIClient {
         if T.self == EmptyBody.self { return EmptyBody() as! T }
         do { return try decoder.decode(T.self, from: data) }
         catch { throw APIError.decodingFailed }
+    }
+
+    // MARK: - Retry
+
+    // GET is the only idempotent verb this client issues — retrying POST/DELETE
+    // automatically could double-submit a mutation (check-in, withdrawal, 2FA
+    // disable, ...), so only GET requests are eligible for `withRetry`.
+    static func isRetryable(method: String?) -> Bool { method == "GET" }
+
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .timedOut, .networkConnectionLost, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet, .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
     }
 }
 

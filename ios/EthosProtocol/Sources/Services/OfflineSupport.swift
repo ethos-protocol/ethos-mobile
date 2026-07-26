@@ -34,6 +34,11 @@ final class OfflineCache {
         let file = dir.appendingPathComponent(key.sha256Hex)
         return try? Data(contentsOf: file)
     }
+
+    func delete(for key: String) {
+        let file = dir.appendingPathComponent(key.sha256Hex)
+        try? FileManager.default.removeItem(at: file)
+    }
 }
 
 import CryptoKit

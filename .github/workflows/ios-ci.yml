@@ -11,8 +11,45 @@ defaults:
     working-directory: ios/EthosProtocol
 
 jobs:
+  verify-universal-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and validate AASA file
+        run: |
+          AASA_URL="https://ethos-protocol.app/.well-known/apple-app-site-association"
+          BUNDLE_ID="com.ethosprotocol"
+
+          echo "Fetching AASA file from $AASA_URL"
+          RESPONSE=$(curl -s -w "\n%{http_code}" "$AASA_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          AASA_CONTENT=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ AASA file is unreachable (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "✓ AASA file is reachable (HTTP 200)"
+
+          if ! echo "$AASA_CONTENT" | jq empty 2>/dev/null; then
+            echo "❌ AASA file is not valid JSON"
+            exit 1
+          fi
+
+          echo "✓ AASA file is valid JSON"
+
+          if echo "$AASA_CONTENT" | jq -e '.applinks.apps | any(.appID | contains("'"$BUNDLE_ID"'"))' > /dev/null; then
+            echo "✓ Bundle ID '$BUNDLE_ID' found in applinks"
+          else
+            echo "❌ Bundle ID '$BUNDLE_ID' not found in applinks"
+            echo "AASA content:"
+            echo "$AASA_CONTENT" | jq '.'
+            exit 1
+          fi
+
   build-and-test:
     runs-on: macos-latest
+    needs: verify-universal-links
     steps:
       - uses: actions/checkout@v4
 
@@ -50,12 +87,7 @@ jobs:
       # `swift test` isn't used here because several files import iOS-only
       # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
       # for swift test's default macOS host destination.
-      - name: Test (iOS Simulator)
-        # "iPhone 17" is whatever the current macos-latest runner's default
-        # Xcode ships as a simulator device; older device names get retired
-        # from new Xcode releases (this replaced "iPhone 15", which no
-        # longer exists on this runner's Xcode 26.5) and this may need
-        # bumping again after a future macos-latest/Xcode upgrade.
+      - name: Test (iOS Simulator) ${{ matrix.name-suffix }}
         # GitHub Actions sets CI=true for this shell, but that does NOT reach
         # the Simulator-hosted xctest process — it runs in its own sandboxed
         # environment, not inherited from the invoking shell. xcodebuild's
@@ -68,7 +100,7 @@ jobs:
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=${{ matrix.simulator-name }},OS=${{ matrix.simulator-os }}' \
             -skipMacroValidation
 
       - name: Install XcodeGen
@@ -95,4 +127,16 @@ jobs:
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocol \
             -destination 'generic/platform=iOS Simulator' \
+            -skipMacroValidation
+
+      # Runs hosted tests that require a real app process (Keychain, UNUserNotificationCenter).
+      # These tests are in EthosProtocolTests target within the Xcode project, not in the SPM
+      # test bundle, because they need TEST_HOST (real app host entitlements/process).
+      # Test results from the SPM tests (above) + hosted tests (here) combine to give full CI coverage.
+      - name: Test (Keychain & Notifications - Hosted, iOS Simulator)
+        run: |
+          xcodebuild test \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocolTests \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation
