@@ -58,4 +58,51 @@ final class ICloudSyncServiceTests: XCTestCase {
         ICloudSyncService.shared.save(vaultID: "v1", credentialID: "new-cred")
         XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "v1"), "new-cred")
     }
+
+    func test_conflictResolution_mostRecentWriteWins() {
+        // Simulate a conflict where an older local write is present
+        let oldTimestamp = Date().timeIntervalSince1970 - 100
+        let newTimestamp = Date().timeIntervalSince1970
+
+        // Save old value locally
+        ICloudSyncService.shared.save(vaultID: "vault-conflict", credentialID: "old-cred")
+
+        // Manually simulate a newer remote value by manually encoding and setting it
+        let remoteAssoc = ICloudSyncService.VaultAssociation(credentialID: "new-cred", timestamp: newTimestamp)
+        var remoteData: [String: ICloudSyncService.VaultAssociation] = ["vault-conflict": remoteAssoc]
+        if let data = try? JSONEncoder().encode(remoteData) {
+            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
+
+        // Enable sync and restore
+        ICloudSyncService.shared.isSyncEnabled = true
+        ICloudSyncService.shared.restoreFromICloud()
+
+        // Newer remote value should win
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-conflict"), "new-cred")
+    }
+
+    func test_conflictResolution_localNeverWriteWins() {
+        // Simulate a scenario where local write is more recent than remote
+        let oldRemoteTimestamp = Date().timeIntervalSince1970 - 100
+
+        // Manually set an old remote value
+        let remoteAssoc = ICloudSyncService.VaultAssociation(credentialID: "old-remote-cred", timestamp: oldRemoteTimestamp)
+        var remoteData: [String: ICloudSyncService.VaultAssociation] = ["vault-conflict-2": remoteAssoc]
+        if let data = try? JSONEncoder().encode(remoteData) {
+            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
+
+        // Now save a newer local value
+        ICloudSyncService.shared.save(vaultID: "vault-conflict-2", credentialID: "new-local-cred")
+
+        // Enable sync and restore
+        ICloudSyncService.shared.isSyncEnabled = true
+        ICloudSyncService.shared.restoreFromICloud()
+
+        // Newer local value should win
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-conflict-2"), "new-local-cred")
+    }
 }

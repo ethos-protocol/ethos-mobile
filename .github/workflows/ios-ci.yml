@@ -11,8 +11,45 @@ defaults:
     working-directory: ios/EthosProtocol
 
 jobs:
+  verify-universal-links:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch and validate AASA file
+        run: |
+          AASA_URL="https://ethos-protocol.app/.well-known/apple-app-site-association"
+          BUNDLE_ID="com.ethosprotocol"
+
+          echo "Fetching AASA file from $AASA_URL"
+          RESPONSE=$(curl -s -w "\n%{http_code}" "$AASA_URL")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          AASA_CONTENT=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ AASA file is unreachable (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "✓ AASA file is reachable (HTTP 200)"
+
+          if ! echo "$AASA_CONTENT" | jq empty 2>/dev/null; then
+            echo "❌ AASA file is not valid JSON"
+            exit 1
+          fi
+
+          echo "✓ AASA file is valid JSON"
+
+          if echo "$AASA_CONTENT" | jq -e '.applinks.apps | any(.appID | contains("'"$BUNDLE_ID"'"))' > /dev/null; then
+            echo "✓ Bundle ID '$BUNDLE_ID' found in applinks"
+          else
+            echo "❌ Bundle ID '$BUNDLE_ID' not found in applinks"
+            echo "AASA content:"
+            echo "$AASA_CONTENT" | jq '.'
+            exit 1
+          fi
+
   build-and-test:
     runs-on: macos-latest
+    needs: verify-universal-links
     steps:
       - uses: actions/checkout@v4
 

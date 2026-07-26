@@ -12,6 +12,44 @@ struct RootView: View {
     }
 }
 
+// MARK: - Copyable ID View
+
+struct CopyableIDView: View {
+    let fullID: String
+    let displayLength: Int
+    @State private var showCopiedFeedback = false
+
+    var displayID: String {
+        String(fullID.prefix(displayLength)) + "…"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(displayID).font(.headline)
+            Button(action: copyToClipboard) {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            }
+            .accessibilityLabel("Copy full ID")
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(action: copyToClipboard) {
+                Label("Copy Full ID", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    private func copyToClipboard() {
+        UIPasteboard.general.string = fullID
+        showCopiedFeedback = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            showCopiedFeedback = false
+        }
+    }
+}
+
 // MARK: - Auth
 
 struct AuthView: View {
@@ -25,6 +63,7 @@ struct AuthView: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 64))
                     .foregroundStyle(.blue)
+                    .accessibilityHidden(true)
                 Text("Ethos-Protocol").font(.largeTitle.bold())
                 Text("Secure digital inheritance").foregroundStyle(.secondary)
 
@@ -89,6 +128,7 @@ struct VaultListView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -110,9 +150,17 @@ struct VaultListView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: { showCreate = true }) { Image(systemName: "plus") }
+                        .accessibilityLabel("Create new vault")
                 }
                 ToolbarItem(placement: .secondaryAction) {
-                    Button("Sign Out") { authStore.signOut() }
+                    Menu {
+                        NavigationLink(destination: SettingsView()) {
+                            Label("Settings", systemImage: "gear")
+                        }
+                        Button("Sign Out") { authStore.signOut() }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
             .task { await vaultStore.load() }
@@ -134,11 +182,8 @@ struct VaultRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 12) {
-                Text(vault.id.prefix(12) + "…")
-                    .font(.headline)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+            HStack {
+                CopyableIDView(fullID: vault.id, displayLength: 12)
                 Spacer()
                 StatusBadge(status: vault.status)
             }
@@ -198,7 +243,11 @@ struct VaultDetailView: View {
             Section("Overview") {
                 LabeledContent("Balance", value: vault.formattedBalance)
                 LabeledContent("Status", value: vault.status.rawValue.capitalized)
-                LabeledContent("Beneficiary", value: vault.beneficiary.prefix(16) + "…")
+                HStack {
+                    Text("Beneficiary")
+                    Spacer()
+                    CopyableIDView(fullID: vault.beneficiary, displayLength: 16)
+                }
                 if let ttl = vault.ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
@@ -346,7 +395,10 @@ struct CreateVaultView: View {
         Task {
             do {
                 let interval = UInt64(intervalDays * 86_400)
-                _ = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
+                let vault = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
+                if let credentialID = KeychainService.shared.loadCredentialID() {
+                    ICloudSyncService.shared.save(vaultID: vault.id, credentialID: credentialID)
+                }
                 await vaultStore.load()
                 dismiss()
             } catch { self.error = error.localizedDescription }
@@ -469,26 +521,23 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
+    private var isInitialSetup: Bool {
+        provisioningUri != nil || secret != nil
+    }
+
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: iconName)
                 .font(.system(size: 56))
                 .foregroundStyle(.blue)
+                .accessibilityLabel("Two-factor authentication via \(methodLabel)")
 
-            Text("Verify Setup").font(.title.bold())
+            Text(titleText).font(.title.bold())
 
-            if method == .totp, let uri = provisioningUri {
-                VStack(spacing: 8) {
-                    Text("Scan this URI in your authenticator app:")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.9)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        Text(uri)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+            VStack(spacing: 8) {
+                if method == .totp, let uri = provisioningUri {
+                    Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
+                    Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     if let secret {
                         ScrollView(.horizontal, showsIndicators: false) {
                             Label(secret, systemImage: "key.fill")
@@ -496,12 +545,11 @@ struct TwoFactorVerifyView: View {
                                 .lineLimit(1)
                         }
                     }
+                } else if method == .totp {
+                    Text("Enter the 6-digit code from your authenticator app.").foregroundStyle(.secondary)
+                } else {
+                    Text("A verification code has been sent to your \(methodLabel).").foregroundStyle(.secondary)
                 }
-            } else {
-                Text("A verification code has been sent to your \(methodLabel).")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .minimumScaleFactor(0.9)
             }
 
             TextField("Enter 6-digit code", text: $otp)
@@ -525,6 +573,16 @@ struct TwoFactorVerifyView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        }
+    }
+
+    private var titleText: String {
+        if method == .totp && isInitialSetup {
+            return "Verify Setup"
+        } else if method == .totp {
+            return "Re-verify Authenticator"
+        } else {
+            return "Verify Setup"
         }
     }
 
@@ -585,11 +643,17 @@ struct VaultInvitationView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "envelope.open.fill").font(.system(size: 56)).foregroundStyle(.blue)
+            Image(systemName: "envelope.open.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text("Vault Invitation").font(.title.bold())
-            Text("You have been invited to a vault.\nVault ID: \(vaultID.prefix(16))…")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                Text("You have been invited to a vault.")
+                    .foregroundStyle(.secondary)
+                CopyableIDView(fullID: vaultID, displayLength: 16)
+            }
+            .multilineTextAlignment(.center)
             Button("Open App") { dismiss() }
                 .buttonStyle(.borderedProminent)
         }
@@ -607,57 +671,77 @@ struct VaultActionDeepLinkView: View {
     @Environment(\.dismiss) var dismiss
     @State private var isProcessing = false
     @State private var error: String?
+    @State private var isLoading = false
+    @State private var hasAttemptedLoad = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
     var body: some View {
         Group {
-            switch action {
-            case .viewDetails:
-                if let vault {
-                    VaultDetailView(vault: vault)
-                } else {
-                    vaultNotFoundContent
-                }
-            case .checkIn:
-                actionContent(
-                    title: "Check In",
-                    systemImage: "checkmark.circle.fill",
-                    description: "Confirm check-in for vault \(vaultID.prefix(16))…"
-                ) {
-                    guard let vault else { error = "Vault not found"; return }
-                    isProcessing = true
-                    error = nil
-                    Task {
-                        do {
-                            try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
-                            await vaultStore.checkIn(vault: vault)
-                            dismiss()
-                        } catch let checkInError {
-                            self.error = checkInError.localizedDescription
-                        }
-                        isProcessing = false
+            if isLoading && vault == nil {
+                ProgressView("Loading vault…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                switch action {
+                case .viewDetails:
+                    if let vault {
+                        VaultDetailView(vault: vault)
+                    } else {
+                        vaultNotFoundContent
                     }
-                }
-            case .withdraw:
-                actionContent(
-                    title: "Withdraw",
-                    systemImage: "arrow.up.circle.fill",
-                    description: "Withdraw funds from vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Withdrawal is not yet available in the mobile app."
-                }
-            case .manageBeneficiary:
-                actionContent(
-                    title: "Manage Beneficiary",
-                    systemImage: "person.2.fill",
-                    description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
-                ) {
-                    error = "Beneficiary management is not yet available in the mobile app."
+                case .checkIn:
+                    actionContent(
+                        title: "Check In",
+                        systemImage: "checkmark.circle.fill",
+                        description: "Confirm check-in for vault \(vaultID.prefix(16))…"
+                    ) {
+                        guard let vault else { error = "Vault not found"; return }
+                        isProcessing = true
+                        error = nil
+                        Task {
+                            do {
+                                try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
+                                await vaultStore.checkIn(vault: vault)
+                                dismiss()
+                            } catch let checkInError {
+                                self.error = checkInError.localizedDescription
+                            }
+                            isProcessing = false
+                        }
+                    }
+                case .withdraw:
+                    actionContent(
+                        title: "Withdraw",
+                        systemImage: "arrow.up.circle.fill",
+                        description: "Withdraw funds from vault \(vaultID.prefix(16))…"
+                    ) {
+                        error = "Withdrawal is not yet available in the mobile app."
+                    }
+                case .manageBeneficiary:
+                    actionContent(
+                        title: "Manage Beneficiary",
+                        systemImage: "person.2.fill",
+                        description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
+                    ) {
+                        error = "Beneficiary management is not yet available in the mobile app."
+                    }
                 }
             }
         }
-        .task { if vaultStore.vaults.isEmpty { await vaultStore.load() } }
+        .task {
+            await loadVaultIfNeeded()
+        }
+    }
+
+    private func loadVaultIfNeeded() async {
+        guard !hasAttemptedLoad else { return }
+        hasAttemptedLoad = true
+
+        if vault == nil {
+            isLoading = true
+            await vaultStore.load()
+            isLoading = false
+        }
     }
 
     private var vaultNotFoundContent: some View {
@@ -678,7 +762,11 @@ struct VaultActionDeepLinkView: View {
         onAction: @escaping () -> Void
     ) -> some View {
         VStack(spacing: 24) {
-            Image(systemName: systemImage).font(.system(size: 56)).foregroundStyle(.blue)
+            Image(systemName: systemImage)
+                .font(.system(size: 56))
+                .foregroundStyle(.blue)
+                .accessibilityLabel(title)
+                .accessibilityHidden(false)
             Text(title).font(.title.bold())
             Text(description).multilineTextAlignment(.center).foregroundStyle(.secondary)
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
@@ -705,11 +793,17 @@ struct BeneficiaryAcceptanceView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Image(systemName: "checkmark.seal.fill").font(.system(size: 56)).foregroundStyle(.green)
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
             Text("Accept Beneficiary Role").font(.title.bold())
-            Text("You have been nominated as a beneficiary for vault \(vaultID.prefix(16))…")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            VStack(spacing: 8) {
+                Text("You have been nominated as a beneficiary for vault:")
+                    .foregroundStyle(.secondary)
+                CopyableIDView(fullID: vaultID, displayLength: 16)
+            }
+            .multilineTextAlignment(.center)
             if accepted {
                 Label("Accepted", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
             } else {
@@ -733,6 +827,9 @@ struct BeneficiaryAcceptanceView: View {
         Task {
             do {
                 try await APIClient.shared.acceptBeneficiary(vaultID: vaultID, token: token)
+                if let credentialID = KeychainService.shared.loadCredentialID() {
+                    ICloudSyncService.shared.save(vaultID: vaultID, credentialID: credentialID)
+                }
                 accepted = true
             } catch {
                 self.error = error.localizedDescription
