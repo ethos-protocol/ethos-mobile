@@ -19,14 +19,14 @@ private const val RP_ID = "ethos-protocol.app"
 @Singleton
 class PasskeyService @Inject constructor(
     private val apiClient: ApiClient,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val credentialManager: CredentialManager
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge())
         val requestJson = buildRegistrationRequestJson(challenge, username)
 
-        val credManager = CredentialManager.create(activity)
-        val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
+        val resp = credentialManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
                 as CreatePublicKeyCredentialResponse
         val json = JSONObject(resp.registrationResponseJson)
         val regReq = PasskeyRegisterRequest(
@@ -34,7 +34,11 @@ class PasskeyService @Inject constructor(
             publicKey = json.getJSONObject("response").getString("attestationObject"),
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
-        requireSuccess(apiClient.registerPasskey(regReq))
+        // The backend returns a session token straight from registration, so there's no
+        // need to immediately run a second CredentialManager ceremony (and second
+        // biometric prompt) just to sign in with the passkey we just created.
+        val authToken = requireSuccess(apiClient.registerPasskey(regReq))
+        tokenProvider.token = authToken.token
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
@@ -43,9 +47,8 @@ class PasskeyService @Inject constructor(
             .put("challenge", challenge.challenge).put("rpId", RP_ID)
             .put("userVerification", "required").toString()
 
-        val credManager = CredentialManager.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
-        val credential = credManager.getCredential(activity, request).credential as PublicKeyCredential
+        val credential = credentialManager.getCredential(activity, request).credential as PublicKeyCredential
         val json = JSONObject(credential.authenticationResponseJson)
         val verifyReq = PasskeyVerifyRequest(
             credentialId = json.getString("id"),

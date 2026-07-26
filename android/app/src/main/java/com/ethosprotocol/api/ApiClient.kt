@@ -53,7 +53,7 @@ class ApiClient @Inject constructor(
     // Auth
     suspend fun getChallenge(): ApiResult<AuthChallenge> = get("/auth/challenge")
     suspend fun verifyPasskey(req: PasskeyVerifyRequest): ApiResult<AuthToken> = post("/auth/verify", req)
-    suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<Unit> = post("/auth/register", req)
+    suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<AuthToken> = post("/auth/register", req)
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")

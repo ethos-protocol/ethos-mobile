@@ -1,6 +1,7 @@
 package com.ethosprotocol.di
 
 import android.content.Context
+import androidx.credentials.CredentialManager
 import androidx.work.WorkManager
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
@@ -38,4 +39,12 @@ object AppModule {
     @Provides @Singleton
     fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
         WorkManager.getInstance(context)
+
+    // Application context is sufficient here: createCredential/getCredential each take
+    // the Activity as an explicit parameter, so the manager instance itself doesn't need
+    // to be tied to one. Provided as a singleton so PasskeyService's tests can inject a
+    // mock CredentialManager instead of driving a real biometric ceremony.
+    @Provides @Singleton
+    fun provideCredentialManager(@ApplicationContext context: Context): CredentialManager =
+        CredentialManager.create(context)
 }
