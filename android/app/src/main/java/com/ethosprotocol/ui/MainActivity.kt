@@ -5,12 +5,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -20,6 +26,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
@@ -36,6 +43,8 @@ class MainActivity : FragmentActivity() {
     private var pendingVaultDeepLink by mutableStateOf<VaultDeepLink?>(null)
     private var showPermissionRationale by mutableStateOf(false)
 
+    private val authVm: AuthViewModel by viewModels()
+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* result handled gracefully — denial does not break the app */ }
@@ -43,6 +52,9 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Vault balances and TTLs are sensitive — never let them appear in screenshots or
+        // in the Recents/app-switcher thumbnail.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         handleIncomingIntent(intent)
 
         setContent {
@@ -73,6 +85,16 @@ class MainActivity : FragmentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        authVm.onAppBackgrounded()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        authVm.onAppForegrounded()
     }
 
     private fun handleIncomingIntent(intent: Intent) {
@@ -146,6 +168,20 @@ private fun AppNavigation(
     val navController = rememberNavController()
     val authVm: AuthViewModel = hiltViewModel()
     val authState by authVm.state.collectAsStateWithLifecycle()
+    val activity = LocalContext.current as FragmentActivity
+
+    fun promptUnlock() {
+        BiometricHelper(activity).authenticate(
+            title = "Unlock Ethos-Protocol",
+            subtitle = "Confirm it's you to continue",
+            onSuccess = { authVm.unlock() },
+            onError = { /* stays locked — the overlay's button lets the user retry */ }
+        )
+    }
+
+    LaunchedEffect(authState.isLocked) {
+        if (authState.isLocked) promptUnlock()
+    }
 
     LaunchedEffect(authState.isAuthenticated) {
         if (authState.isAuthenticated) navController.navigate("vaults") { popUpTo("auth") { inclusive = true } }
@@ -168,27 +204,60 @@ private fun AppNavigation(
         }
     }
 
-    NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
-        composable("auth") { AuthScreen(vm = authVm) }
-        composable("vaults") {
-            VaultListScreen(onVaultClick = { /* navigate to detail */ })
+    Box(Modifier.fillMaxSize()) {
+        NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
+            composable("auth") { AuthScreen(vm = authVm) }
+            composable("vaults") {
+                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+            }
+            composable("accept/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                BeneficiaryAcceptanceScreen(
+                    vaultId = vaultId,
+                    onAccepted = { navController.popBackStack() },
+                    onDecline = { navController.popBackStack() }
+                )
+            }
+            composable("vault/{vaultId}/{action}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                val action = backStack.arguments?.getString("action") ?: return@composable
+                VaultDeepLinkScreen(
+                    vaultId = vaultId,
+                    actionPath = action,
+                    onDone = { navController.popBackStack() }
+                )
+            }
         }
-        composable("accept/{vaultId}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            BeneficiaryAcceptanceScreen(
-                vaultId = vaultId,
-                onAccepted = { navController.popBackStack() },
-                onDecline = { navController.popBackStack() }
-            )
+
+        // Covers vault content with a privacy screen until biometrics re-confirm the user's
+        // identity, once the re-lock timeout has elapsed while the app was backgrounded.
+        if (authState.isAuthenticated && authState.isLocked) {
+            PrivacyLockOverlay(onUnlockClick = ::promptUnlock)
         }
-        composable("vault/{vaultId}/{action}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            val action = backStack.arguments?.getString("action") ?: return@composable
-            VaultDeepLinkScreen(
-                vaultId = vaultId,
-                actionPath = action,
-                onDone = { navController.popBackStack() }
-            )
+    }
+}
+
+@Composable
+private fun PrivacyLockOverlay(onUnlockClick: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(Icons.Default.Lock, contentDescription = null,
+                modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(16.dp))
+            Text("Ethos-Protocol is locked", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(4.dp))
+            Text("Confirm it's you to continue", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = onUnlockClick, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Key, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Unlock")
+            }
         }
     }
 }

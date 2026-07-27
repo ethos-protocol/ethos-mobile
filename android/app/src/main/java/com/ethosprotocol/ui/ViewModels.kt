@@ -32,6 +32,7 @@ import javax.inject.Inject
 
 data class AuthUiState(
     val isAuthenticated: Boolean = false,
+    val isLocked: Boolean = false,
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -45,10 +46,34 @@ class AuthViewModel @Inject constructor(
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
     val state = _state.asStateFlow()
 
+    private var backgroundedAtMillis: Long? = null
+
+    // Default re-lock timeout — kept in sync with iOS's equivalent (#12) so both
+    // platforms re-prompt biometrics after the same amount of backgrounded time.
+    var relockTimeoutMillis: Long = DEFAULT_RELOCK_TIMEOUT_MILLIS
+
+    /** Called from MainActivity.onStop — records when the app left the foreground. */
+    fun onAppBackgrounded(now: Long = System.currentTimeMillis()) {
+        if (_state.value.isAuthenticated) backgroundedAtMillis = now
+    }
+
+    /** Called from MainActivity.onStart — locks the session if it was backgrounded past the timeout. */
+    fun onAppForegrounded(now: Long = System.currentTimeMillis()) {
+        val backgroundedAt = backgroundedAtMillis ?: return
+        backgroundedAtMillis = null
+        if (_state.value.isAuthenticated && now - backgroundedAt >= relockTimeoutMillis) {
+            _state.update { it.copy(isLocked = true) }
+        }
+    }
+
+    fun unlock() {
+        _state.update { it.copy(isLocked = false) }
+    }
+
     fun signIn(activity: Activity) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
-            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
+            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLocked = false, isLoading = false) } }
             .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
     }
 
@@ -61,7 +86,12 @@ class AuthViewModel @Inject constructor(
 
     fun signOut() {
         tokenProvider.clear()
-        _state.update { it.copy(isAuthenticated = false) }
+        backgroundedAtMillis = null
+        _state.update { it.copy(isAuthenticated = false, isLocked = false) }
+    }
+
+    companion object {
+        const val DEFAULT_RELOCK_TIMEOUT_MILLIS = 30_000L
     }
 }
 
