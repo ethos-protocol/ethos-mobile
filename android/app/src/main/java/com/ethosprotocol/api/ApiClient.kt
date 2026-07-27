@@ -16,6 +16,7 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -113,6 +114,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -129,6 +131,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.delete("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -145,5 +148,25 @@ class ApiClient @Inject constructor(
 
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+    }
+
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes, hex-encoded. The server
+    //           stores seen nonces and rejects any duplicate within the token's
+    //           validity window, preventing a captured request from being
+    //           replayed later.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window),
+    //               limiting the replay window to that duration even if the
+    //               nonce store is unavailable.
+    private fun HttpRequestBuilder.antiReplayHeaders() {
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        val timestamp = System.currentTimeMillis() / 1_000L
+        header("X-Nonce", nonce)
+        header("X-Timestamp", timestamp.toString())
     }
 }

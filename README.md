@@ -1,5 +1,11 @@
 # Mobile App Architecture
 
+> **Security:** Found a vulnerability? Please read our [Security Policy](SECURITY.md) and report
+> it privately to **security@ethos-protocol.app** — do not open a public issue.
+> A `security.txt` (RFC 9116) is published at
+> [`/.well-known/security.txt`](.well-known/security.txt) and will also be served from
+> `https://ethos-protocol.app/.well-known/security.txt` once the domain is configured.
+
 ## Overview
 
 Ethos-Protocol mobile apps (iOS + Android) provide a native interface for managing vaults, checking in, and receiving expiry reminders. Both apps share the same REST API contract and feature set.
