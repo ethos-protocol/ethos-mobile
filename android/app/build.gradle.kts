@@ -139,6 +139,13 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
+    // Real org.json implementation for unit tests — the org.json classes bundled in Android's
+    // stub jar throw "not mocked" at runtime, which breaks any test exercising code (like
+    // PasskeyService) that builds a request body with org.json.JSONObject.
+    testImplementation(libs.json)
+    // CreatePublicKeyCredentialRequest/GetPublicKeyCredentialOption marshal their JSON into a
+    // real android.os.Bundle, which needs Robolectric's framework shadows to run on the JVM.
+    testImplementation(libs.robolectric)
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(platform(libs.compose.bom))
