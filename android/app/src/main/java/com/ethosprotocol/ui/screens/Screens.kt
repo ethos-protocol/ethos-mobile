@@ -446,6 +446,7 @@ fun VaultDeepLinkScreen(
         null -> "Vault Link" to "Unrecognised vault action."
     }
 
+    // VIEW_DETAILS early-exit case with full vault card
     if (action == VaultDeepLinkAction.VIEW_DETAILS && vault != null) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.headlineSmall)
@@ -457,7 +458,10 @@ fun VaultDeepLinkScreen(
         return
     }
 
-    val displayError = error ?: if (action == VaultDeepLinkAction.VIEW_DETAILS && vault == null) {
+    // Determine display error:
+    // - Show "Vault not found" ONLY if loading has completed and vault is still null
+    // - Do NOT show "not found" while still loading (prevents false flash)
+    val displayError = error ?: if (!state.isLoading && vault == null && action == VaultDeepLinkAction.VIEW_DETAILS) {
         "Vault not found"
     } else {
         null
@@ -536,6 +540,16 @@ fun VaultDeepLinkScreenContent(
             .padding(32.dp),
         verticalArrangement = Arrangement.Center
     ) {
+        if (state.isLoading && vault == null) {
+            // Show explicit loading indicator while vault list is being fetched
+            CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+            Spacer(Modifier.height(16.dp))
+            Text("Loading vault details…", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.CenterHorizontally))
+            return@Column
+        }
+
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,

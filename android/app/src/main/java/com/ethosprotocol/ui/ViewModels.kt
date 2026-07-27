@@ -41,7 +41,9 @@ data class AuthUiState(
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val notificationHelper: NotificationHelper,
+    private val pendingCheckInDao: PendingCheckInDao
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -63,8 +65,12 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
     }
 
-    fun signOut() {
+    fun signOut() = viewModelScope.launch {
         tokenProvider.clear()
+        // Clear pending check-ins: queued check-ins are tied to the authenticated session and
+        // should not persist or sync after sign-out (they belong to the previous user's vaults).
+        pendingCheckInDao.deleteAll()
+        notificationHelper.cancelQueuedCheckIn()
         _state.update { it.copy(isAuthenticated = false) }
     }
 }
