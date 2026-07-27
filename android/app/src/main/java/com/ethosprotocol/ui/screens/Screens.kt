@@ -59,11 +59,19 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
+        if (state.cooldownRemainingSeconds > 0) {
+            Text(
+                "Too many failed attempts. Try again in ${state.cooldownRemainingSeconds}s.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         Button(
             onClick = { vm.signIn(activity) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !state.isLoading && state.cooldownRemainingSeconds == 0
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }

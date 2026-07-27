@@ -22,6 +22,8 @@ import com.ethosprotocol.services.PendingCheckIn
 import com.ethosprotocol.services.PendingCheckInDao
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -33,7 +35,8 @@ import javax.inject.Inject
 data class AuthUiState(
     val isAuthenticated: Boolean = false,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val cooldownRemainingSeconds: Int = 0
 )
 
 @HiltViewModel
@@ -45,11 +48,39 @@ class AuthViewModel @Inject constructor(
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
     val state = _state.asStateFlow()
 
+    private var consecutiveFailures = 0
+    private var cooldownJob: Job? = null
+
     fun signIn(activity: Activity) = viewModelScope.launch {
+        if (_state.value.cooldownRemainingSeconds > 0) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
-            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
-            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+            .onSuccess {
+                consecutiveFailures = 0
+                cooldownJob?.cancel()
+                _state.update { it.copy(isAuthenticated = true, isLoading = false, cooldownRemainingSeconds = 0) }
+            }
+            .onFailure { e ->
+                consecutiveFailures++
+                _state.update { it.copy(isLoading = false, error = e.message) }
+                startCooldownIfNeeded()
+            }
+    }
+
+    private fun startCooldownIfNeeded() {
+        if (consecutiveFailures < COOLDOWN_FAILURE_THRESHOLD) return
+        // Cap the exponent well below where `shl` would overflow Int — the clamp to
+        // COOLDOWN_MAX_SECONDS below makes any exponent past this point equivalent anyway.
+        val exponent = (consecutiveFailures - COOLDOWN_FAILURE_THRESHOLD).coerceAtMost(10)
+        val seconds = (COOLDOWN_BASE_SECONDS shl exponent).coerceAtMost(COOLDOWN_MAX_SECONDS)
+        cooldownJob?.cancel()
+        cooldownJob = viewModelScope.launch {
+            for (remaining in seconds downTo 1) {
+                _state.update { it.copy(cooldownRemainingSeconds = remaining) }
+                delay(1_000)
+            }
+            _state.update { it.copy(cooldownRemainingSeconds = 0) }
+        }
     }
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
@@ -61,7 +92,15 @@ class AuthViewModel @Inject constructor(
 
     fun signOut() {
         tokenProvider.clear()
-        _state.update { it.copy(isAuthenticated = false) }
+        consecutiveFailures = 0
+        cooldownJob?.cancel()
+        _state.update { it.copy(isAuthenticated = false, cooldownRemainingSeconds = 0) }
+    }
+
+    private companion object {
+        const val COOLDOWN_FAILURE_THRESHOLD = 3
+        const val COOLDOWN_BASE_SECONDS = 2
+        const val COOLDOWN_MAX_SECONDS = 60
     }
 }
 
