@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.CreateVaultRequest
@@ -39,7 +40,8 @@ data class AuthUiState(
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val offlineCache: OfflineCache
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -61,6 +63,10 @@ class AuthViewModel @Inject constructor(
 
     fun signOut() {
         tokenProvider.clear()
+        // Cached vault data belongs to the account that's signing out — wipe it so the next
+        // person to use this device (or the same user signing back in) doesn't see stale data
+        // that appears to be theirs.
+        offlineCache.clear()
         _state.update { it.copy(isAuthenticated = false) }
     }
 }

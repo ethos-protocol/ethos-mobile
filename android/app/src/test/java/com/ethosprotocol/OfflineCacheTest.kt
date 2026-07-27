@@ -57,4 +57,47 @@ class OfflineCacheTest {
         assertEquals("{\"list\":[]}", cache.load("/vaults")?.data)
         assertEquals("{\"id\":\"v1\"}", cache.load("/vaults/v1")?.data)
     }
+
+    @Test
+    fun `evicts the least recently used entry once the byte cap is exceeded`() {
+        val payload = "x".repeat(100)
+        // Each envelope on disk is ~137 bytes (13-digit timestamp + JSON overhead + payload).
+        // 320 comfortably fits two entries (~274 bytes) but not three (~411 bytes), so eviction
+        // is only forced by the third save below.
+        val cache = newCache().apply { maxCacheBytes = 320 }
+
+        cache.save("/a", payload)
+        cache.save("/b", payload)
+        cache.load("/a") // touch "a" so "b" becomes the least recently used
+        cache.save("/c", payload) // should evict "b", not "a"
+
+        assertNotNull("most-recently-used entry should survive eviction", cache.load("/a"))
+        assertNull("least-recently-used entry should be evicted", cache.load("/b"))
+        assertNotNull("newest entry should survive eviction", cache.load("/c"))
+    }
+
+    @Test
+    fun `never evicts while under the byte cap`() {
+        val cache = newCache().apply { maxCacheBytes = OfflineCache.DEFAULT_MAX_CACHE_BYTES }
+
+        cache.save("/a", "small")
+        cache.save("/b", "small")
+        cache.save("/c", "small")
+
+        assertNotNull(cache.load("/a"))
+        assertNotNull(cache.load("/b"))
+        assertNotNull(cache.load("/c"))
+    }
+
+    @Test
+    fun `clear removes every cached entry`() {
+        val cache = newCache()
+        cache.save("/a", "{}")
+        cache.save("/b", "{}")
+
+        cache.clear()
+
+        assertNull(cache.load("/a"))
+        assertNull(cache.load("/b"))
+    }
 }
