@@ -9,6 +9,7 @@ import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.services.CheckInDatabase
+import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PendingCheckInDao
 import dagger.Module
 import dagger.Provides
@@ -40,11 +41,13 @@ object AppModule {
     fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
         WorkManager.getInstance(context)
 
-    // Application context is sufficient here: createCredential/getCredential each take
-    // the Activity as an explicit parameter, so the manager instance itself doesn't need
-    // to be tied to one. Provided as a singleton so PasskeyService's tests can inject a
-    // mock CredentialManager instead of driving a real biometric ceremony.
+    /**
+     * Production binding for [CredentialManagerFactory].
+     *
+     * Unit tests supply their own fake factory directly to [com.ethosprotocol.services.PasskeyService]
+     * without going through Hilt, so no test module override is needed.
+     */
     @Provides @Singleton
-    fun provideCredentialManager(@ApplicationContext context: Context): CredentialManager =
-        CredentialManager.create(context)
+    fun provideCredentialManagerFactory(): CredentialManagerFactory =
+        CredentialManagerFactory { activity -> CredentialManager.create(activity) }
 }

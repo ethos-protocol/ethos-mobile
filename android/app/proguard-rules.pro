@@ -1,5 +1,49 @@
 # Add project specific ProGuard rules here.
 # See https://developer.android.com/studio/build/shrink-code for details.
+#
+# ---------------------------------------------------------------------------
+# REVIEW NOTES (task #123)
+# Reviewed against what is actually needed by:
+#   - kotlinx.serialization (reflection-based $$serializer companions)
+#   - Room (entity/DAO generated code)
+#   - Ktor Android engine
+#   - Hilt/Dagger generated components
+#   - HiltWorker / WorkManager
+#
+# Key findings:
+#
+# 1. Debug logging: android.util.Log calls are NOT stripped by default R8 rules.
+#    We explicitly remove them below so that vault balances, JWT fragments, and
+#    2FA secrets cannot leak via logcat in a release/production build.
+#    (The LogLevel.NONE guard in ApiClient.kt is a runtime defence; this is a
+#    compile-time removal that applies to all Log.d/Log.v/Log.i calls anywhere
+#    in the app, including third-party code that may not guard behind a flag.)
+#
+# 2. Model classes (AuthToken, PasskeyRegisterRequest, etc.): kept only with the
+#    minimum surface required for kotlinx.serialization to work — constructors,
+#    fields, and the generated $$serializer companion. We do NOT use a blanket
+#    `-keep class com.ethosprotocol.** { *; }` that would expose every member to
+#    reflection; the per-rule keeps below are intentionally narrow.
+#
+# 3. No additional reflective accessibility beyond what kotlinx.serialization
+#    requires was introduced. The `-keep class com.ethosprotocol.models.** { *; }`
+#    rule that previously appeared here has been replaced with the narrower set
+#    below that keeps only what the serialization framework needs.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Strip debug/verbose/info logging in release builds
+# This is a compile-time removal — Log.d/v/i calls are eliminated by R8 so
+# they cannot leak sensitive data (token values, vault balances, etc.) even if
+# a device is rooted or the APK is decompiled.
+# Log.w and Log.e are kept; those represent genuine runtime warnings/errors
+# that operators need in crash reports.
+# ---------------------------------------------------------------------------
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
 
 # ---------------------------------------------------------------------------
 # kotlinx.serialization
@@ -25,8 +69,14 @@
 -keepclasseswithmembers class com.ethosprotocol.models.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
--keep,includedescriptorclasses class com.ethosprotocol.models.** { *; }
--keep class com.ethosprotocol.models.** { *; }
+# Keep constructors and fields required for kotlinx.serialization's generated code.
+# Intentionally narrower than the previous blanket `{ *; }` rule — we keep only
+# what is genuinely required for (de)serialization, reducing the reflective surface
+# of sensitive model classes such as AuthToken and PasskeyRegisterRequest.
+-keepclassmembers class com.ethosprotocol.models.** {
+    <init>(...);
+    <fields>;
+}
 
 # ---------------------------------------------------------------------------
 # Room (entities / DAOs)

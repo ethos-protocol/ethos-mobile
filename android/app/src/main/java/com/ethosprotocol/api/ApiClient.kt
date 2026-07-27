@@ -17,8 +17,13 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
@@ -41,8 +46,12 @@ class ApiClient @Inject constructor(
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
         install(Logging) {
-            // Full request/response bodies (bearer token, 2FA secrets, vault balances) must
-            // never be written to logcat in release builds.
+            // Logging Redaction Policy (#111) — see shared/api-contract.md §Logging Redaction Policy.
+            // Full request/response bodies (bearer token, 2FA secrets, vault balances, beneficiary
+            // addresses, acceptance tokens) must never be written to logcat in any build.
+            // LogLevel.INFO logs only HTTP method + URL + status — no body, no sensitive headers.
+            // LogLevel.NONE in release ensures zero leakage even if a future log level change
+            // is accidentally introduced in debug code that ships to release.
             level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
         }
         // No timeouts were configured previously, so a stalled connection (e.g. dead wifi
@@ -51,6 +60,22 @@ class ApiClient @Inject constructor(
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
+        }
+        // #117: Certificate / public-key pinning for api.ethos-protocol.app.
+        // PinningTrustManager wraps the system TrustManager and additionally
+        // verifies that at least one certificate in the chain matches a pinned
+        // SPKI SHA-256 hash. See CertificatePinning.kt for the rotation strategy.
+        engine {
+            sslManager = { httpsURLConnection ->
+                val systemTm = getSystemTrustManager()
+                if (systemTm != null) {
+                    val pinner = CertificatePinner()
+                    val pinningTm = PinningTrustManager(pinner, systemTm)
+                    val sslContext = SSLContext.getInstance("TLS")
+                    sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
+                    httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+                }
+            }
         }
     }
 
@@ -62,6 +87,19 @@ class ApiClient @Inject constructor(
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
+
+    /**
+     * Paginated variant of listVaults (#112).
+     * Pass [after] = page.nextCursor to fetch subsequent pages.
+     * Continue while [VaultPage.hasMore] == true.
+     */
+    suspend fun listVaults(limit: Int = 20, after: String? = null): ApiResult<VaultPage> {
+        val path = buildString {
+            append("/vaults?limit=$limit")
+            if (after != null) append("&after=$after")
+        }
+        return get(path)
+    }
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")
     suspend fun createVault(req: CreateVaultRequest): ApiResult<Vault> = post("/vaults", req)
     suspend fun checkIn(vaultId: String): ApiResult<Unit> = post("/vaults/$vaultId/checkin", Unit)
@@ -71,8 +109,11 @@ class ApiClient @Inject constructor(
         post("/vaults/$vaultId/withdraw", mapOf("amount" to amount))
 
     // Beneficiary
-    suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
-        post("/vaults/$vaultId/accept", Unit)
+    // token: the acceptance token parsed from the /accept deep-link URL
+    // (e.g. https://ethos-protocol.app/vaults/{id}/accept?token=<token>).
+    // Required by the server — see shared/api-contract.md §POST /vaults/{id}/accept.
+    suspend fun acceptBeneficiary(vaultId: String, token: String): ApiResult<Unit> =
+        post("/vaults/$vaultId/accept", BeneficiaryAcceptRequest(vaultId = vaultId, token = token))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
@@ -126,6 +167,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -143,6 +185,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.delete("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -169,4 +212,37 @@ class ApiClient @Inject constructor(
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
     }
+
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes, hex-encoded. The server
+    //           stores seen nonces and rejects any duplicate within the token's
+    //           validity window, preventing a captured request from being
+    //           replayed later.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window),
+    //               limiting the replay window to that duration even if the
+    //               nonce store is unavailable.
+    private fun HttpRequestBuilder.antiReplayHeaders() {
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        val timestamp = System.currentTimeMillis() / 1_000L
+        header("X-Nonce", nonce)
+        header("X-Timestamp", timestamp.toString())
+    }
+}
+
+// ── #117 helper ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the first [X509TrustManager] from the default [TrustManagerFactory],
+ * or `null` if none is available. Used by [ApiClient] to provide a delegate for
+ * [PinningTrustManager] so standard chain validation still runs before the pin check.
+ */
+internal fun getSystemTrustManager(): X509TrustManager? {
+    val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+    factory.init(null as java.security.KeyStore?)
+    return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
 }
