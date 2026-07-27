@@ -128,7 +128,8 @@ data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
-    val isOffline: Boolean = false
+    val isOffline: Boolean = false,
+    val beneficiaryUpdated: Boolean = false
 )
 
 @HiltViewModel
@@ -178,6 +179,25 @@ class VaultViewModel @Inject constructor(
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
         }
+    }
+
+    /// Update the beneficiary for a vault (owner-only). On success the vault list is
+    /// refreshed so the UI reflects the new beneficiary immediately — matching the
+    /// same pattern used by checkIn(). Mirrors iOS VaultStore.updateBeneficiary.
+    fun updateBeneficiary(vaultId: String, newBeneficiary: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null, beneficiaryUpdated = false) }
+        when (val result = apiClient.updateBeneficiary(vaultId, newBeneficiary)) {
+            is ApiResult.Success -> {
+                _state.update { it.copy(isLoading = false, beneficiaryUpdated = true) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearBeneficiaryUpdated() {
+        _state.update { it.copy(beneficiaryUpdated = false) }
     }
 }
 

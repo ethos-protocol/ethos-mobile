@@ -66,6 +66,8 @@ class ApiClient @Inject constructor(
         post("/vaults/$vaultId/withdraw", mapOf("amount" to amount))
 
     // Beneficiary
+    suspend fun updateBeneficiary(vaultId: String, newBeneficiary: String): ApiResult<Vault> =
+        post("/vaults/$vaultId/beneficiary", BeneficiaryUpdateRequest(beneficiary = newBeneficiary))
     suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
         post("/vaults/$vaultId/accept", Unit)
 

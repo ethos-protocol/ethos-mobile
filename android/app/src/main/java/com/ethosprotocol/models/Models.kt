@@ -55,7 +55,10 @@ data class PasskeyVerifyRequest(
 @Serializable
 data class PasskeyRegisterRequest(
     @SerialName("credential_id") val credentialId: String,
-    @SerialName("public_key") val publicKey: String,
+    // Field name is `attestation_object` per shared/api-contract.md — the backend
+    // extracts the COSE-encoded public key from this object. The legacy `public_key`
+    // field is not accepted by the server. (#108)
+    @SerialName("attestation_object") val attestationObject: String,
     @SerialName("client_data_json") val clientDataJson: String
 )
 
@@ -91,3 +94,8 @@ data class Enable2FAResponse(
 
 @Serializable
 data class Verify2FARequest(val otp: String)
+
+@Serializable
+data class BeneficiaryUpdateRequest(
+    val beneficiary: String
+)

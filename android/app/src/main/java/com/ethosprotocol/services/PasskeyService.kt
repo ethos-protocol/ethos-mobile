@@ -39,7 +39,9 @@ class PasskeyService @Inject constructor(
         val json = JSONObject(resp.registrationResponseJson)
         val regReq = PasskeyRegisterRequest(
             credentialId = json.getString("id"),
-            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            // Send the raw attestation object — the backend extracts the COSE public key
+            // from it. Field name in the request must be `attestation_object` (#108).
+            attestationObject = json.getJSONObject("response").getString("attestationObject"),
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
         requireSuccess(apiClient.registerPasskey(regReq))

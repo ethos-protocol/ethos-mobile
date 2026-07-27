@@ -67,3 +67,66 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 { "beneficiary": "string" }
 ```
 Response: the updated `Vault` object (see above), reflecting the new `beneficiary` value.
+
+### PasskeyRegisterRequest
+```json
+{
+  "credential_id": "string (base64url)",
+  "attestation_object": "string (base64url-encoded CBOR attestation object from WebAuthn response)",
+  "client_data_json": "string (base64url)"
+}
+```
+
+### PasskeyVerifyRequest
+```json
+{
+  "credential_id": "string (base64url)",
+  "client_data_json": "string (base64url)",
+  "signature": "string (base64url)"
+}
+```
+
+## Beneficiary Management
+
+### POST `/vaults/{id}/beneficiary`
+Update the designated beneficiary for a vault. Owner-only; requires a valid Bearer JWT.
+
+**Request body** (`BeneficiaryUpdateRequest`):
+```json
+{ "beneficiary": "string" }
+```
+`beneficiary` must be a non-empty Stellar public key (G… address) that differs from the
+current beneficiary. The backend validates address format and rejects the request with
+`400` if invalid.
+
+**Response** (`200 OK`): the full `Vault` object with the updated `beneficiary` field.
+
+**Errors**:
+| Status | Meaning |
+|--------|---------|
+| 400 | Invalid or missing `beneficiary` field |
+| 401 | Missing or expired JWT |
+| 403 | Caller is not the vault owner |
+| 404 | Vault not found |
+
+### POST `/vaults/{id}/accept`
+Called by the beneficiary to accept or confirm their designation. No request body required.
+
+**Response** (`200 OK`): empty body (`{}`).
+
+**Errors**:
+| Status | Meaning |
+|--------|---------|
+| 401 | Missing or expired JWT |
+| 403 | Caller is not the designated beneficiary |
+| 404 | Vault not found |
+
+## Passkey Registration Field Clarification
+
+The `POST /auth/register` endpoint expects the **raw WebAuthn attestation object** (the
+`attestationObject` field from the platform's credential registration response, base64url-encoded)
+under the key `attestation_object`. This is **not** the public key itself — the backend
+extracts the COSE-encoded public key from the attestation object during verification.
+
+Both clients MUST send the field as `attestation_object` (snake_case). The legacy `public_key`
+field name is not accepted.

@@ -82,27 +82,39 @@ final class VaultStore: ObservableObject {
         do {
             try await APIClient.shared.checkIn(vaultID: vault.id)
             if !Task.isCancelled { await load() }
+        } catch APIError.networkUnavailable {
+            // Offline: queue the check-in durably so it is retried when connectivity
+            // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
+            // + CheckInSyncWorker pattern.
+            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
+            PendingCheckInStore.shared.insert(item)
+            let count = PendingCheckInStore.shared.count
+            NotificationService.shared.showQueuedCheckIn(count: count)
+            CheckInSyncTask.shared.scheduleSync()
+            ifNotCancelled { self.error = "Offline — check-in queued and will retry automatically" }
+        } catch {
+            ifNotCancelled { self.error = error.localizedDescription }
+        }
+    }
+
+    /// Update the beneficiary for a vault. Owner-only.
+    /// On success the vault list is refreshed so the UI reflects the new beneficiary
+    /// immediately — matching the same pattern used by `checkIn`.
+    func updateBeneficiary(vault: Vault, newBeneficiary: String) async {
+        do {
+            _ = try await APIClient.shared.updateBeneficiary(vaultID: vault.id, newBeneficiary: newBeneficiary)
+            if !Task.isCancelled { await load() }
         } catch {
             ifNotCancelled { self.error = error.localizedDescription }
         }
     }
 
     private func scheduleReminders() {
-        for vault in vaults where vault.status == .active {
-            if let ttl = vault.ttlRemaining {
-                NotificationService.shared.scheduleCheckInReminder(
-                    vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl, checkInInterval: vault.checkInInterval)
-            }
+        for vault in vaults {
+            guard vault.status == .active, let ttl = vault.ttlRemaining else { continue }
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl,
+                checkInInterval: vault.checkInInterval)
         }
-    }
-
-    private func scheduleReminders() {
-        for vault in vaults { scheduleReminder(for: vault) }
-    }
-
-    private func scheduleReminder(for vault: Vault) {
-        guard vault.status == .active, let ttl = vault.ttlRemaining else { return }
-        NotificationService.shared.scheduleCheckInReminder(
-            vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl)
     }
 }

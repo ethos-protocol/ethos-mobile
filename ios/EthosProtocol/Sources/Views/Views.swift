@@ -943,6 +943,7 @@ struct VaultActionDeepLinkView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var hasAttemptedLoad = false
+    @State private var showManageBeneficiary = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
@@ -993,13 +994,19 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "person.2.fill",
                         description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Beneficiary management is not yet available in the mobile app."
+                        guard vault != nil else { error = "Vault not found"; return }
+                        showManageBeneficiary = true
                     }
                 }
             }
         }
         .task {
             await loadVaultIfNeeded()
+        }
+        .sheet(isPresented: $showManageBeneficiary) {
+            if let vault {
+                NavigationStack { ManageBeneficiaryView(vault: vault) }
+            }
         }
     }
 
