@@ -72,8 +72,13 @@ data class TwoFactorUiState(
     val error: String? = null,
     val verified: Boolean = false,
     val setupResponse: Enable2FAResponse? = null,
-    val status: TwoFactorStatus? = null
-)
+    val status: TwoFactorStatus? = null,
+    // #119: Client-side rate limiting for OTP verification attempts.
+    val otpFailureCount: Int = 0,
+    val otpCooldownSeconds: Int = 0
+) {
+    val isOtpBlocked: Boolean get() = otpCooldownSeconds > 0
+}
 
 @HiltViewModel
 class TwoFactorViewModel @Inject constructor(
@@ -82,6 +87,8 @@ class TwoFactorViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(TwoFactorUiState())
     val state = _state.asStateFlow()
+
+    private var cooldownJob: kotlinx.coroutines.Job? = null
 
     fun loadStatus(vaultId: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
@@ -103,12 +110,25 @@ class TwoFactorViewModel @Inject constructor(
     }
 
     fun verify2FA(vaultId: String, otp: String) = viewModelScope.launch {
+        if (_state.value.isOtpBlocked) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
         val req = Verify2FARequest(otp = otp)
         when (val result = apiClient.verify2FA(vaultId, req)) {
-            is ApiResult.Success -> _state.update { it.copy(verified = true, isLoading = false) }
-            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
-            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+            is ApiResult.Success -> {
+                // #119: Reset rate-limiting state on success
+                cancelCooldown()
+                _state.update { it.copy(verified = true, isLoading = false,
+                    otpFailureCount = 0, otpCooldownSeconds = 0) }
+            }
+            is ApiResult.Error -> {
+                val newCount = _state.value.otpFailureCount + 1
+                val cooldown = otpCooldownSeconds(newCount)
+                _state.update { it.copy(isLoading = false, error = result.message, otpFailureCount = newCount) }
+                if (cooldown > 0) startCooldown(cooldown)
+            }
+            ApiResult.NetworkUnavailable -> {
+                _state.update { it.copy(isLoading = false, error = "No network") }
+            }
         }
     }
 
@@ -119,6 +139,51 @@ class TwoFactorViewModel @Inject constructor(
             is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
         }
+    }
+
+    // #120: Called only after successful BiometricHelper authentication in the screen layer.
+    // Keeping the biometric prompt in the screen (where a FragmentActivity is available)
+    // and the network call here (in the ViewModel) matches the same pattern used for check-in
+    // in VaultListScreen and avoids threading BiometricHelper through the ViewModel's DI graph.
+    fun disable2FAAfterBiometric(vaultId: String) = disable2FA(vaultId)
+
+    // ── #119 internals ────────────────────────────────────────────────────────
+
+    /**
+     * Escalating cooldown schedule matching the iOS OTPRateLimiter:
+     *   1–2 failures → no cooldown (grace period)
+     *   3 failures   → 30 s
+     *   4 failures   → 60 s
+     *   5+ failures  → 120 s (capped)
+     */
+    internal fun otpCooldownSeconds(failures: Int): Int = when {
+        failures < 3  -> 0
+        failures == 3 -> 30
+        failures == 4 -> 60
+        else          -> 120
+    }
+
+    private fun startCooldown(seconds: Int) {
+        cancelCooldown()
+        _state.update { it.copy(otpCooldownSeconds = seconds) }
+        cooldownJob = viewModelScope.launch {
+            var remaining = seconds
+            while (remaining > 0) {
+                kotlinx.coroutines.delay(1_000)
+                remaining--
+                _state.update { it.copy(otpCooldownSeconds = remaining) }
+            }
+        }
+    }
+
+    private fun cancelCooldown() {
+        cooldownJob?.cancel()
+        cooldownJob = null
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cancelCooldown()
     }
 }
 

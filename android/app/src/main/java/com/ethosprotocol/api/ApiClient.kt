@@ -19,6 +19,10 @@ import kotlinx.serialization.json.Json
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
@@ -48,6 +52,22 @@ class ApiClient @Inject constructor(
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
+        }
+        // #117: Certificate / public-key pinning for api.ethos-protocol.app.
+        // PinningTrustManager wraps the system TrustManager and additionally
+        // verifies that at least one certificate in the chain matches a pinned
+        // SPKI SHA-256 hash. See CertificatePinning.kt for the rotation strategy.
+        engine {
+            sslManager = { httpsURLConnection ->
+                val systemTm = getSystemTrustManager()
+                if (systemTm != null) {
+                    val pinner = CertificatePinner()
+                    val pinningTm = PinningTrustManager(pinner, systemTm)
+                    val sslContext = SSLContext.getInstance("TLS")
+                    sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
+                    httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+                }
+            }
         }
     }
 
@@ -169,4 +189,17 @@ class ApiClient @Inject constructor(
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
     }
+}
+
+// ── #117 helper ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the first [X509TrustManager] from the default [TrustManagerFactory],
+ * or `null` if none is available. Used by [ApiClient] to provide a delegate for
+ * [PinningTrustManager] so standard chain validation still runs before the pin check.
+ */
+internal fun getSystemTrustManager(): X509TrustManager? {
+    val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+    factory.init(null as java.security.KeyStore?)
+    return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
 }

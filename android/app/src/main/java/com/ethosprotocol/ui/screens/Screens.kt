@@ -102,7 +102,32 @@ fun VaultListScreen(
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
+    // #118: Non-blocking root warning. Shown once per session; does not block access.
+    var showRootWarning by remember {
+        mutableStateOf(
+            com.ethosprotocol.services.IntegrityChecker(context).isRooted
+        )
+    }
+
     LaunchedEffect(Unit) { vm.load() }
+
+    // #118: Non-blocking root warning dialog.
+    if (showRootWarning) {
+        AlertDialog(
+            onDismissRequest = { showRootWarning = false },
+            title = { Text("Security Warning") },
+            text = {
+                Text(
+                    "This device appears to be rooted. Your vault data, passkeys, and " +
+                    "2FA secrets may be at greater risk. Consider using a non-rooted " +
+                    "device for maximum security."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showRootWarning = false }) { Text("I Understand") }
+            }
+        )
+    }
 
     if (showCreate) {
         CreateVaultDialog(
@@ -596,8 +621,36 @@ private fun TwoFactorVerifyScreen(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
             modifier = Modifier.width(200.dp),
-            textStyle = MaterialTheme.typography.headlineSmall
+            textStyle = MaterialTheme.typography.headlineSmall,
+            enabled = !state.isOtpBlocked
         )
+
+        // #119: Surface cooldown / failure count in the UI.
+        Spacer(Modifier.height(8.dp))
+        when {
+            state.isOtpBlocked -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Timer, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Too many attempts — wait ${state.otpCooldownSeconds}s",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            state.otpFailureCount > 0 -> {
+                Text(
+                    "${state.otpFailureCount} failed attempt${if (state.otpFailureCount == 1) "" else "s"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            else -> Unit
+        }
+
         state.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -606,10 +659,124 @@ private fun TwoFactorVerifyScreen(
         Button(
             onClick = { vm.verify2FA(vaultId, otp) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = otp.length == 6 && !state.isLoading
+            enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
+        }
+    }
+}
+
+// MARK: - Vault Detail Screen
+
+/**
+ * #120: Disable 2FA is guarded by BiometricHelper before calling
+ * [TwoFactorViewModel.disable2FAAfterBiometric]. This mirrors the same
+ * pattern used for check-in in [VaultListScreen] — the biometric prompt
+ * requires a [FragmentActivity] and therefore lives in the screen layer,
+ * while the network call is delegated to the ViewModel.
+ */
+@Composable
+fun VaultDetailScreen(
+    vaultId: String,
+    onBack: () -> Unit,
+    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+) {
+    val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var showSetup by remember { mutableStateOf(false) }
+    var showVerify by remember { mutableStateOf(false) }
+    var biometricError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+
+    if (showSetup) {
+        TwoFactorSetupScreen(
+            vaultId = vaultId,
+            onComplete = { showSetup = false; twoFactorVm.loadStatus(vaultId) },
+            onDismiss = { showSetup = false }
+        )
+        return
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Vault ${vaultId.take(12)}…") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxSize()
+        ) {
+            Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            when {
+                state.isLoading -> CircularProgressIndicator()
+                state.error != null && state.status == null -> {
+                    Text(state.error!!, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { twoFactorVm.loadStatus(vaultId) }) { Text("Retry") }
+                }
+                state.status != null -> {
+                    val twoFaStatus = state.status!!
+                    if (twoFaStatus.enabled) {
+                        Text("Status: Enabled (${twoFaStatus.method?.name?.uppercase() ?: "—"})")
+                        Text("Verified: ${if (twoFaStatus.verified) "Yes" else "No"}")
+                        Spacer(Modifier.height(12.dp))
+                        if (!twoFaStatus.verified) {
+                            OutlinedButton(onClick = { showVerify = true },
+                                modifier = Modifier.fillMaxWidth()) {
+                                Text("Verify Now")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        biometricError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // #120: Biometric gate — prompt before the destructive disable call.
+                        Button(
+                            onClick = {
+                                biometricError = null
+                                BiometricHelper(context as androidx.fragment.app.FragmentActivity)
+                                    .authenticate(
+                                        title = "Confirm Disable 2FA",
+                                        subtitle = "Biometric or PIN required to disable two-factor authentication",
+                                        onSuccess = {
+                                            twoFactorVm.disable2FAAfterBiometric(vaultId)
+                                        },
+                                        onError = { err -> biometricError = err }
+                                    )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isLoading
+                        ) { Text("Disable 2FA") }
+                    } else {
+                        Text("Status: Disabled")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { showSetup = true },
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("Enable 2FA")
+                        }
+                    }
+                }
+                else -> {
+                    Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
