@@ -24,7 +24,8 @@ enum class VaultStatus { active, expired, released, paused }
 @Serializable
 data class AuthChallenge(
     val challenge: String,
-    @SerialName("expires_at") val expiresAt: String
+    @SerialName("expires_at") val expiresAt: String,
+    @SerialName("existing_credential_ids") val existingCredentialIds: List<String> = emptyList()
 )
 
 @Serializable

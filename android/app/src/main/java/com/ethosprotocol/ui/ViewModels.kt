@@ -56,8 +56,10 @@ class AuthViewModel @Inject constructor(
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
+        // PasskeyService.register already stores the session token returned by the
+        // backend, so there's no need to run a second sign-in ceremony here.
         passkeyService.register(activity, username)
-            .onSuccess { signIn(activity) }
+            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
             .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
     }
 

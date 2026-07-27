@@ -5,9 +5,12 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.ethosprotocol.models.AuthToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.security.MessageDigest
+import java.time.Duration
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -90,5 +93,31 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
             if (value != null) putString("token", value) else remove("token")
         }.apply()
 
-    fun clear() { token = null }
+    private var expiresAtEpochMillis: Long?
+        get() = prefs.getLong(KEY_EXPIRES_AT, -1L).takeIf { it >= 0 }
+        set(value) = prefs.edit().apply {
+            if (value != null) putLong(KEY_EXPIRES_AT, value) else remove(KEY_EXPIRES_AT)
+        }.apply()
+
+    // Stores both the bearer token and its expiry from an auth response, so ApiClient can
+    // proactively refresh before the backend would reject the token with a 401 — previously
+    // AuthToken.expiresAt was parsed off the wire and then never read anywhere.
+    fun setSession(authToken: AuthToken) {
+        token = authToken.token
+        expiresAtEpochMillis = runCatching { Instant.parse(authToken.expiresAt).toEpochMilli() }.getOrNull()
+    }
+
+    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean {
+        val expiry = expiresAtEpochMillis ?: return false
+        return Instant.now().plus(threshold).toEpochMilli() >= expiry
+    }
+
+    fun clear() {
+        token = null
+        expiresAtEpochMillis = null
+    }
+
+    private companion object {
+        const val KEY_EXPIRES_AT = "expires_at_epoch_millis"
+    }
 }
