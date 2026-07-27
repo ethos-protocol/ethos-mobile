@@ -189,6 +189,14 @@ class VaultViewModel @Inject constructor(
         }
     }
 
+    fun deposit(vaultId: String, amount: Long) = viewModelScope.launch {
+        when (val result = apiClient.deposit(vaultId, amount)) {
+            is ApiResult.Success -> updateVaultInPlace(result.data)
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+
     fun withdraw(vaultId: String, amount: Long) = viewModelScope.launch {
         when (val result = apiClient.withdraw(vaultId, amount)) {
             is ApiResult.Success -> updateVaultInPlace(result.data)

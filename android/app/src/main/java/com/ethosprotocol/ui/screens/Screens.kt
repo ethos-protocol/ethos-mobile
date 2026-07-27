@@ -101,6 +101,7 @@ fun VaultListScreen(
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var withdrawVault by remember { mutableStateOf<Vault?>(null) }
+    var depositVault by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { vm.load() }
@@ -144,6 +145,16 @@ fun VaultListScreen(
         )
     }
 
+    depositVault?.let { vault ->
+        DepositDialog(
+            onSubmit = { amount ->
+                depositVault = null
+                vm.deposit(vault.id, amount)
+            },
+            onDismiss = { depositVault = null },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
@@ -176,6 +187,7 @@ fun VaultListScreen(
                                 vault = vault,
                                 onClick = { onVaultClick(vault.id) },
                                 onCheckIn = { pendingCheckIn = vault },
+                                onDeposit = { depositVault = vault },
                                 onWithdraw = { withdrawVault = vault },
                             )
                         }
@@ -234,6 +246,7 @@ private fun VaultCard(
     vault: Vault,
     onClick: () -> Unit,
     onCheckIn: () -> Unit,
+    onDeposit: () -> Unit = {},
     onWithdraw: () -> Unit = {}
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -262,8 +275,13 @@ private fun VaultCard(
                     Text("Check In")
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onWithdraw, modifier = Modifier.fillMaxWidth()) {
-                    Text("Withdraw")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onDeposit, modifier = Modifier.weight(1f)) {
+                        Text("Deposit")
+                    }
+                    OutlinedButton(onClick = onWithdraw, modifier = Modifier.weight(1f)) {
+                        Text("Withdraw")
+                    }
                 }
             }
         }
@@ -614,6 +632,27 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         confirmButton = {
             TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
                 enabled = beneficiary.isNotBlank()) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun DepositDialog(onSubmit: (Long) -> Unit, onDismiss: () -> Unit) {
+    var amountText by remember { mutableStateOf("") }
+    val amountStroops = amountText.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 10_000_000).toLong() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Deposit") },
+        text = {
+            OutlinedTextField(
+                value = amountText, onValueChange = { amountText = it },
+                label = { Text("Amount (XLM)") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSubmit(amountStroops!!) }, enabled = amountStroops != null) { Text("Deposit") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
