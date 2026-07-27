@@ -18,17 +18,19 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
-import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
-import com.ethosprotocol.services.PendingCheckIn
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingAction
+import com.ethosprotocol.services.PendingActionDao
+import com.ethosprotocol.services.PendingActionSyncWorker
+import com.ethosprotocol.services.PendingActionType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 // --- Auth ViewModel ---
@@ -153,7 +155,7 @@ data class VaultUiState(
 class VaultViewModel @Inject constructor(
     private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
-    private val pendingCheckInDao: PendingCheckInDao,
+    private val pendingActionDao: PendingActionDao,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -179,13 +181,14 @@ class VaultViewModel @Inject constructor(
         when (val result = apiClient.checkIn(vaultId)) {
             is ApiResult.Success -> load()
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> {
-                pendingCheckInDao.insert(PendingCheckIn(vaultId = vaultId, queuedAt = System.currentTimeMillis()))
-                val queued = pendingCheckInDao.getAll()
-                notificationHelper.showQueuedCheckIn(queued.size)
-                CheckInSyncWorker.schedule(context)
-                _state.update { it.copy(error = "Offline — check-in queued and will retry automatically") }
-            }
+            ApiResult.NetworkUnavailable -> queueAction(
+                PendingAction(
+                    type = PendingActionType.CHECK_IN,
+                    vaultId = vaultId,
+                    queuedAt = System.currentTimeMillis(),
+                    dedupeKey = "check_in:$vaultId"
+                )
+            )
         }
     }
 
@@ -194,8 +197,22 @@ class VaultViewModel @Inject constructor(
         when (val result = apiClient.createVault(req)) {
             is ApiResult.Success -> load()
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+            ApiResult.NetworkUnavailable -> queueAction(
+                PendingAction(
+                    type = PendingActionType.CREATE_VAULT,
+                    payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
+                    queuedAt = System.currentTimeMillis()
+                )
+            )
         }
+    }
+
+    private suspend fun queueAction(action: PendingAction) {
+        pendingActionDao.insert(action)
+        val queued = pendingActionDao.getAll()
+        notificationHelper.showQueuedActions(queued.size)
+        PendingActionSyncWorker.schedule(context)
+        _state.update { it.copy(error = "Offline — request queued and will retry automatically") }
     }
 }
 

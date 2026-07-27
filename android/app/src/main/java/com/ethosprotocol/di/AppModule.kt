@@ -7,8 +7,8 @@ import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
-import com.ethosprotocol.services.CheckInDatabase
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingActionDatabase
+import com.ethosprotocol.services.PendingActionDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -28,12 +28,12 @@ object AppModule {
     ): ApiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, BuildConfig.API_BASE_URL)
 
     @Provides @Singleton
-    fun provideCheckInDatabase(@ApplicationContext context: Context): CheckInDatabase =
-        CheckInDatabase.create(context)
+    fun providePendingActionDatabase(@ApplicationContext context: Context): PendingActionDatabase =
+        PendingActionDatabase.create(context)
 
     @Provides @Singleton
-    fun providePendingCheckInDao(db: CheckInDatabase): PendingCheckInDao =
-        db.pendingCheckInDao()
+    fun providePendingActionDao(db: PendingActionDatabase): PendingActionDao =
+        db.pendingActionDao()
 
     @Provides @Singleton
     fun provideWorkManager(@ApplicationContext context: Context): WorkManager =

@@ -18,7 +18,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         const val CHANNEL_ID = "ttl_reminders"
         const val CHANNEL_NAME = "Check-in Reminders"
         const val QUEUED_CHANNEL_ID = "ttl_queued"
-        const val QUEUED_CHANNEL_NAME = "Queued Check-ins"
+        const val QUEUED_CHANNEL_NAME = "Queued Requests"
         const val QUEUED_NOTIFICATION_ID = 9_001
     }
 
@@ -48,19 +48,19 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         nm.notify(vaultId.hashCode(), notification)
     }
 
-    fun showQueuedCheckIn(count: Int) {
+    fun showQueuedActions(count: Int) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pi = PendingIntent.getActivity(context, QUEUED_NOTIFICATION_ID, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val body = if (count == 1) "1 check-in will be submitted when back online"
-                   else "$count check-ins will be submitted when back online"
+        val body = if (count == 1) "1 request will be submitted when back online"
+                   else "$count requests will be submitted when back online"
 
         val notification = NotificationCompat.Builder(context, QUEUED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("Check-in queued")
+            .setContentTitle("Request queued")
             .setContentText(body)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -72,7 +72,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             .notify(QUEUED_NOTIFICATION_ID, notification)
     }
 
-    fun cancelQueuedCheckIn() {
+    fun cancelQueuedActions() {
         context.getSystemService(NotificationManager::class.java).cancel(QUEUED_NOTIFICATION_ID)
     }
 
