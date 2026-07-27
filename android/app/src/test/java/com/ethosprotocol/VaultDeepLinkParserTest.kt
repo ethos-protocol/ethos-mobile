@@ -2,6 +2,7 @@ package com.ethosprotocol
 
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.services.VaultDeepLinkParser
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
