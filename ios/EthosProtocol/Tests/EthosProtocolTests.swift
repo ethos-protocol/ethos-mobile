@@ -1,4 +1,6 @@
 import XCTest
+import AuthenticationServices
+import SwiftUI
 @testable import EthosProtocol
 @testable import TTLWidget
 
@@ -72,6 +74,12 @@ final class KeychainServiceTests: XCTestCase {
         KeychainService.shared.deleteToken()
         XCTAssertNil(KeychainService.shared.loadToken())
     }
+
+    func test_deleteCredentialID_returnsNil() {
+        KeychainService.shared.saveCredentialID("cred-to-delete")
+        KeychainService.shared.deleteCredentialID()
+        XCTAssertNil(KeychainService.shared.loadCredentialID())
+    }
 }
 
 final class OfflineCacheTests: XCTestCase {
@@ -85,6 +93,23 @@ final class OfflineCacheTests: XCTestCase {
     func test_load_missingKey_returnsNil() {
         XCTAssertNil(OfflineCache.shared.load(for: "nonexistent-key-\(UUID())"))
     }
+
+    func test_clearAll_removesPreviouslyCachedData() {
+        let data = Data("residual-vault-data".utf8)
+        OfflineCache.shared.save(data, for: "clear-all-test-key")
+        XCTAssertNotNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+
+        OfflineCache.shared.clearAll()
+
+        XCTAssertNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+    }
+
+    func test_clearAll_allowsSavingAgainAfterwards() {
+        OfflineCache.shared.clearAll()
+        let data = Data("post-clear-data".utf8)
+        OfflineCache.shared.save(data, for: "post-clear-key")
+        XCTAssertEqual(OfflineCache.shared.load(for: "post-clear-key"), data)
+    }
 }
 
 final class Base64URLTests: XCTestCase {
@@ -97,6 +122,64 @@ final class Base64URLTests: XCTestCase {
         XCTAssertFalse(encoded.contains("="))
         let decoded = Data(base64URLEncoded: encoded)
         XCTAssertEqual(decoded, original)
+    }
+}
+
+// MARK: - #9 Passkey Delegate Retention Tests
+
+final class PasskeyDelegateRetentionTests: XCTestCase {
+
+    private enum DummyError: Error { case simulatedFailure }
+
+    private func makeAssertionController(challengeByte: UInt8) -> ASAuthorizationController {
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
+        let request = provider.createCredentialAssertionRequest(challenge: Data([challengeByte]))
+        return ASAuthorizationController(authorizationRequests: [request])
+    }
+
+    // Regression test for the objc_setAssociatedObject retention hack: two requests in
+    // flight at once must each keep their own delegate alive and release only their own
+    // entry when they complete, never the other's.
+    func test_concurrentPerformRequests_dontClobberEachOthersDelegate() async throws {
+        let service = PasskeyService.shared
+        let controllerA = makeAssertionController(challengeByte: 0x01)
+        let controllerB = makeAssertionController(challengeByte: 0x02)
+
+        let taskA = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerA, continuation: continuation)
+                controllerA.delegate = delegate
+            }
+        }
+        let taskB = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerB, continuation: continuation)
+                controllerB.delegate = delegate
+            }
+        }
+
+        // Give both tasks a chance to register their delegate before either completes.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(service.activeDelegateCount, 2, "Both concurrent requests should retain their own delegate")
+
+        // Simulate the system callback for A only — B's delegate/continuation must survive.
+        (controllerA.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerA, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskA.value
+            XCTFail("Expected taskA to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 1, "Completing A's request must release only A's delegate")
+
+        (controllerB.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerB, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskB.value
+            XCTFail("Expected taskB to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 0, "Completing B's request should release its delegate")
     }
 }
 
@@ -490,6 +573,13 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         let a = BackgroundRefreshService.shared
         let b = BackgroundRefreshService.shared
         XCTAssertTrue(a === b)
+    }
+
+    // MARK: - #10 Clear Local State on Sign-Out
+
+    func test_cancelScheduledRefresh_doesNotThrow() {
+        BackgroundRefreshService.shared.scheduleAppRefresh()
+        XCTAssertNoThrow(BackgroundRefreshService.shared.cancelScheduledRefresh())
     }
 
     func test_scheduleTTLWarning_doesNotThrow_forActiveVault() throws {
@@ -990,5 +1080,159 @@ final class BeneficiaryUpdateTests: XCTestCase {
 
     func test_isValidNewBeneficiary_trimsWhitespaceBeforeComparison() {
         XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("  GNEW123  ", currentBeneficiary: "GOLD456"))
+    }
+}
+
+// MARK: - #11 Username Validation Tests
+
+final class UsernameValidationTests: XCTestCase {
+
+    func test_validate_wellFormedUsername_succeedsAndReturnsTrimmed() {
+        switch UsernameValidation.validate("alice_92") {
+        case .success(let value): XCTAssertEqual(value, "alice_92")
+        case .failure(let error): XCTFail("Expected success, got \(error)")
+        }
+    }
+
+    func test_validate_trimsLeadingAndTrailingWhitespace() {
+        switch UsernameValidation.validate("  alice  ") {
+        case .success(let value): XCTAssertEqual(value, "alice")
+        case .failure(let error): XCTFail("Expected success, got \(error)")
+        }
+    }
+
+    func test_validate_tooShort_fails() {
+        XCTAssertEqual(UsernameValidation.validate("ab"), .failure(.tooShort))
+    }
+
+    func test_validate_whitespaceOnly_failsAsTooShort() {
+        XCTAssertEqual(UsernameValidation.validate("   "), .failure(.tooShort))
+    }
+
+    func test_validate_tooLong_fails() {
+        let tooLong = String(repeating: "a", count: UsernameValidation.maxLength + 1)
+        XCTAssertEqual(UsernameValidation.validate(tooLong), .failure(.tooLong))
+    }
+
+    func test_validate_atMaxLength_succeeds() {
+        let atMax = String(repeating: "a", count: UsernameValidation.maxLength)
+        XCTAssertEqual(UsernameValidation.validate(atMax), .success(atMax))
+    }
+
+    func test_validate_invalidCharacters_fails() {
+        for invalid in ["alice smith", "alice@site.com", "alice!", "alice/bob"] {
+            XCTAssertEqual(UsernameValidation.validate(invalid), .failure(.invalidCharacters),
+                           "Expected \(invalid) to be rejected")
+        }
+    }
+
+    func test_validate_allowsHyphenAndUnderscore() {
+        XCTAssertEqual(UsernameValidation.validate("alice-bob_92"), .success("alice-bob_92"))
+    }
+}
+
+// MARK: - #12 Re-Lock on Background/Foreground Tests
+
+@MainActor
+final class AuthStoreReLockTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.relock_timeout")
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.relock_timeout")
+        super.tearDown()
+    }
+
+    func test_handleScenePhaseChange_locksAfterTimeoutElapses() {
+        ReLockTimeoutOption.current = .oneMinute
+        let store = AuthStore()
+        store.isAuthenticated = true
+        let backgroundedTime = Date()
+
+        store.handleScenePhaseChange(.background, now: backgroundedTime)
+        store.handleScenePhaseChange(.active, now: backgroundedTime.addingTimeInterval(61))
+
+        XCTAssertTrue(store.isLocked)
+    }
+
+    func test_handleScenePhaseChange_doesNotLock_beforeTimeoutElapses() {
+        ReLockTimeoutOption.current = .oneMinute
+        let store = AuthStore()
+        store.isAuthenticated = true
+        let backgroundedTime = Date()
+
+        store.handleScenePhaseChange(.background, now: backgroundedTime)
+        store.handleScenePhaseChange(.active, now: backgroundedTime.addingTimeInterval(30))
+
+        XCTAssertFalse(store.isLocked)
+    }
+
+    func test_handleScenePhaseChange_neverOption_neverLocksRegardlessOfElapsedTime() {
+        ReLockTimeoutOption.current = .never
+        let store = AuthStore()
+        store.isAuthenticated = true
+        let backgroundedTime = Date()
+
+        store.handleScenePhaseChange(.background, now: backgroundedTime)
+        store.handleScenePhaseChange(.active, now: backgroundedTime.addingTimeInterval(999_999))
+
+        XCTAssertFalse(store.isLocked)
+    }
+
+    func test_handleScenePhaseChange_whenNotAuthenticated_doesNotLock() {
+        ReLockTimeoutOption.current = .immediately
+        let store = AuthStore()
+        store.isAuthenticated = false
+        let backgroundedTime = Date()
+
+        store.handleScenePhaseChange(.background, now: backgroundedTime)
+        store.handleScenePhaseChange(.active, now: backgroundedTime.addingTimeInterval(5))
+
+        XCTAssertFalse(store.isLocked)
+    }
+
+    func test_handleScenePhaseChange_immediately_locksAsSoonAsForegrounded() {
+        ReLockTimeoutOption.current = .immediately
+        let store = AuthStore()
+        store.isAuthenticated = true
+        let backgroundedTime = Date()
+
+        store.handleScenePhaseChange(.background, now: backgroundedTime)
+        store.handleScenePhaseChange(.active, now: backgroundedTime.addingTimeInterval(0.001))
+
+        XCTAssertTrue(store.isLocked)
+    }
+}
+
+final class ReLockTimeoutOptionTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.relock_timeout")
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.relock_timeout")
+        super.tearDown()
+    }
+
+    func test_current_defaultsToOneMinute_whenUnset() {
+        XCTAssertEqual(ReLockTimeoutOption.current, .oneMinute)
+    }
+
+    func test_current_persistsAcrossReads() {
+        ReLockTimeoutOption.current = .fiveMinutes
+        XCTAssertEqual(ReLockTimeoutOption.current, .fiveMinutes)
+    }
+
+    func test_never_hasInfiniteSeconds() {
+        XCTAssertEqual(ReLockTimeoutOption.never.seconds, .infinity)
+    }
+
+    func test_immediately_hasZeroSeconds() {
+        XCTAssertEqual(ReLockTimeoutOption.immediately.seconds, 0)
     }
 }

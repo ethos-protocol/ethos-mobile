@@ -50,6 +50,43 @@ enum VaultAmount {
     }
 }
 
+// Client-side mirror of the backend's username policy for passkey registration, so
+// malformed input is caught before it's sent as the WebAuthn userID/display name instead
+// of surfacing as a generic backend rejection.
+enum UsernameValidation {
+    static let minLength = 3
+    static let maxLength = 30
+    private static let allowedCharacters = CharacterSet(charactersIn:
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+    enum ValidationError: LocalizedError, Equatable {
+        case tooShort
+        case tooLong
+        case invalidCharacters
+
+        var errorDescription: String? {
+            switch self {
+            case .tooShort:
+                return "Username must be at least \(UsernameValidation.minLength) characters."
+            case .tooLong:
+                return "Username must be \(UsernameValidation.maxLength) characters or fewer."
+            case .invalidCharacters:
+                return "Username can only contain letters, numbers, underscores, and hyphens."
+            }
+        }
+    }
+
+    /// Trims leading/trailing whitespace, then validates length and character set.
+    /// Returns the trimmed username on success, or the first validation failure found.
+    static func validate(_ input: String) -> Result<String, ValidationError> {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= minLength else { return .failure(.tooShort) }
+        guard trimmed.count <= maxLength else { return .failure(.tooLong) }
+        guard trimmed.unicodeScalars.allSatisfy(allowedCharacters.contains) else { return .failure(.invalidCharacters) }
+        return .success(trimmed)
+    }
+}
+
 enum BeneficiaryUpdate {
     /// A new beneficiary address is only valid if it's non-empty (after trimming)
     /// and actually differs from the vault's current beneficiary.

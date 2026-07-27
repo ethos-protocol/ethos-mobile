@@ -33,6 +33,10 @@ final class KeychainService {
         load(forKey: credentialKey)
     }
 
+    func deleteCredentialID() {
+        delete(forKey: credentialKey)
+    }
+
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {
         let data = Data(value.utf8)
         let query: [CFString: Any] = [

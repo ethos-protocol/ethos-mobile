@@ -99,6 +99,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.add(request)
     }
 
+    /// Removes every pending local notification (used on sign-out, so a previously
+    /// signed-in user's check-in/TTL reminders don't fire for whoever uses the app next).
+    func removeAllPendingNotifications() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    }
+
     func registerNotificationCategories() {
         // .authenticationRequired ensures iOS forces the device to be unlocked before this
         // action fires — otherwise anyone with the phone in hand could trigger a check-in

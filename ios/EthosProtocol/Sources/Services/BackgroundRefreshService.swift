@@ -38,6 +38,12 @@ final class BackgroundRefreshService {
         try? BGTaskScheduler.shared.submit(request)
     }
 
+    /// Cancels the pending BGAppRefreshTaskRequest (used on sign-out, so a stale
+    /// background refresh doesn't run — and re-schedule itself — for a signed-out user).
+    func cancelScheduledRefresh() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskIdentifier)
+    }
+
     func handleRefresh(task: BackgroundRefreshTask) {
         scheduleAppRefresh()
 

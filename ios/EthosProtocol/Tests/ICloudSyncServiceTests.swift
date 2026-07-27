@@ -52,6 +52,17 @@ final class ICloudSyncServiceTests: XCTestCase {
         XCTAssertNil(ICloudSyncService.shared.credentialID(for: "nonexistent-\(UUID())"))
     }
 
+    // MARK: - #10 Clear Local State on Sign-Out
+
+    func test_clearLocalAssociations_removesLocallySavedAssociation() {
+        ICloudSyncService.shared.save(vaultID: "vault-to-clear", credentialID: "cred-to-clear")
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-to-clear"), "cred-to-clear")
+
+        ICloudSyncService.shared.clearLocalAssociations()
+
+        XCTAssertNil(ICloudSyncService.shared.credentialID(for: "vault-to-clear"))
+    }
+
     func test_restoreFromICloud_mergesIntoLocal() {
         // Pre-populate local storage
         ICloudSyncService.shared.save(vaultID: "local-vault", credentialID: "local-cred")

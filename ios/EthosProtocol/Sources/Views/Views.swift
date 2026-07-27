@@ -2,12 +2,88 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var authStore: AuthStore
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        if authStore.isAuthenticated {
-            VaultListView()
-        } else {
-            AuthView()
+        ZStack {
+            if authStore.isAuthenticated {
+                VaultListView()
+            } else {
+                AuthView()
+            }
+
+            // Re-lock gate: shown atop the vault list after the app has spent long enough
+            // in the background (AuthStore.handleScenePhaseChange), independent of privacy
+            // overlay below which covers *every* backgrounding regardless of duration.
+            if authStore.isAuthenticated && authStore.isLocked {
+                LockScreenView()
+            }
+
+            // Covers the vault list/balances the instant the app stops being active, so
+            // the system's app-switcher snapshot never captures sensitive content.
+            if authStore.isAuthenticated && scenePhase != .active {
+                PrivacyOverlayView()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            authStore.handleScenePhaseChange(newPhase)
+        }
+    }
+}
+
+private struct PrivacyOverlayView: View {
+    var body: some View {
+        ZStack {
+            Color(.systemBackground)
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.blue)
+        }
+        .ignoresSafeArea()
+        .transition(.opacity)
+    }
+}
+
+private struct LockScreenView: View {
+    @EnvironmentObject var authStore: AuthStore
+    @State private var error: String?
+    @State private var isUnlocking = false
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+            VStack(spacing: 24) {
+                Image(systemName: "faceid")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.blue)
+                Text("Ethos-Protocol Locked").font(.title.bold())
+                if let error {
+                    Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+                }
+                Button(action: unlock) {
+                    Label(isUnlocking ? "Unlocking…" : "Unlock", systemImage: "faceid")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isUnlocking)
+            }
+            .padding(32)
+        }
+        .onAppear(perform: unlock)
+    }
+
+    private func unlock() {
+        guard !isUnlocking else { return }
+        isUnlocking = true
+        error = nil
+        Task {
+            do {
+                try await BiometricService.shared.authenticate(reason: "Unlock Ethos-Protocol")
+                authStore.isLocked = false
+            } catch {
+                self.error = error.localizedDescription
+            }
+            isUnlocking = false
         }
     }
 }
@@ -93,6 +169,10 @@ struct RegisterView: View {
     @Environment(\.dismiss) var dismiss
     @State private var username = ""
 
+    private var validationResult: Result<String, UsernameValidation.ValidationError> {
+        UsernameValidation.validate(username)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -100,6 +180,11 @@ struct RegisterView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    if case .failure(let validationError) = validationResult, !username.isEmpty {
+                        Text(validationError.errorDescription ?? "Invalid username")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
                 if let error = authStore.error {
                     Section { Text(error).foregroundStyle(.red).font(.caption) }
@@ -109,15 +194,21 @@ struct RegisterView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Register") {
-                        Task { await authStore.register(username: username); dismiss() }
+                        guard case .success(let validUsername) = validationResult else { return }
+                        Task { await authStore.register(username: validUsername); dismiss() }
                     }
-                    .disabled(username.isEmpty || authStore.isLoading)
+                    .disabled(!isValid || authStore.isLoading)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
             }
         }
+    }
+
+    private var isValid: Bool {
+        if case .success = validationResult { return true }
+        return false
     }
 }
 

@@ -39,6 +39,13 @@ final class OfflineCache {
         let file = dir.appendingPathComponent(key.sha256Hex)
         try? FileManager.default.removeItem(at: file)
     }
+
+    /// Removes every cached response (used on sign-out, so no cached vault data
+    /// survives for whoever opens the app next on this device).
+    func clearAll() {
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
 }
 
 import CryptoKit

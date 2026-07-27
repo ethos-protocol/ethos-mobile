@@ -44,25 +44,63 @@ final class PasskeyService: NSObject {
         return try await APIClient.shared.verifyPasskey(credentialID: credID, clientDataJSON: clientData, signature: signature)
     }
 
+    // ASAuthorizationController.delegate is a weak reference, so whatever creates the
+    // delegate has to keep it alive itself until the request completes. This used to rely
+    // on objc_setAssociatedObject hung off the controller instance — fragile, since it'd
+    // silently break if performRequest were ever refactored to reuse a controller instead
+    // of creating a fresh one per call. Keyed by controller identity (rather than a single
+    // property) so two concurrent performRequest calls — e.g. a register() and an
+    // authenticate() in flight at once — each retain their own delegate without clobbering
+    // the other's reference.
+    //
+    // `internal` (not `private`): lets tests exercise the retention/release bookkeeping
+    // directly via `@testable import`, without needing to drive a real system passkey
+    // prompt through `performRequests()`.
+    var activeDelegates: [ObjectIdentifier: PasskeyDelegate] = [:]
+
+    var activeDelegateCount: Int { activeDelegates.count }
+
+    func makeRetainedDelegate(
+        for controller: ASAuthorizationController,
+        continuation: CheckedContinuation<ASAuthorizationCredential, Error>
+    ) -> PasskeyDelegate {
+        let key = ObjectIdentifier(controller)
+        let delegate = PasskeyDelegate(continuation: continuation) { [weak self] in
+            self?.activeDelegates[key] = nil
+        }
+        activeDelegates[key] = delegate
+        return delegate
+    }
+
     private func performRequest(_ request: ASAuthorizationRequest) async throws -> ASAuthorizationCredential {
         try await withCheckedThrowingContinuation { continuation in
             let controller = ASAuthorizationController(authorizationRequests: [request])
-            let delegate = PasskeyDelegate(continuation: continuation)
+            let delegate = makeRetainedDelegate(for: controller, continuation: continuation)
             controller.delegate = delegate
             controller.performRequests()
-            objc_setAssociatedObject(controller, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
         }
     }
 }
 
-private class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate {
+// `internal` (not `private`): tests construct/inspect this via `@testable import` to
+// verify the delegate-retention behavior above without invoking real system UI.
+class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate {
     let continuation: CheckedContinuation<ASAuthorizationCredential, Error>
-    init(continuation: CheckedContinuation<ASAuthorizationCredential, Error>) { self.continuation = continuation }
+    private let onComplete: () -> Void
+
+    init(continuation: CheckedContinuation<ASAuthorizationCredential, Error>, onComplete: @escaping () -> Void) {
+        self.continuation = continuation
+        self.onComplete = onComplete
+    }
+
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         continuation.resume(returning: authorization.credential)
+        onComplete()
     }
+
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         continuation.resume(throwing: error)
+        onComplete()
     }
 }
 
