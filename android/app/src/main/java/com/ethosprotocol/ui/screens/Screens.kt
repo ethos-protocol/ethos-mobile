@@ -121,7 +121,32 @@ fun VaultListScreen(
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
+    // #118: Non-blocking root warning. Shown once per session; does not block access.
+    var showRootWarning by remember {
+        mutableStateOf(
+            com.ethosprotocol.services.IntegrityChecker(context).isRooted
+        )
+    }
+
     LaunchedEffect(Unit) { vm.load() }
+
+    // #118: Non-blocking root warning dialog.
+    if (showRootWarning) {
+        AlertDialog(
+            onDismissRequest = { showRootWarning = false },
+            title = { Text("Security Warning") },
+            text = {
+                Text(
+                    "This device appears to be rooted. Your vault data, passkeys, and " +
+                    "2FA secrets may be at greater risk. Consider using a non-rooted " +
+                    "device for maximum security."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showRootWarning = false }) { Text("I Understand") }
+            }
+        )
+    }
 
     if (showCreate) {
         CreateVaultDialog(
@@ -670,8 +695,36 @@ private fun TwoFactorVerifyScreen(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
             modifier = Modifier.width(200.dp),
-            textStyle = MaterialTheme.typography.headlineSmall
+            textStyle = MaterialTheme.typography.headlineSmall,
+            enabled = !state.isOtpBlocked
         )
+
+        // #119: Surface cooldown / failure count in the UI.
+        Spacer(Modifier.height(8.dp))
+        when {
+            state.isOtpBlocked -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Timer, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Too many attempts — wait ${state.otpCooldownSeconds}s",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            state.otpFailureCount > 0 -> {
+                Text(
+                    "${state.otpFailureCount} failed attempt${if (state.otpFailureCount == 1) "" else "s"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            else -> Unit
+        }
+
         state.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -680,7 +733,7 @@ private fun TwoFactorVerifyScreen(
         Button(
             onClick = { vm.verify2FA(vaultId, otp) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = otp.length == 6 && !state.isLoading
+            enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
@@ -688,202 +741,44 @@ private fun TwoFactorVerifyScreen(
     }
 }
 
-// MARK: - Deposit Screen
+// MARK: - Vault Detail Screen
 
 /**
- * Full Deposit screen wired to [DepositViewModel] via Hilt.
- *
- * The screen is reached either from the vault detail action list or from the
- * deep-link action router (deposit action). It navigates back via [onDone] on
- * success.
+ * #120: Disable 2FA is guarded by BiometricHelper before calling
+ * [TwoFactorViewModel.disable2FAAfterBiometric]. This mirrors the same
+ * pattern used for check-in in [VaultListScreen] — the biometric prompt
+ * requires a [FragmentActivity] and therefore lives in the screen layer,
+ * while the network call is delegated to the ViewModel.
  */
 @Composable
-fun DepositScreen(
+fun VaultDetailScreen(
     vaultId: String,
-    vm: com.ethosprotocol.ui.DepositViewModel = hiltViewModel(),
-    onDone: () -> Unit
+    onBack: () -> Unit,
+    twoFactorVm: TwoFactorViewModel = hiltViewModel()
 ) {
-    val state by vm.state.collectAsStateWithLifecycle()
-    var amountInput by remember { mutableStateOf("") }
-
-    // Navigate away as soon as the deposit succeeds
-    LaunchedEffect(state.isSuccess) {
-        if (state.isSuccess) onDone()
-    }
-
-    DepositScreenContent(
-        vaultId = vaultId,
-        amountInput = amountInput,
-        isLoading = state.isLoading,
-        error = state.error,
-        onAmountChange = { amountInput = it },
-        onDeposit = { vm.deposit(vaultId, amountInput) },
-        onDone = onDone
-    )
-}
-
-/**
- * Stateless content layer extracted so Paparazzi screenshot tests can render it
- * on the JVM without a Hilt DI graph.
- */
-@Composable
-fun DepositScreenContent(
-    vaultId: String,
-    amountInput: String,
-    isLoading: Boolean,
-    error: String?,
-    onAmountChange: (String) -> Unit,
-    onDeposit: () -> Unit,
-    onDone: () -> Unit
-) {
-    val isAmountValid = amountInput.toDoubleOrNull()?.let { it > 0 } == true
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Deposit") },
-                navigationIcon = {
-                    IconButton(onClick = onDone) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                "Vault: ${vaultId.take(12)}…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            OutlinedTextField(
-                value = amountInput,
-                onValueChange = onAmountChange,
-                label = { Text("Amount (XLM)") },
-                placeholder = { Text("0.0000000") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
-                ),
-                isError = amountInput.isNotEmpty() && !isAmountValid
-            )
-
-            if (amountInput.isNotEmpty() && !isAmountValid) {
-                Text(
-                    "Enter a valid positive XLM amount.",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Button(
-                onClick = onDeposit,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = isAmountValid && !isLoading
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Text("Deposit")
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Withdraw Screen
-
-/**
- * Full Withdraw screen wired to [WithdrawViewModel] via Hilt.
- *
- * The screen enforces:
- *  - Amount must be a positive number in XLM.
- *  - Amount must not exceed the vault's current balance (client-side guard;
- *    the server enforces this too).
- *  - Biometric auth is required before the API call is dispatched.
- *
- * Navigates back via [onDone] on success.
- */
-@Composable
-fun WithdrawScreen(
-    vaultId: String,
-    vaultBalanceStroops: Long,
-    vm: com.ethosprotocol.ui.WithdrawViewModel = hiltViewModel(),
-    onDone: () -> Unit
-) {
-    val state by vm.state.collectAsStateWithLifecycle()
+    val state by twoFactorVm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var amountInput by remember { mutableStateOf("") }
+    var showSetup by remember { mutableStateOf(false) }
+    var showVerify by remember { mutableStateOf(false) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(state.isSuccess) {
-        if (state.isSuccess) onDone()
+    LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+
+    if (showSetup) {
+        TwoFactorSetupScreen(
+            vaultId = vaultId,
+            onComplete = { showSetup = false; twoFactorVm.loadStatus(vaultId) },
+            onDismiss = { showSetup = false }
+        )
+        return
     }
-
-    // Formatted balance shown to the user (same formula as Vault.formattedBalance)
-    val availableBalance = remember(vaultBalanceStroops) {
-        "%.7f XLM".format(vaultBalanceStroops / 10_000_000.0)
-    }
-
-    WithdrawScreenContent(
-        vaultId = vaultId,
-        availableBalance = availableBalance,
-        amountInput = amountInput,
-        isLoading = state.isLoading,
-        error = state.error ?: biometricError,
-        onAmountChange = { amountInput = it },
-        onWithdraw = {
-            // Biometric gate is required before dispatching a withdrawal.
-            biometricError = null
-            BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                title = "Confirm Withdrawal",
-                subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
-                onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
-                onError = { err -> biometricError = err }
-            )
-        },
-        onDone = onDone
-    )
-}
-
-/**
- * Stateless content layer extracted so Paparazzi screenshot tests can render it
- * on the JVM without a Hilt DI graph.
- */
-@Composable
-fun WithdrawScreenContent(
-    vaultId: String,
-    availableBalance: String,
-    amountInput: String,
-    isLoading: Boolean,
-    error: String?,
-    onAmountChange: (String) -> Unit,
-    onWithdraw: () -> Unit,
-    onDone: () -> Unit
-) {
-    val amountDouble = amountInput.toDoubleOrNull()
-    val isAmountValid = amountDouble != null && amountDouble > 0
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Withdraw") },
+                title = { Text("Vault ${vaultId.take(12)}…") },
                 navigationIcon = {
-                    IconButton(onClick = onDone) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 }
             )
         }
@@ -891,64 +786,71 @@ fun WithdrawScreenContent(
         Column(
             modifier = Modifier
                 .padding(padding)
+                .padding(16.dp)
                 .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                "Vault: ${vaultId.take(12)}…",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
 
-            Text(
-                "Available: $availableBalance",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            OutlinedTextField(
-                value = amountInput,
-                onValueChange = onAmountChange,
-                label = { Text("Amount (XLM)") },
-                placeholder = { Text("0.0000000") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal
-                ),
-                isError = amountInput.isNotEmpty() && !isAmountValid
-            )
-
-            if (amountInput.isNotEmpty() && !isAmountValid) {
-                Text(
-                    "Enter a valid positive XLM amount.",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Button(
-                onClick = onWithdraw,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = isAmountValid && !isLoading
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Text("Withdraw")
+            when {
+                state.isLoading -> CircularProgressIndicator()
+                state.error != null && state.status == null -> {
+                    Text(state.error!!, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { twoFactorVm.loadStatus(vaultId) }) { Text("Retry") }
+                }
+                state.status != null -> {
+                    val twoFaStatus = state.status!!
+                    if (twoFaStatus.enabled) {
+                        Text("Status: Enabled (${twoFaStatus.method?.name?.uppercase() ?: "—"})")
+                        Text("Verified: ${if (twoFaStatus.verified) "Yes" else "No"}")
+                        Spacer(Modifier.height(12.dp))
+                        if (!twoFaStatus.verified) {
+                            OutlinedButton(onClick = { showVerify = true },
+                                modifier = Modifier.fillMaxWidth()) {
+                                Text("Verify Now")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        biometricError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // #120: Biometric gate — prompt before the destructive disable call.
+                        Button(
+                            onClick = {
+                                biometricError = null
+                                BiometricHelper(context as androidx.fragment.app.FragmentActivity)
+                                    .authenticate(
+                                        title = "Confirm Disable 2FA",
+                                        subtitle = "Biometric or PIN required to disable two-factor authentication",
+                                        onSuccess = {
+                                            twoFactorVm.disable2FAAfterBiometric(vaultId)
+                                        },
+                                        onError = { err -> biometricError = err }
+                                    )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isLoading
+                        ) { Text("Disable 2FA") }
+                    } else {
+                        Text("Status: Disabled")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { showSetup = true },
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("Enable 2FA")
+                        }
+                    }
+                }
+                else -> {
+                    Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-
-            Text(
-                "Biometric confirmation is required before the withdrawal is submitted.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

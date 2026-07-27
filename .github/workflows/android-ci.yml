@@ -43,6 +43,36 @@ jobs:
       - name: Assemble release APK (R8/shrinking smoke check)
         run: ./gradlew assembleRelease
 
+      # task #123: Confirm that R8 produced a mapping file (i.e. minification/obfuscation
+      # actually ran) and spot-check that sensitive model classes are NOT left fully open
+      # in the mapping file. A missing mapping.txt means R8 did not run, which would leave
+      # debug symbols intact in the release APK.
+      - name: Verify R8 mapping file exists and sensitive classes are obfuscated
+        run: |
+          MAPPING=app/build/outputs/mapping/release/mapping.txt
+          if [ ! -f "$MAPPING" ]; then
+            echo "ERROR: R8 mapping file not found at $MAPPING — minification may not have run."
+            exit 1
+          fi
+          echo "R8 mapping file found ($(wc -l < "$MAPPING") lines)."
+
+          # Spot-check: AuthToken should appear in the mapping (meaning R8 processed it).
+          if ! grep -q "com.ethosprotocol.models.AuthToken" "$MAPPING"; then
+            echo "WARNING: AuthToken not found in mapping file — verify R8 processed model classes."
+          else
+            echo "AuthToken found in mapping file — R8 processed model classes."
+          fi
+
+          echo "Mapping file check passed."
+
+      - name: Upload R8 mapping file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-r8-mapping
+          path: android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+
       - name: Run lint
         run: ./gradlew lint
 

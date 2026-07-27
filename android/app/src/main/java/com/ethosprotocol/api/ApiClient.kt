@@ -16,8 +16,13 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
@@ -47,6 +52,22 @@ class ApiClient @Inject constructor(
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
+        }
+        // #117: Certificate / public-key pinning for api.ethos-protocol.app.
+        // PinningTrustManager wraps the system TrustManager and additionally
+        // verifies that at least one certificate in the chain matches a pinned
+        // SPKI SHA-256 hash. See CertificatePinning.kt for the rotation strategy.
+        engine {
+            sslManager = { httpsURLConnection ->
+                val systemTm = getSystemTrustManager()
+                if (systemTm != null) {
+                    val pinner = CertificatePinner()
+                    val pinningTm = PinningTrustManager(pinner, systemTm)
+                    val sslContext = SSLContext.getInstance("TLS")
+                    sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
+                    httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+                }
+            }
         }
     }
 
@@ -113,6 +134,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -129,6 +151,7 @@ class ApiClient @Inject constructor(
         return runCatching {
             val response = client.delete("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -146,4 +169,37 @@ class ApiClient @Inject constructor(
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
     }
+
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes, hex-encoded. The server
+    //           stores seen nonces and rejects any duplicate within the token's
+    //           validity window, preventing a captured request from being
+    //           replayed later.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window),
+    //               limiting the replay window to that duration even if the
+    //               nonce store is unavailable.
+    private fun HttpRequestBuilder.antiReplayHeaders() {
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        val timestamp = System.currentTimeMillis() / 1_000L
+        header("X-Nonce", nonce)
+        header("X-Timestamp", timestamp.toString())
+    }
+}
+
+// ── #117 helper ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the first [X509TrustManager] from the default [TrustManagerFactory],
+ * or `null` if none is available. Used by [ApiClient] to provide a delegate for
+ * [PinningTrustManager] so standard chain validation still runs before the pin check.
+ */
+internal fun getSystemTrustManager(): X509TrustManager? {
+    val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+    factory.init(null as java.security.KeyStore?)
+    return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
 }
