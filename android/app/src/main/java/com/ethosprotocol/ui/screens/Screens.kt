@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -236,8 +237,11 @@ private fun OfflineBanner() {
 private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
+            // At the largest font scale a full-length id + chip in one row will clip rather than
+            // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
                 StatusChip(vault.status)
             }
@@ -255,7 +259,8 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                         modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall)
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {
@@ -276,8 +281,11 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
         com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
         com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
     }
-    SuggestionChip(onClick = {}, label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color))
+    SuggestionChip(
+        onClick = {},
+        label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+    )
 }
 
 // MARK: - Beneficiary Acceptance Screen
@@ -622,7 +630,9 @@ private fun TwoFactorVerifyScreen(
         OutlinedTextField(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
-            modifier = Modifier.width(200.dp),
+            // A fixed width clips the label/digits at large font scales; widthIn lets it grow
+            // instead while keeping the same minimum size on standard-scale devices.
+            modifier = Modifier.widthIn(min = 200.dp),
             textStyle = MaterialTheme.typography.headlineSmall
         )
         state.error?.let {
