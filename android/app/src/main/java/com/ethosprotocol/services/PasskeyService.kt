@@ -19,13 +19,15 @@ class PasskeyService @Inject constructor(
     private val tokenProvider: TokenProvider
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        val normalizedUsername = UsernameValidator.sanitize(username)
+        require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
         val requestJson = JSONObject().apply {
             put("challenge", challenge)
             put("rp", JSONObject().put("id", "ethos-protocol.app").put("name", "Ethos-Protocol"))
             put("user", JSONObject()
-                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
-                .put("name", username).put("displayName", username))
+                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(normalizedUsername.toByteArray()))
+                .put("name", normalizedUsername).put("displayName", normalizedUsername))
             put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
             put("authenticatorSelection", JSONObject()
                 .put("authenticatorAttachment", "platform")
