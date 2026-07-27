@@ -1,0 +1,109 @@
+package com.ethosprotocol.ui
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import com.ethosprotocol.services.VaultDeepLink
+import com.ethosprotocol.services.VaultDeepLinkAction
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.StateFlow
+import javax.inject.Inject
+
+/**
+ * Holds pending navigation targets that arrive via deep link or beneficiary-accept intent.
+ *
+ * Both fields are backed by [SavedStateHandle] so they survive:
+ *   - configuration changes (screen rotation, locale switch, etc.)
+ *   - process death / recreation (system low-memory kill)
+ *
+ * Previously these were plain `mutableStateOf` fields on `MainActivity`, which meant any
+ * deep-link tap during authentication would be silently lost the moment the system recycled
+ * the process before the user finished signing in.  (Issue #93)
+ *
+ * Persistence strategy
+ * --------------------
+ * `SavedStateHandle` serialises values via Android's `Bundle` mechanism using
+ * `Parcelable` or a small set of primitive-compatible types.  Rather than adding a
+ * `@Parcelize` annotation to the existing `VaultDeepLink` data class (which would add an
+ * Android-framework dependency to a pure-data type), we decompose the value into two
+ * `String?` keys and reconstruct it on the way out.  This keeps the model layer clean.
+ */
+@HiltViewModel
+class DeepLinkViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle
+) : ViewModel() {
+
+    // -------------------------------------------------------------------------
+    // Keys stored in SavedStateHandle
+    // -------------------------------------------------------------------------
+
+    companion object {
+        internal const val KEY_BENEFICIARY_VAULT_ID = "pending_beneficiary_vault_id"
+        internal const val KEY_DEEP_LINK_VAULT_ID   = "pending_deep_link_vault_id"
+        internal const val KEY_DEEP_LINK_ACTION     = "pending_deep_link_action"
+    }
+
+    // -------------------------------------------------------------------------
+    // Exposed state as StateFlow (collected by Compose via collectAsStateWithLifecycle)
+    // -------------------------------------------------------------------------
+
+    /** Vault ID from an /accept beneficiary intent, or null when none is pending. */
+    val pendingBeneficiaryAcceptVaultId: StateFlow<String?> =
+        savedStateHandle.getStateFlow(KEY_BENEFICIARY_VAULT_ID, null)
+
+    /** Deep link parsed from an ethosprotocol:// URI, or null when none is pending. */
+    val pendingVaultDeepLink: StateFlow<VaultDeepLink?> =
+        // SavedStateHandle does not know how to serialise VaultDeepLink directly, so we
+        // store the two string components separately and derive the composite value here.
+        object : StateFlow<VaultDeepLink?> {
+            // Delegate to a derived flow that combines the two handle entries.
+            private val delegate = run {
+                val vaultIdFlow: StateFlow<String?> =
+                    savedStateHandle.getStateFlow(KEY_DEEP_LINK_VAULT_ID, null)
+                val actionFlow: StateFlow<String?> =
+                    savedStateHandle.getStateFlow(KEY_DEEP_LINK_ACTION, null)
+                // Derive a simple StateFlow by implementing it ourselves.  A coroutine-based
+                // combine() would require a scope, so we implement a lightweight wrapper that
+                // reads the two underlying flows on every access — acceptable here because
+                // these values change rarely (only on new intent / process start).
+                object : StateFlow<VaultDeepLink?> {
+                    override val replayCache get() = listOf(value)
+                    override val value: VaultDeepLink?
+                        get() {
+                            val id = vaultIdFlow.value ?: return null
+                            val action = actionFlow.value?.let {
+                                VaultDeepLinkAction.fromPathSegment(it)
+                            } ?: return null
+                            return VaultDeepLink(vaultId = id, action = action)
+                        }
+
+                    override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<VaultDeepLink?>) =
+                        vaultIdFlow.collect { collector.emit(value) }
+                }
+            }
+            override val replayCache get() = delegate.replayCache
+            override val value get() = delegate.value
+            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<VaultDeepLink?>) =
+                delegate.collect(collector)
+        }
+
+    // -------------------------------------------------------------------------
+    // Mutators
+    // -------------------------------------------------------------------------
+
+    /** Called from [MainActivity.handleIncomingIntent] when a beneficiary-accept URI arrives. */
+    fun setPendingBeneficiaryAccept(vaultId: String?) {
+        savedStateHandle[KEY_BENEFICIARY_VAULT_ID] = vaultId
+    }
+
+    /** Called from [MainActivity.handleIncomingIntent] when an ethosprotocol:// URI arrives. */
+    fun setPendingVaultDeepLink(deepLink: VaultDeepLink?) {
+        savedStateHandle[KEY_DEEP_LINK_VAULT_ID] = deepLink?.vaultId
+        savedStateHandle[KEY_DEEP_LINK_ACTION]   = deepLink?.action?.pathSegment
+    }
+
+    /** Clears the beneficiary-accept state once the navigation target has been consumed. */
+    fun consumeBeneficiaryAccept() = setPendingBeneficiaryAccept(null)
+
+    /** Clears the vault deep-link state once the navigation target has been consumed. */
+    fun consumeVaultDeepLink() = setPendingVaultDeepLink(null)
+}

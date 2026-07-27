@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.NetworkMonitor
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.util.concurrent.TimeUnit
@@ -15,10 +16,17 @@ class CheckInSyncWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val apiClient: ApiClient,
     private val dao: PendingCheckInDao,
-    private val notificationHelper: NotificationHelper
+    private val notificationHelper: NotificationHelper,
+    private val networkMonitor: NetworkMonitor
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // WorkManager's NetworkType.CONNECTED constraint only guarantees an active network,
+        // not one with real internet reachability (e.g. a captive-portal Wi-Fi network still
+        // satisfies it). Re-check with NetworkMonitor, which validates NET_CAPABILITY_INTERNET,
+        // before burning a retry cycle on requests that are certain to fail.
+        if (!networkMonitor.isConnected) return Result.retry()
+
         val pending = dao.getAll()
         if (pending.isEmpty()) return Result.success()
 

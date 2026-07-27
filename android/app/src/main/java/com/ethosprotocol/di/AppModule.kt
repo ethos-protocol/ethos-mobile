@@ -1,6 +1,7 @@
 package com.ethosprotocol.di
 
 import android.content.Context
+import androidx.credentials.CredentialManager
 import androidx.work.WorkManager
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
@@ -8,6 +9,7 @@ import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.services.CheckInDatabase
+import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PendingCheckInDao
 import dagger.Module
 import dagger.Provides
@@ -38,4 +40,14 @@ object AppModule {
     @Provides @Singleton
     fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
         WorkManager.getInstance(context)
+
+    /**
+     * Production binding for [CredentialManagerFactory].
+     *
+     * Unit tests supply their own fake factory directly to [com.ethosprotocol.services.PasskeyService]
+     * without going through Hilt, so no test module override is needed.
+     */
+    @Provides @Singleton
+    fun provideCredentialManagerFactory(): CredentialManagerFactory =
+        CredentialManagerFactory { activity -> CredentialManager.create(activity) }
 }

@@ -45,6 +45,25 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         )
     }
 
+    AuthScreenContent(
+        isLoading = state.isLoading,
+        error = state.error,
+        onSignIn = { vm.signIn(activity) },
+        onRegister = { showRegister = true }
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without an Activity context or Hilt DI graph.
+ */
+@Composable
+fun AuthScreenContent(
+    isLoading: Boolean,
+    error: String?,
+    onSignIn: () -> Unit,
+    onRegister: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -58,25 +77,21 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(32.dp))
 
-        state.error?.let {
+        error?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
 
         Button(
-            onClick = { vm.signIn(activity) },
+            onClick = onSignIn,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else {
-                // Decorative: the adjacent "Sign in with Passkey" label already conveys the action.
-                Icon(Icons.Default.Key, contentDescription = null)
-                Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey")
-            }
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = { showRegister = true }) { Text("Create account") }
+        TextButton(onClick = onRegister) { Text("Create account") }
     }
 }
 
@@ -110,7 +125,32 @@ fun VaultListScreen(
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
+    // #118: Non-blocking root warning. Shown once per session; does not block access.
+    var showRootWarning by remember {
+        mutableStateOf(
+            com.ethosprotocol.services.IntegrityChecker(context).isRooted
+        )
+    }
+
     LaunchedEffect(Unit) { vm.load() }
+
+    // #118: Non-blocking root warning dialog.
+    if (showRootWarning) {
+        AlertDialog(
+            onDismissRequest = { showRootWarning = false },
+            title = { Text("Security Warning") },
+            text = {
+                Text(
+                    "This device appears to be rooted. Your vault data, passkeys, and " +
+                    "2FA secrets may be at greater risk. Consider using a non-rooted " +
+                    "device for maximum security."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showRootWarning = false }) { Text("I Understand") }
+            }
+        )
+    }
 
     if (showCreate) {
         CreateVaultDialog(
@@ -293,6 +333,8 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
 @Composable
 fun BeneficiaryAcceptanceScreen(
     vaultId: String,
+    // token: parsed from the /accept deep-link URL; required by the server (#109).
+    token: String,
     onAccepted: () -> Unit,
     onDecline: () -> Unit,
     vm: AcceptanceViewModel = hiltViewModel()
@@ -303,6 +345,27 @@ fun BeneficiaryAcceptanceScreen(
         if (state.isAccepted) onAccepted()
     }
 
+    BeneficiaryAcceptanceScreenContent(
+        vaultId = vaultId,
+        isLoading = state.isLoading,
+        error = state.error,
+        onAccept = { vm.accept(vaultId) },
+        onDecline = onDecline
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without a Hilt DI graph.
+ */
+@Composable
+fun BeneficiaryAcceptanceScreenContent(
+    vaultId: String,
+    isLoading: Boolean,
+    error: String?,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -331,24 +394,24 @@ fun BeneficiaryAcceptanceScreen(
             readOnly = true,
             modifier = Modifier.fillMaxWidth()
         )
-        state.error?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
         Button(
-            onClick = { vm.accept(vaultId) },
+            onClick = onAccept,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Accept")
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = onDecline,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
             Text("Decline")
         }
@@ -362,6 +425,8 @@ fun VaultDeepLinkScreen(
     vaultId: String,
     actionPath: String,
     onDone: () -> Unit,
+    onDeposit: (vaultId: String) -> Unit = {},
+    onWithdraw: (vaultId: String) -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val action = VaultDeepLinkAction.fromPathSegment(actionPath)
@@ -398,6 +463,73 @@ fun VaultDeepLinkScreen(
         null
     }
 
+    val actionLabel = when (action) {
+        VaultDeepLinkAction.CHECK_IN -> "Check In"
+        VaultDeepLinkAction.WITHDRAW -> "Withdraw"
+        VaultDeepLinkAction.MANAGE_BENEFICIARY -> "Manage Beneficiary"
+        else -> title
+    }
+
+    VaultDeepLinkScreenContent(
+        title = title,
+        description = description,
+        error = displayError,
+        actionLabel = actionLabel,
+        isProcessing = isProcessing,
+        actionEnabled = !isProcessing && (action != VaultDeepLinkAction.CHECK_IN || vault != null),
+        onAction = {
+            when (action) {
+                VaultDeepLinkAction.CHECK_IN -> {
+                    if (vault == null) {
+                        error = "Vault not found"
+                        return@VaultDeepLinkScreenContent
+                    }
+                    isProcessing = true
+                    error = null
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Confirm Check-In",
+                        subtitle = "Vault ${vault.id.take(12)}…",
+                        onSuccess = {
+                            vm.checkIn(vault.id)
+                            isProcessing = false
+                            onDone()
+                        },
+                        onError = { err ->
+                            error = err
+                            isProcessing = false
+                        }
+                    )
+                }
+                VaultDeepLinkAction.WITHDRAW -> {
+                    if (vault == null) error = "Vault not found"
+                    else onWithdraw(vault.id)
+                }
+                VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
+                    error = "Beneficiary management is not yet available in the mobile app."
+                }
+                else -> Unit
+            }
+        },
+        onDone = onDone
+    )
+}
+
+/**
+ * Stateless content layer for [VaultDeepLinkScreen].
+ * Extracted so Paparazzi snapshot tests can render deep-link action screens
+ * on the JVM without a ViewModel, BiometricHelper, or Activity context.
+ */
+@Composable
+fun VaultDeepLinkScreenContent(
+    title: String,
+    description: String,
+    error: String?,
+    actionLabel: String,
+    isProcessing: Boolean,
+    actionEnabled: Boolean,
+    onAction: () -> Unit,
+    onDone: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -408,52 +540,17 @@ fun VaultDeepLinkScreen(
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        displayError?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
-        when (action) {
-            VaultDeepLinkAction.CHECK_IN -> {
-                Button(
-                    onClick = {
-                        if (vault == null) {
-                            error = "Vault not found"
-                            return@Button
-                        }
-                        isProcessing = true
-                        error = null
-                        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                            title = "Confirm Check-In",
-                            subtitle = "Vault ${vault.id.take(12)}…",
-                            onSuccess = {
-                                vm.checkIn(vault.id)
-                                isProcessing = false
-                                onDone()
-                            },
-                            onError = { err ->
-                                error = err
-                                isProcessing = false
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isProcessing && vault != null
-                ) { Text(if (isProcessing) "Processing…" else "Check In") }
-            }
-            VaultDeepLinkAction.WITHDRAW -> {
-                Button(
-                    onClick = { error = "Withdrawal is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Withdraw") }
-            }
-            VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
-                Button(
-                    onClick = { error = "Beneficiary management is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Manage Beneficiary") }
-            }
-            VaultDeepLinkAction.VIEW_DETAILS, null -> Unit
+        Button(
+            onClick = onAction,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = actionEnabled
+        ) {
+            Text(if (isProcessing) "Processing…" else actionLabel)
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
@@ -630,11 +727,37 @@ private fun TwoFactorVerifyScreen(
         OutlinedTextField(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
-            // A fixed width clips the label/digits at large font scales; widthIn lets it grow
-            // instead while keeping the same minimum size on standard-scale devices.
-            modifier = Modifier.widthIn(min = 200.dp),
-            textStyle = MaterialTheme.typography.headlineSmall
+            modifier = Modifier.width(200.dp),
+            textStyle = MaterialTheme.typography.headlineSmall,
+            enabled = !state.isOtpBlocked
         )
+
+        // #119: Surface cooldown / failure count in the UI.
+        Spacer(Modifier.height(8.dp))
+        when {
+            state.isOtpBlocked -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Timer, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Too many attempts — wait ${state.otpCooldownSeconds}s",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            state.otpFailureCount > 0 -> {
+                Text(
+                    "${state.otpFailureCount} failed attempt${if (state.otpFailureCount == 1) "" else "s"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            else -> Unit
+        }
+
         state.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -643,10 +766,124 @@ private fun TwoFactorVerifyScreen(
         Button(
             onClick = { vm.verify2FA(vaultId, otp) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = otp.length == 6 && !state.isLoading
+            enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
+        }
+    }
+}
+
+// MARK: - Vault Detail Screen
+
+/**
+ * #120: Disable 2FA is guarded by BiometricHelper before calling
+ * [TwoFactorViewModel.disable2FAAfterBiometric]. This mirrors the same
+ * pattern used for check-in in [VaultListScreen] — the biometric prompt
+ * requires a [FragmentActivity] and therefore lives in the screen layer,
+ * while the network call is delegated to the ViewModel.
+ */
+@Composable
+fun VaultDetailScreen(
+    vaultId: String,
+    onBack: () -> Unit,
+    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+) {
+    val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var showSetup by remember { mutableStateOf(false) }
+    var showVerify by remember { mutableStateOf(false) }
+    var biometricError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+
+    if (showSetup) {
+        TwoFactorSetupScreen(
+            vaultId = vaultId,
+            onComplete = { showSetup = false; twoFactorVm.loadStatus(vaultId) },
+            onDismiss = { showSetup = false }
+        )
+        return
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Vault ${vaultId.take(12)}…") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxSize()
+        ) {
+            Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            when {
+                state.isLoading -> CircularProgressIndicator()
+                state.error != null && state.status == null -> {
+                    Text(state.error!!, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { twoFactorVm.loadStatus(vaultId) }) { Text("Retry") }
+                }
+                state.status != null -> {
+                    val twoFaStatus = state.status!!
+                    if (twoFaStatus.enabled) {
+                        Text("Status: Enabled (${twoFaStatus.method?.name?.uppercase() ?: "—"})")
+                        Text("Verified: ${if (twoFaStatus.verified) "Yes" else "No"}")
+                        Spacer(Modifier.height(12.dp))
+                        if (!twoFaStatus.verified) {
+                            OutlinedButton(onClick = { showVerify = true },
+                                modifier = Modifier.fillMaxWidth()) {
+                                Text("Verify Now")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        biometricError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // #120: Biometric gate — prompt before the destructive disable call.
+                        Button(
+                            onClick = {
+                                biometricError = null
+                                BiometricHelper(context as androidx.fragment.app.FragmentActivity)
+                                    .authenticate(
+                                        title = "Confirm Disable 2FA",
+                                        subtitle = "Biometric or PIN required to disable two-factor authentication",
+                                        onSuccess = {
+                                            twoFactorVm.disable2FAAfterBiometric(vaultId)
+                                        },
+                                        onError = { err -> biometricError = err }
+                                    )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isLoading
+                        ) { Text("Disable 2FA") }
+                    } else {
+                        Text("Status: Disabled")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { showSetup = true },
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("Enable 2FA")
+                        }
+                    }
+                }
+                else -> {
+                    Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
