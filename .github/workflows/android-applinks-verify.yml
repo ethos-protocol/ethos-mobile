@@ -1,0 +1,71 @@
+name: Android App Links Verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Re-run if the manifest or the verification script itself changes.
+      - "android/app/src/main/AndroidManifest.xml"
+      - "scripts/verify_assetlinks.sh"
+  pull_request:
+    branches: [main]
+    paths:
+      - "android/app/src/main/AndroidManifest.xml"
+      - "scripts/verify_assetlinks.sh"
+  # Daily scheduled run catches any server-side drift in assetlinks.json
+  # without needing a code push.
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC daily
+  workflow_dispatch:       # allow manual re-runs
+
+jobs:
+  verify-assetlinks:
+    name: Verify assetlinks.json (Android App Links / autoVerify)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify assetlinks.json
+        env:
+          # ANDROID_CERT_SHA256 must be set as a repository secret.
+          # Value format: one SHA-256 fingerprint per line
+          # (each fingerprint: 32 colon-delimited uppercase hex byte-pairs, e.g. "AB:CD:...:EF").
+          # The secret should contain both the debug and release fingerprints so that
+          # pre-production CI builds are also validated.
+          # Leave the secret unset to skip fingerprint verification (fetch + JSON + package
+          # name checks will still run).
+          #
+          # Cross-reference: #63 (iOS AASA) uses the same hosted file; if the fetch ever
+          # needs to be shared, extract a composite action under .github/actions/.
+          CERT_FINGERPRINTS: ${{ secrets.ANDROID_CERT_SHA256 }}
+        run: bash scripts/verify_assetlinks.sh
+
+      - name: Alert on failure (scheduled run)
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: "⚠️ assetlinks.json verification failed (scheduled check)",
+              body: [
+                "The daily Android App Links verification job failed.",
+                "",
+                "This means `android:autoVerify=\"true\"` on the `/accept` intent-filter may",
+                "not resolve correctly, breaking Android App Links for beneficiary-accept deep",
+                "links. Users tapping `https://ethos-protocol.app/accept?vault_id=...` may be",
+                "routed to the browser instead of the app.",
+                "",
+                `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                "",
+                "Possible causes:",
+                "- assetlinks.json removed or unreachable (HTTP non-200)",
+                "- Package name `com.ethosprotocol` no longer listed",
+                "- `delegate_permission/common.handle_all_urls` relation removed",
+                "- Certificate fingerprint rotated without updating assetlinks.json",
+                "",
+                "Related: #94, #63"
+              ].join("\n"),
+              labels: ["bug", "android", "ci"]
+            });
