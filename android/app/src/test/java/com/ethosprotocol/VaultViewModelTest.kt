@@ -105,6 +105,40 @@ class VaultViewModelTest {
     }
 
     @Test
+    fun `withdraw success updates only the target vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val updatedV1 = v1.copy(balance = v1.balance - 1_000_000L)
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.Success(updatedV1)
+
+        vm.withdraw("v1", 1_000_000L)
+
+        coVerify { apiClient.withdraw("v1", 1_000_000L) }
+        assertEquals(listOf(updatedV1, v2), vm.state.value.vaults)
+    }
+
+    @Test
+    fun `withdraw error sets error message`() = runTest {
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.Error("Insufficient balance", 400)
+
+        vm.withdraw("v1", 1_000_000L)
+
+        assertEquals("Insufficient balance", vm.state.value.error)
+    }
+
+    @Test
+    fun `withdraw network unavailable sets error`() = runTest {
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.NetworkUnavailable
+
+        vm.withdraw("v1", 1_000_000L)
+
+        assertNotNull(vm.state.value.error)
+    }
+
+    @Test
     fun `updateBeneficiary success updates only the target vault`() = runTest {
         val v1 = makeVault("v1")
         val v2 = makeVault("v2")
