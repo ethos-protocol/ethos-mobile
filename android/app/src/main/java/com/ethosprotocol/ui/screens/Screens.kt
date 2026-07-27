@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,7 +49,7 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(Icons.Default.Lock, contentDescription = null,
+        Icon(Icons.Default.Lock, contentDescription = "Secure sign-in",
             modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
         Text("Ethos-Protocol", style = MaterialTheme.typography.headlineLarge)
@@ -67,7 +68,11 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
             enabled = !state.isLoading
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
+            else {
+                // Decorative: the adjacent "Sign in with Passkey" label already conveys the action.
+                Icon(Icons.Default.Key, contentDescription = null)
+                Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey")
+            }
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = { showRegister = true }) { Text("Create account") }
@@ -212,8 +217,14 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
 @Composable
 private fun OfflineBanner() {
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.WifiOff, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+        // mergeDescendants groups the icon + label into a single TalkBack stop instead of two,
+        // so giving the icon a description adds context without a duplicate announcement.
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp).semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.WifiOff, contentDescription = "Offline",
+                tint = MaterialTheme.colorScheme.onTertiaryContainer)
             Spacer(Modifier.width(8.dp))
             Text("Offline — showing cached data", color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
@@ -235,8 +246,12 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (vault.isExpiringSoon) {
                 Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error,
+                // mergeDescendants groups the icon + label into a single TalkBack stop instead of two.
+                Row(
+                    Modifier.semantics(mergeDescendants = true) {},
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = "Warning", tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
@@ -288,7 +303,7 @@ fun BeneficiaryAcceptanceScreen(
     ) {
         Icon(
             Icons.Default.Lock,
-            contentDescription = null,
+            contentDescription = "Secure beneficiary acceptance",
             modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
@@ -571,6 +586,8 @@ private fun TwoFactorVerifyScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        // Decorative: the method-specific instructions below ("Scan the URI…", "A verification
+        // code has been sent to your phone/email") already convey which method is active.
         Icon(
             when (method) {
                 TwoFactorMethod.totp -> Icons.Default.Lock
