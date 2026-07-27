@@ -37,6 +37,13 @@ class VaultStatusWidget : AppWidgetProvider() {
                 .apply()
         }
 
+        // Called on sign-out so a shared/handed-down device's home screen widget doesn't keep
+        // showing the previous user's vault name/TTL/last check-in until the next periodic
+        // VaultWidgetUpdateWorker run happens to overwrite it.
+        fun clearVaultData(context: Context) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        }
+
         fun updateWidget(context: Context, manager: AppWidgetManager, widgetId: Int) {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val vaultName = prefs.getString(KEY_VAULT_NAME, "—") ?: "—"

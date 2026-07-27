@@ -20,6 +20,9 @@ import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingCheckIn
 import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.widget.VaultStatusWidget
+import com.ethosprotocol.widget.VaultWidgetUpdateWorker
+import androidx.work.WorkManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,7 +43,11 @@ data class AuthUiState(
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val pendingCheckInDao: PendingCheckInDao,
+    private val notificationHelper: NotificationHelper,
+    private val workManager: WorkManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -84,9 +91,22 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
     }
 
-    fun signOut() {
+    // On a shared or handed-down device, anything left behind here (queued check-ins,
+    // scheduled workers, the widget's cached vault data, the "check-in queued"
+    // notification) can surface the previous user's vault data to whoever signs in next.
+    fun signOut() = viewModelScope.launch {
         tokenProvider.clear()
         backgroundedAtMillis = null
+
+        pendingCheckInDao.deleteAll()
+        workManager.cancelUniqueWork(CheckInSyncWorker.WORK_NAME)
+        workManager.cancelUniqueWork(VaultWidgetUpdateWorker.WORK_NAME)
+
+        VaultStatusWidget.clearVaultData(context)
+        VaultStatusWidget.refreshAll(context)
+
+        notificationHelper.cancelQueuedCheckIn()
+
         _state.update { it.copy(isAuthenticated = false, isLocked = false) }
     }
 
