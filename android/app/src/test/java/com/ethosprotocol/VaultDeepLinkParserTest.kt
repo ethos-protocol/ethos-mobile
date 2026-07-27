@@ -2,11 +2,27 @@ package com.ethosprotocol
 
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.services.VaultDeepLinkParser
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Before
 import org.junit.Test
 
 class VaultDeepLinkParserTest {
+
+    private val defaultEventLogger = VaultDeepLinkParser.eventLogger
+
+    @Before
+    fun setup() {
+        // eventLogger is a mutable singleton shared across the test JVM; guarantee a clean
+        // slate regardless of test execution order.
+        VaultDeepLinkParser.eventLogger = defaultEventLogger
+    }
+
+    @After
+    fun teardown() {
+        VaultDeepLinkParser.eventLogger = defaultEventLogger
+    }
 
     @Test
     fun parseUrl_checkIn_returnsVaultDeepLink() {
@@ -54,5 +70,25 @@ class VaultDeepLinkParserTest {
     @Test
     fun parseUrl_missingActionSegment_returnsNull() {
         assertNull(VaultDeepLinkParser.parseUrl("ethosprotocol://vault/v1"))
+    }
+
+    @Test
+    fun parseUrl_success_logsExactlyOnce() {
+        val loggedActions = mutableListOf<VaultDeepLinkAction>()
+        VaultDeepLinkParser.eventLogger = VaultDeepLinkParser.EventLogger { loggedActions += it }
+
+        VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-abc-123/check-in")
+
+        assertEquals(listOf(VaultDeepLinkAction.CHECK_IN), loggedActions)
+    }
+
+    @Test
+    fun parseUrl_failure_doesNotLog() {
+        val loggedActions = mutableListOf<VaultDeepLinkAction>()
+        VaultDeepLinkParser.eventLogger = VaultDeepLinkParser.EventLogger { loggedActions += it }
+
+        VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-1/unknown-action")
+
+        assertEquals(emptyList<VaultDeepLinkAction>(), loggedActions)
     }
 }
