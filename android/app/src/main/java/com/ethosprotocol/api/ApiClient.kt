@@ -14,6 +14,7 @@ import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -49,7 +50,10 @@ class ApiClient(
         baseUrl: String
     ) : this(tokenProvider, networkMonitor, offlineCache, baseUrl, Android.create(), RetryPolicy.networkDefault)
 
-    private val client = HttpClient(engine) {
+    // internal (not private): VaultEventSocket reuses this same client/connection pool
+    // to open the `/ws` connection documented in shared/api-contract.md, rather than
+    // standing up a second HttpClient.
+    internal val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
@@ -65,6 +69,14 @@ class ApiClient(
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
         }
+        install(WebSockets)
+    }
+
+    // Derives the `wss://.../ws?vault_id={id}` URL from [baseUrl] (documented in
+    // shared/api-contract.md) for VaultEventSocket.
+    internal fun webSocketUrl(vaultId: String): String {
+        val wsBase = baseUrl.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
+        return "$wsBase/ws?vault_id=$vaultId"
     }
 
     // Auth

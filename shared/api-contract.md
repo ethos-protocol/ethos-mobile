@@ -34,7 +34,12 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 | DELETE | `/notifications/register` | Unregister push token |
 
 ## WebSocket
-`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events
+`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events.
+Authenticate the same way as REST: `Authorization: Bearer <jwt>` header on the
+upgrade request. Each text frame is a `VaultEvent`:
+```json
+{ "type": "check_in|deposit|withdraw|status_change", "vault": { /* Vault, see above */ } }
+```
 
 ## Models
 

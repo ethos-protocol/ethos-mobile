@@ -2,6 +2,7 @@ package com.ethosprotocol
 
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.VaultEvent
 import com.ethosprotocol.models.VaultPage
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
@@ -10,10 +11,13 @@ import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.VaultEventSocket
 import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -27,6 +31,7 @@ class VaultViewModelTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingCheckInDao: PendingCheckInDao = mockk(relaxed = true)
+    private val vaultEventSocket: VaultEventSocket = mockk()
     private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
 
@@ -35,7 +40,8 @@ class VaultViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(CheckInSyncWorker.Companion)
         every { CheckInSyncWorker.schedule(any()) } just Runs
-        vm = VaultViewModel(apiClient, notificationHelper, pendingCheckInDao, context)
+        every { vaultEventSocket.events(any()) } returns emptyFlow()
+        vm = VaultViewModel(apiClient, notificationHelper, pendingCheckInDao, vaultEventSocket, context)
     }
 
     @After
@@ -118,6 +124,22 @@ class VaultViewModelTest {
 
         assertEquals(vaults, vm.state.value.vaults)
         coVerify(exactly = 0) { apiClient.listVaults(offset = 20, limit = 20) }
+    }
+
+    @Test
+    fun `vault event updates the matching vault in place`() = runTest {
+        val vaults = listOf(makeVault("v1"), makeVault("v2"))
+        val events = MutableSharedFlow<VaultEvent>()
+        every { vaultEventSocket.events("v1") } returns events
+        every { vaultEventSocket.events("v2") } returns emptyFlow()
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
+
+        vm.load()
+        val updatedV1 = makeVault("v1").copy(balance = 999L)
+        events.emit(VaultEvent(type = "deposit", vault = updatedV1))
+
+        assertEquals(listOf(updatedV1, vaults[1]), vm.state.value.vaults)
     }
 
     @Test

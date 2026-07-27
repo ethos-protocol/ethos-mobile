@@ -20,8 +20,10 @@ import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingCheckIn
 import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.VaultEventSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -138,6 +140,7 @@ class VaultViewModel @Inject constructor(
     private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
     private val pendingCheckInDao: PendingCheckInDao,
+    private val vaultEventSocket: VaultEventSocket,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -145,6 +148,7 @@ class VaultViewModel @Inject constructor(
     val state = _state.asStateFlow()
 
     private var nextOffset = 0
+    private val eventJobs = mutableMapOf<String, Job>()
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
@@ -159,6 +163,7 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
+                subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoading = false, isOffline = true) }
@@ -183,6 +188,7 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
+                subscribeToEvents(_state.value.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoadingMore = false, error = "No network") }
@@ -191,6 +197,27 @@ class VaultViewModel @Inject constructor(
                 _state.update { it.copy(isLoadingMore = false, error = result.message) }
             }
         }
+    }
+
+    // Keeps one VaultEventSocket subscription per vault currently in [_state], so
+    // check-ins/deposits/withdrawals made elsewhere (another device, an expiry)
+    // update this list in place instead of requiring a manual refresh.
+    private fun subscribeToEvents(vaultIds: List<String>) {
+        val currentIds = vaultIds.toSet()
+        eventJobs.keys.filter { it !in currentIds }.forEach { id -> eventJobs.remove(id)?.cancel() }
+        currentIds.filterNot { eventJobs.containsKey(it) }.forEach { id ->
+            eventJobs[id] = viewModelScope.launch {
+                vaultEventSocket.events(id).collect { event ->
+                    val updated = event.vault ?: return@collect
+                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        eventJobs.values.forEach { it.cancel() }
+        eventJobs.clear()
     }
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
