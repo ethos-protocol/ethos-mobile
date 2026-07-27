@@ -336,6 +336,7 @@ fun VaultDeepLinkScreen(
     val context = LocalContext.current
     var isProcessing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showBeneficiaryDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.load() }
 
@@ -416,15 +417,83 @@ fun VaultDeepLinkScreen(
             }
             VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
                 Button(
-                    onClick = { error = "Beneficiary management is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Manage Beneficiary") }
+                    onClick = {
+                        if (vault == null) {
+                            error = "Vault not found"
+                            return@Button
+                        }
+                        error = null
+                        showBeneficiaryDialog = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isProcessing && vault != null
+                ) { Text(if (isProcessing) "Processing…" else "Manage Beneficiary") }
             }
             VaultDeepLinkAction.VIEW_DETAILS, null -> Unit
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
     }
+
+    if (showBeneficiaryDialog && vault != null) {
+        ManageBeneficiaryDialog(
+            currentBeneficiary = vault.beneficiary,
+            onSubmit = { newBeneficiary ->
+                showBeneficiaryDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Beneficiary Change",
+                    subtitle = "Vault ${vault.id.take(12)}… beneficiary will change to ${newBeneficiary.take(12)}…",
+                    onSuccess = {
+                        vm.updateBeneficiary(vault.id, newBeneficiary)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showBeneficiaryDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun ManageBeneficiaryDialog(
+    currentBeneficiary: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var beneficiary by remember { mutableStateOf(currentBeneficiary) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Manage Beneficiary") },
+        text = {
+            Column {
+                Text(
+                    "This vault's funds are released to this address if it is never checked into again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = beneficiary, onValueChange = { beneficiary = it },
+                    label = { Text("Beneficiary address") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(beneficiary) },
+                enabled = beneficiary.isNotBlank() && beneficiary != currentBeneficiary
+            ) { Text("Continue") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable

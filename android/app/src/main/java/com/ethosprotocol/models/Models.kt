@@ -40,6 +40,9 @@ data class CreateVaultRequest(
 )
 
 @Serializable
+data class BeneficiaryUpdateRequest(val beneficiary: String)
+
+@Serializable
 data class PushRegistration(
     val token: String,
     val platform: String = "android"

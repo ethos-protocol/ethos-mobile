@@ -189,6 +189,14 @@ class VaultViewModel @Inject constructor(
         }
     }
 
+    fun updateBeneficiary(vaultId: String, newBeneficiary: String) = viewModelScope.launch {
+        when (val result = apiClient.updateBeneficiary(vaultId, newBeneficiary)) {
+            is ApiResult.Success -> updateVaultInPlace(result.data)
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+
     private fun updateVaultInPlace(vault: Vault) {
         _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
     }

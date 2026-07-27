@@ -104,6 +104,40 @@ class VaultViewModelTest {
         assertNotNull(vm.state.value.error)
     }
 
+    @Test
+    fun `updateBeneficiary success updates only the target vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val updatedV1 = v1.copy(beneficiary = "GNEWBENEFICIARY")
+        coEvery { apiClient.updateBeneficiary("v1", "GNEWBENEFICIARY") } returns ApiResult.Success(updatedV1)
+
+        vm.updateBeneficiary("v1", "GNEWBENEFICIARY")
+
+        coVerify { apiClient.updateBeneficiary("v1", "GNEWBENEFICIARY") }
+        assertEquals(listOf(updatedV1, v2), vm.state.value.vaults)
+    }
+
+    @Test
+    fun `updateBeneficiary error sets error message`() = runTest {
+        coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.Error("Server error", 500)
+
+        vm.updateBeneficiary("v1", "GNEW")
+
+        assertEquals("Server error", vm.state.value.error)
+    }
+
+    @Test
+    fun `updateBeneficiary network unavailable sets error`() = runTest {
+        coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.NetworkUnavailable
+
+        vm.updateBeneficiary("v1", "GNEW")
+
+        assertNotNull(vm.state.value.error)
+    }
+
     private fun makeVault(id: String) = Vault(
         id = id, owner = "GABC", beneficiary = "GXYZ",
         balance = 10_000_000L, checkInInterval = 2_592_000L,

@@ -68,6 +68,8 @@ class ApiClient @Inject constructor(
     // Beneficiary
     suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
         post("/vaults/$vaultId/accept", Unit)
+    suspend fun updateBeneficiary(vaultId: String, newBeneficiary: String): ApiResult<Vault> =
+        post("/vaults/$vaultId/beneficiary", BeneficiaryUpdateRequest(newBeneficiary))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
