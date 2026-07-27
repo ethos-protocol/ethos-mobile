@@ -76,9 +76,9 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val result = apiClient.listVaults()
+        val result = apiClient.listVaults(limit = 1)
         if (result is ApiResult.Success) {
-            val vault = result.data.firstOrNull() ?: return Result.success()
+            val vault = result.data.vaults.firstOrNull() ?: return Result.success()
             val ttl = formatTtl(vault.ttlRemaining)
             VaultStatusWidget.saveVaultData(
                 applicationContext,

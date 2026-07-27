@@ -161,6 +161,15 @@ fun VaultListScreen(
                                 onCheckIn = { pendingCheckIn = vault },
                             )
                         }
+                        if (state.hasMore) item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (state.isLoadingMore) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                } else {
+                                    OutlinedButton(onClick = { vm.loadMore() }) { Text("Load more") }
+                                }
+                            }
+                        }
                     }
                 }
             }

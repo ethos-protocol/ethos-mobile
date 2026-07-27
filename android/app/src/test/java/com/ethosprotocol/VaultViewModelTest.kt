@@ -2,6 +2,7 @@ package com.ethosprotocol
 
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.VaultPage
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
@@ -46,18 +47,20 @@ class VaultViewModelTest {
     @Test
     fun `load success updates vaults`() = runTest {
         val vaults = listOf(makeVault("v1"), makeVault("v2"))
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
 
         vm.load()
 
         assertEquals(vaults, vm.state.value.vaults)
         assertFalse(vm.state.value.isLoading)
+        assertFalse(vm.state.value.hasMore)
         assertNull(vm.state.value.error)
     }
 
     @Test
     fun `load network unavailable sets offline flag`() = runTest {
-        coEvery { apiClient.listVaults() } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.NetworkUnavailable
 
         vm.load()
 
@@ -67,7 +70,7 @@ class VaultViewModelTest {
 
     @Test
     fun `load error sets error message`() = runTest {
-        coEvery { apiClient.listVaults() } returns ApiResult.Error("Server error", 500)
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.Error("Server error", 500)
 
         vm.load()
 
@@ -76,15 +79,58 @@ class VaultViewModelTest {
     }
 
     @Test
+    fun `load with more pages sets hasMore`() = runTest {
+        val vaults = listOf(makeVault("v1"))
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = 20, hasMore = true))
+
+        vm.load()
+
+        assertTrue(vm.state.value.hasMore)
+    }
+
+    @Test
+    fun `loadMore appends the next page using the returned offset`() = runTest {
+        val firstPage = listOf(makeVault("v1"))
+        val secondPage = listOf(makeVault("v2"))
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(firstPage, nextOffset = 20, hasMore = true))
+        coEvery { apiClient.listVaults(offset = 20, limit = 20) } returns
+            ApiResult.Success(VaultPage(secondPage, nextOffset = null, hasMore = false))
+
+        vm.load()
+        vm.loadMore()
+
+        assertEquals(firstPage + secondPage, vm.state.value.vaults)
+        assertFalse(vm.state.value.hasMore)
+        assertFalse(vm.state.value.isLoadingMore)
+        coVerify { apiClient.listVaults(offset = 20, limit = 20) }
+    }
+
+    @Test
+    fun `loadMore is a no-op when hasMore is false`() = runTest {
+        val vaults = listOf(makeVault("v1"))
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
+
+        vm.load()
+        vm.loadMore()
+
+        assertEquals(vaults, vm.state.value.vaults)
+        coVerify(exactly = 0) { apiClient.listVaults(offset = 20, limit = 20) }
+    }
+
+    @Test
     fun `checkIn success reloads vaults`() = runTest {
         val vaults = listOf(makeVault("v1"))
         coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
 
         vm.checkIn("v1")
 
         coVerify { apiClient.checkIn("v1") }
-        coVerify { apiClient.listVaults() }
+        coVerify { apiClient.listVaults(offset = 0, limit = 20) }
     }
 
     @Test

@@ -18,7 +18,7 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 ### Vaults
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/vaults` | List owner's vaults |
+| GET | `/vaults?offset={offset}&limit={limit}` | List owner's vaults, paged. `offset` defaults to `0`, `limit` defaults to `20` (max `100`). Returns a `VaultPage` (see below). |
 | POST | `/vaults` | Create vault |
 | GET | `/vaults/{id}` | Get vault detail |
 | POST | `/vaults/{id}/checkin` | Check in (extend TTL) |
@@ -51,6 +51,16 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
   "status": "active|expired|released|paused"
 }
 ```
+
+### VaultPage
+```json
+{
+  "vaults": [ /* Vault, see above */ ],
+  "next_offset": 20,
+  "has_more": true
+}
+```
+`next_offset` is the `offset` to request the following page; `null` once `has_more` is `false`.
 
 ### AuthChallenge
 ```json

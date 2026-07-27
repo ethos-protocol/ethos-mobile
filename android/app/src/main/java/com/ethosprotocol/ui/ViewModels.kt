@@ -127,8 +127,10 @@ class TwoFactorViewModel @Inject constructor(
 data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val error: String? = null,
-    val isOffline: Boolean = false
+    val isOffline: Boolean = false,
+    val hasMore: Boolean = false
 )
 
 @HiltViewModel
@@ -142,17 +144,51 @@ class VaultViewModel @Inject constructor(
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
 
+    private var nextOffset = 0
+
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.listVaults()) {
+        when (val result = apiClient.listVaults(offset = 0, limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
-                _state.update { it.copy(vaults = result.data, isLoading = false, isOffline = false) }
+                nextOffset = result.data.nextOffset ?: result.data.vaults.size
+                _state.update {
+                    it.copy(
+                        vaults = result.data.vaults,
+                        isLoading = false,
+                        isOffline = false,
+                        hasMore = result.data.hasMore
+                    )
+                }
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoading = false, isOffline = true) }
             }
             is ApiResult.Error -> {
                 _state.update { it.copy(isLoading = false, error = result.message) }
+            }
+        }
+    }
+
+    fun loadMore() = viewModelScope.launch {
+        val current = _state.value
+        if (current.isLoadingMore || !current.hasMore) return@launch
+        _state.update { it.copy(isLoadingMore = true, error = null) }
+        when (val result = apiClient.listVaults(offset = nextOffset, limit = PAGE_SIZE)) {
+            is ApiResult.Success -> {
+                nextOffset = result.data.nextOffset ?: (nextOffset + result.data.vaults.size)
+                _state.update {
+                    it.copy(
+                        vaults = it.vaults + result.data.vaults,
+                        isLoadingMore = false,
+                        hasMore = result.data.hasMore
+                    )
+                }
+            }
+            ApiResult.NetworkUnavailable -> {
+                _state.update { it.copy(isLoadingMore = false, error = "No network") }
+            }
+            is ApiResult.Error -> {
+                _state.update { it.copy(isLoadingMore = false, error = result.message) }
             }
         }
     }
@@ -178,6 +214,10 @@ class VaultViewModel @Inject constructor(
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
         }
+    }
+
+    private companion object {
+        const val PAGE_SIZE = 20
     }
 }
 

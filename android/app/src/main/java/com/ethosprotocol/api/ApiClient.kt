@@ -73,7 +73,8 @@ class ApiClient(
     suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<Unit> = post("/auth/register", req)
 
     // Vaults
-    suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
+    suspend fun listVaults(offset: Int = 0, limit: Int = 20): ApiResult<VaultPage> =
+        get("/vaults?offset=$offset&limit=$limit")
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")
     suspend fun createVault(req: CreateVaultRequest): ApiResult<Vault> = post("/vaults", req)
     suspend fun checkIn(vaultId: String): ApiResult<Unit> = post("/vaults/$vaultId/checkin", Unit)
