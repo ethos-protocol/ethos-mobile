@@ -12,6 +12,8 @@ import androidx.work.*
 import com.ethosprotocol.R
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -78,7 +80,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         val result = apiClient.listVaults()
         if (result is ApiResult.Success) {
-            val vault = result.data.firstOrNull() ?: return Result.success()
+            val vault = selectUrgentVault(result.data) ?: return Result.success()
             val ttl = formatTtl(vault.ttlRemaining)
             VaultStatusWidget.saveVaultData(
                 applicationContext,
@@ -100,6 +102,13 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 
     companion object {
         const val WORK_NAME = "vault_widget_update"
+
+        // Mirrors iOS's TTLTimelineProvider (.filter { status == .active }.min(by: ttlRemaining))
+        // so both platforms surface the vault closest to expiring rather than whichever one the
+        // API happens to list first.
+        fun selectUrgentVault(vaults: List<Vault>): Vault? =
+            vaults.filter { it.status == VaultStatus.active }
+                .minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
 
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(15, TimeUnit.MINUTES)
