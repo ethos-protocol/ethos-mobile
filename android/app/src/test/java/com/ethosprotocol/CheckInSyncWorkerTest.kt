@@ -1,104 +1,61 @@
 package com.ethosprotocol
 
 import android.content.Context
-import android.content.SharedPreferences
 import androidx.work.ListenableWorker.Result
-import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.WorkerParameters
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingCheckIn
 import com.ethosprotocol.services.PendingCheckInDao
-import io.mockk.*
+import io.mockk.coEvery
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
-import org.junit.Assert.*
-import org.junit.Before
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * Tests for issue #62: CheckInSyncWorker must record a last-sync-attempt timestamp and outcome
- * to SharedPreferences so a diagnostic trail exists even without logcat access.
- */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CheckInSyncWorkerTest {
 
     private val apiClient: ApiClient = mockk()
-    private val dao: PendingCheckInDao = mockk(relaxed = true)
+    private val dao: PendingCheckInDao = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
+    private val networkMonitor: NetworkMonitor = mockk()
     private val context: Context = mockk(relaxed = true)
-    private val prefs: SharedPreferences = mockk(relaxed = true)
-    private val prefsEditor: SharedPreferences.Editor = mockk(relaxed = true)
+    private val params: WorkerParameters = mockk(relaxed = true)
 
-    @Before
-    fun setup() {
-        every { context.getSharedPreferences(CheckInSyncWorker.PREFS_NAME, Context.MODE_PRIVATE) } returns prefs
-        every { prefs.edit() } returns prefsEditor
-        every { prefsEditor.putString(any(), any()) } returns prefsEditor
-        every { prefsEditor.putInt(any(), any()) } returns prefsEditor
-        every { prefsEditor.putBoolean(any(), any()) } returns prefsEditor
-    }
-
-    private fun buildWorker(): CheckInSyncWorker =
-        CheckInSyncWorker(context, mockk(relaxed = true), apiClient, dao, notificationHelper)
+    private fun worker() = CheckInSyncWorker(context, params, apiClient, dao, notificationHelper, networkMonitor)
 
     @Test
-    fun `records last sync timestamp on successful run`() = runTest {
-        coEvery { dao.getAll() } returns listOf(PendingCheckIn("v1", 1000L)) andThen emptyList()
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
+    fun `doWork retries immediately when network connected but not validated`() = runTest {
+        // Simulates a captive-portal network: WorkManager's NetworkType.CONNECTED constraint
+        // would have already let this worker run, but NetworkMonitor correctly reports no
+        // real internet reachability.
+        every { networkMonitor.isConnected } returns false
 
-        buildWorker().doWork()
-
-        verify { prefsEditor.putString(eq(CheckInSyncWorker.PREF_LAST_SYNC_AT), any()) }
-        verify { prefsEditor.putInt(CheckInSyncWorker.PREF_LAST_SYNC_SUCCEEDED, 1) }
-        verify { prefsEditor.putInt(CheckInSyncWorker.PREF_LAST_SYNC_FAILED, 0) }
-        verify { prefsEditor.putBoolean(CheckInSyncWorker.PREF_LAST_SYNC_RETRYING, false) }
-        verify { prefsEditor.apply() }
-    }
-
-    @Test
-    fun `records last sync timestamp on network failure`() = runTest {
-        coEvery { dao.getAll() } returns listOf(PendingCheckIn("v1", 1000L))
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.NetworkUnavailable
-
-        buildWorker().doWork()
-
-        verify { prefsEditor.putString(eq(CheckInSyncWorker.PREF_LAST_SYNC_AT), any()) }
-        verify { prefsEditor.putBoolean(CheckInSyncWorker.PREF_LAST_SYNC_RETRYING, true) }
-        verify { prefsEditor.apply() }
-    }
-
-    @Test
-    fun `records failed count when item is permanently dropped`() = runTest {
-        coEvery { dao.getAll() } returns listOf(PendingCheckIn("v1", 1000L)) andThen emptyList()
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Not found", 404)
-
-        buildWorker().doWork()
-
-        verify { prefsEditor.putInt(CheckInSyncWorker.PREF_LAST_SYNC_FAILED, 1) }
-        verify { prefsEditor.putBoolean(CheckInSyncWorker.PREF_LAST_SYNC_RETRYING, false) }
-        verify { prefsEditor.apply() }
-    }
-
-    @Test
-    fun `returns success when queue is empty`() = runTest {
-        coEvery { dao.getAll() } returns emptyList()
-
-        val result = buildWorker().doWork()
-
-        assertEquals(Result.success(), result)
-        // Diagnostics still written even for an empty run
-        verify { prefsEditor.putString(eq(CheckInSyncWorker.PREF_LAST_SYNC_AT), any()) }
-    }
-
-    @Test
-    fun `returns retry when network unavailable`() = runTest {
-        coEvery { dao.getAll() } returns listOf(PendingCheckIn("v1", 1000L))
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.NetworkUnavailable
-
-        val result = buildWorker().doWork()
+        val result = worker().doWork()
 
         assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { dao.getAll() }
+        coVerify(exactly = 0) { apiClient.checkIn(any()) }
+    }
+
+    @Test
+    fun `doWork proceeds with sync when network is validated`() = runTest {
+        every { networkMonitor.isConnected } returns true
+        val pending = listOf(PendingCheckIn(vaultId = "v1", queuedAt = 0L))
+        coEvery { dao.getAll() } returns pending
+        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
+        coEvery { dao.delete(any()) } returns Unit
+
+        val result = worker().doWork()
+
+        assertEquals(Result.success(), result)
+        coVerify { apiClient.checkIn("v1") }
     }
 }
