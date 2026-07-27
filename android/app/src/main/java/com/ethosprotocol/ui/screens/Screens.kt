@@ -7,10 +7,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -143,23 +145,31 @@ fun VaultListScreen(
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    LazyColumn {
-                        if (state.isOffline) item {
-                            OfflineBanner()
-                        }
-                        val errorMsg = biometricError ?: state.error
-                        errorMsg?.let { err ->
-                            item {
-                                Text(err, color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.padding(16.dp))
+                    // Ties the pull gesture to the same VaultViewModel.load() used for the initial
+                    // fetch, so state.isLoading naturally drives the pull indicator too.
+                    PullToRefreshBox(
+                        isRefreshing = state.isLoading,
+                        onRefresh = { vm.load() },
+                        modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
+                    ) {
+                        LazyColumn {
+                            if (state.isOffline) item {
+                                OfflineBanner()
                             }
-                        }
-                        items(state.vaults, key = { it.id }) { vault ->
-                            VaultCard(
-                                vault = vault,
-                                onClick = { onVaultClick(vault.id) },
-                                onCheckIn = { pendingCheckIn = vault },
-                            )
+                            val errorMsg = biometricError ?: state.error
+                            errorMsg?.let { err ->
+                                item {
+                                    Text(err, color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(16.dp))
+                                }
+                            }
+                            items(state.vaults, key = { it.id }) { vault ->
+                                VaultCard(
+                                    vault = vault,
+                                    onClick = { onVaultClick(vault.id) },
+                                    onCheckIn = { pendingCheckIn = vault },
+                                )
+                            }
                         }
                     }
                 }
