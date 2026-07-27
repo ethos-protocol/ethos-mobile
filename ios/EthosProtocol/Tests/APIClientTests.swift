@@ -58,15 +58,11 @@ final class MockURLProtocol: URLProtocol {
 // MARK: - APIClient Extension for Testing
 
 extension APIClient {
-    /// Creates a test instance of APIClient with a mocked URLSession
+    /// Creates a test instance of APIClient with a mocked URLSession, via the
+    /// `init(baseURL:session:retryPolicy:)` designated initializer APIClient.swift exposes
+    /// as `internal` specifically for this purpose (see the comment on that initializer).
     static func makeTestInstance(session: URLSession) -> APIClient {
-        let instance = APIClient()
-        // Use reflection to set the private session property for testing
-        let sessionKey = "session"
-        if instance.responds(to: NSSelectorFromString("setValue:forKey:")) {
-            instance.setValue(session, forKey: sessionKey)
-        }
-        return instance
+        APIClient(baseURL: URL(string: "https://api.ethos-protocol.app/v1")!, session: session)
     }
 }
 

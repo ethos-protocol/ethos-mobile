@@ -70,6 +70,36 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    // MARK: - Offline Check-In Queue Indicator
+
+    private static let queuedCheckInIdentifier = "checkin-queued"
+
+    /// Surfaces a persistent local notification while check-ins are queued for retry, mirroring
+    /// Android's NotificationHelper.showQueuedCheckIn. iOS has no true "ongoing" notification
+    /// (UNNotificationRequest has no non-dismissable/foreground-service equivalent to Android's
+    /// setOngoing(true)), so this re-posts the same identifier every time the queue changes;
+    /// cancelQueuedCheckIn() removes it once the queue drains. VaultStore's queuedCheckInCount
+    /// mirrors this in-app for while the app is foregrounded.
+    func showQueuedCheckIn(count: Int) {
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in queued"
+        content.body = count == 1
+            ? "1 check-in will be submitted when back online"
+            : "\(count) check-ins will be submitted when back online"
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: Self.queuedCheckInIdentifier, content: content, trigger: trigger)
+        center.removePendingNotificationRequests(withIdentifiers: [Self.queuedCheckInIdentifier])
+        center.add(request)
+    }
+
+    func cancelQueuedCheckIn() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.queuedCheckInIdentifier])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.queuedCheckInIdentifier])
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

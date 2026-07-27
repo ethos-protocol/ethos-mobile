@@ -685,7 +685,7 @@ final class HandleRefreshTests: XCTestCase {
         XCTAssertEqual(service.scheduleAppRefreshCallCount, 1)
     }
 
-    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async {
+    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
                       "UNUserNotificationCenter requires a real app host process, unavailable in CI")
 

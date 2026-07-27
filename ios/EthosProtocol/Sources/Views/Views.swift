@@ -132,18 +132,21 @@ struct VaultListView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if vaultStore.isLoading && vaultStore.vaults.isEmpty {
-                    ProgressView("Loading vaults…")
-                } else if vaultStore.vaults.isEmpty {
-                    ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
-                } else {
-                    List(vaultStore.vaults) { vault in
-                        NavigationLink(destination: VaultDetailView(vault: vault)) {
-                            VaultRowView(vault: vault)
+            VStack(spacing: 0) {
+                statusBanners
+                Group {
+                    if vaultStore.isLoading && vaultStore.vaults.isEmpty {
+                        ProgressView("Loading vaults…")
+                    } else if vaultStore.vaults.isEmpty {
+                        ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
+                    } else {
+                        List(vaultStore.vaults) { vault in
+                            NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                VaultRowView(vault: vault)
+                            }
                         }
+                        .refreshable { await vaultStore.load() }
                     }
-                    .refreshable { await vaultStore.load() }
                 }
             }
             .navigationTitle("My Vaults")
@@ -174,6 +177,48 @@ struct VaultListView: View {
                 if link != nil { showDeepLinkSheet = true }
             }
         }
+    }
+
+    // Surfaces staleness (issue #25) and any check-ins still waiting to sync (issue #28) above
+    // the vault list, so both stay visible without blocking the list itself.
+    @ViewBuilder
+    private var statusBanners: some View {
+        if let age = vaultStore.vaultsCacheAge {
+            StatusBannerView(
+                text: "Offline — showing vaults from \(Self.relativeAge(age))",
+                systemImage: "wifi.slash",
+                color: .orange)
+        }
+        if vaultStore.queuedCheckInCount > 0 {
+            StatusBannerView(
+                text: vaultStore.queuedCheckInCount == 1
+                    ? "1 check-in queued — will retry when back online"
+                    : "\(vaultStore.queuedCheckInCount) check-ins queued — will retry when back online",
+                systemImage: "clock.arrow.circlepath",
+                color: .blue)
+        }
+    }
+
+    private static func relativeAge(_ interval: TimeInterval) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(fromTimeInterval: -interval)
+    }
+}
+
+struct StatusBannerView: View {
+    let text: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.1))
     }
 }
 
@@ -237,6 +282,20 @@ struct VaultDetailView: View {
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
     @State private var twoFactorLoadError: String?
+    @State private var ttlRemaining: UInt64?
+    @State private var showDeposit = false
+    @State private var showWithdraw = false
+    @State private var showManageBeneficiary = false
+
+    // How often to re-fetch the live TTL from the server while this view is on
+    // screen (the `ttlRemaining` a vault list row shows can go stale between the
+    // last listVaults() fetch and the user opening this detail screen).
+    static let ttlRefreshInterval: UInt64 = 60_000_000_000 // 60s, in nanoseconds
+
+    init(vault: Vault) {
+        self.vault = vault
+        _ttlRemaining = State(initialValue: vault.ttlRemaining)
+    }
 
     var body: some View {
         List {
@@ -248,7 +307,7 @@ struct VaultDetailView: View {
                     Spacer()
                     CopyableIDView(fullID: vault.beneficiary, displayLength: 16)
                 }
-                if let ttl = vault.ttlRemaining {
+                if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
             }
@@ -291,6 +350,11 @@ struct VaultDetailView: View {
                 .disabled(isCheckingIn || vault.status != .active)
                 if let error = biometricError {
                     Text(error).foregroundStyle(.red).font(.caption)
+                }
+                if vaultStore.queuedCheckInCount > 0 {
+                    Label("Check-in queued — will retry automatically when back online", systemImage: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
 
@@ -342,21 +406,26 @@ struct VaultDetailView: View {
     private func load2FAStatus() async {
         twoFactorLoadError = nil
         do {
-            twoFactorStatus = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            let status = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            ifNotCancelled { twoFactorStatus = status }
         } catch {
-            twoFactorLoadError = error.localizedDescription
-            twoFactorStatus = nil
+            ifNotCancelled {
+                twoFactorLoadError = error.localizedDescription
+                twoFactorStatus = nil
+            }
+        }
+    }
+
+    private func refreshTTLPeriodically() async {
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 
     private func refreshTTL() async {
         guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
         ifNotCancelled { ttlRemaining = ttl }
-    }
-
-    private func load2FAStatus() async {
-        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
-        ifNotCancelled { twoFactorStatus = status }
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
