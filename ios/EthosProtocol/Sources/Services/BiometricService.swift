@@ -1,7 +1,13 @@
 import LocalAuthentication
 import Foundation
 
-final class BiometricService {
+/// Abstraction over biometric / device-passcode authentication.
+/// Conformed to by `BiometricService` for production and by test doubles in unit tests.
+protocol BiometricAuthenticating: AnyObject {
+    func authenticate(reason: String) async throws
+}
+
+final class BiometricService: BiometricAuthenticating {
     static let shared = BiometricService()
     private init() {}
 

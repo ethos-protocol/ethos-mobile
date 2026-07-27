@@ -147,6 +147,89 @@ class VaultViewModelTest {
         verify { PendingActionSyncWorker.schedule(context) }
     }
 
+    // MARK: - #112 Pagination tests
+
+    @Test
+    fun `loadAll single page accumulates vaults and stops`() = runTest {
+        val vaults = List(5) { makeVault("v$it") }
+        val page = com.ethosprotocol.models.VaultPage(vaults = vaults, nextCursor = null, hasMore = false)
+        coEvery { apiClient.listVaults(limit = 20, after = null) } returns ApiResult.Success(page)
+
+        vm.loadAll()
+
+        assertEquals(vaults, vm.state.value.vaults)
+        assertFalse(vm.state.value.isLoading)
+        assertNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `loadAll multiple pages accumulates all vaults`() = runTest {
+        val page1Vaults = List(20) { makeVault("p1-v$it") }
+        val page2Vaults = List(7) { makeVault("p2-v$it") }
+        val page1 = com.ethosprotocol.models.VaultPage(
+            vaults = page1Vaults, nextCursor = "cursor-abc", hasMore = true
+        )
+        val page2 = com.ethosprotocol.models.VaultPage(
+            vaults = page2Vaults, nextCursor = null, hasMore = false
+        )
+        coEvery { apiClient.listVaults(limit = 20, after = null) } returns ApiResult.Success(page1)
+        coEvery { apiClient.listVaults(limit = 20, after = "cursor-abc") } returns ApiResult.Success(page2)
+
+        vm.loadAll()
+
+        val allVaults = vm.state.value.vaults
+        assertEquals(27, allVaults.size)
+        assertEquals(page1Vaults + page2Vaults, allVaults)
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `loadAll network unavailable on first page sets offline flag`() = runTest {
+        coEvery { apiClient.listVaults(limit = 20, after = null) } returns ApiResult.NetworkUnavailable
+
+        vm.loadAll()
+
+        assertTrue(vm.state.value.isOffline)
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `loadAll network unavailable mid-pagination sets offline flag`() = runTest {
+        val page1 = com.ethosprotocol.models.VaultPage(
+            vaults = List(20) { makeVault("p1-v$it") }, nextCursor = "cursor-mid", hasMore = true
+        )
+        coEvery { apiClient.listVaults(limit = 20, after = null) } returns ApiResult.Success(page1)
+        coEvery { apiClient.listVaults(limit = 20, after = "cursor-mid") } returns ApiResult.NetworkUnavailable
+
+        vm.loadAll()
+
+        assertTrue(vm.state.value.isOffline)
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `loadAll large vault list fixture 100 vaults across 5 pages`() = runTest {
+        // Shared large-vault-list fixture: 100 vaults in 5 pages of 20.
+        val allVaults = List(100) { makeVault("large-v$it") }
+        val pages = allVaults.chunked(20)
+        for (i in pages.indices) {
+            val cursor = if (i == 0) null else "cursor-${i - 1}"
+            val nextCursor = if (i < pages.lastIndex) "cursor-$i" else null
+            val hasMore = i < pages.lastIndex
+            coEvery {
+                apiClient.listVaults(limit = 20, after = cursor)
+            } returns ApiResult.Success(
+                com.ethosprotocol.models.VaultPage(vaults = pages[i], nextCursor = nextCursor, hasMore = hasMore)
+            )
+        }
+
+        vm.loadAll()
+
+        assertEquals(100, vm.state.value.vaults.size)
+        assertEquals(allVaults, vm.state.value.vaults)
+        assertFalse(vm.state.value.isLoading)
+    }
+
     private fun makeVault(id: String) = Vault(
         id = id, owner = "GABC", beneficiary = "GXYZ",
         balance = 10_000_000L, checkInInterval = 2_592_000L,
