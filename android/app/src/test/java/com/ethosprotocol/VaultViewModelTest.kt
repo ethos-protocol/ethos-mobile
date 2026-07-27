@@ -76,15 +76,23 @@ class VaultViewModelTest {
     }
 
     @Test
-    fun `checkIn success reloads vaults`() = runTest {
-        val vaults = listOf(makeVault("v1"))
+    fun `checkIn success refreshes only the checked-in vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val refreshedV1 = v1.copy(lastCheckIn = "2026-05-01T00:00:00Z", ttlRemaining = 2_592_000L)
         coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(refreshedV1)
 
         vm.checkIn("v1")
 
         coVerify { apiClient.checkIn("v1") }
-        coVerify { apiClient.listVaults() }
+        coVerify { apiClient.getVault("v1") }
+        coVerify(exactly = 1) { apiClient.listVaults() }
+        coVerify(exactly = 0) { apiClient.getVault("v2") }
+        assertEquals(listOf(refreshedV1, v2), vm.state.value.vaults)
     }
 
     @Test
