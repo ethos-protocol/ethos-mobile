@@ -7,9 +7,7 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
-import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,18 +20,7 @@ class PasskeyService @Inject constructor(
         val normalizedUsername = UsernameValidator.sanitize(username)
         require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = JSONObject().apply {
-            put("challenge", challenge)
-            put("rp", JSONObject().put("id", "ethos-protocol.app").put("name", "Ethos-Protocol"))
-            put("user", JSONObject()
-                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(normalizedUsername.toByteArray()))
-                .put("name", normalizedUsername).put("displayName", normalizedUsername))
-            put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
-            put("authenticatorSelection", JSONObject()
-                .put("authenticatorAttachment", "platform")
-                .put("requireResidentKey", true)
-                .put("userVerification", "required"))
-        }.toString()
+        val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
 
         val credManager = CredentialManager.create(activity)
         val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
@@ -49,9 +36,7 @@ class PasskeyService @Inject constructor(
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = JSONObject()
-            .put("challenge", challenge).put("rpId", "ethos-protocol.app")
-            .put("userVerification", "required").toString()
+        val requestJson = PasskeyRequestBuilder.authenticationRequestJson(challenge)
 
         val credManager = CredentialManager.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
