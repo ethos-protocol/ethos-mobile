@@ -8,11 +8,11 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -24,17 +24,22 @@ import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
+import com.ethosprotocol.ui.screens.DepositScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
+import com.ethosprotocol.ui.screens.WithdrawScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
-    // Pair<vaultId, token> extracted from the beneficiary-accept deep link.
-    private var pendingBeneficiaryAccept by mutableStateOf<Pair<String, String>?>(null)
-    private var pendingVaultDeepLink by mutableStateOf<VaultDeepLink?>(null)
+    // DeepLinkViewModel is scoped to this Activity and backed by SavedStateHandle, so both
+    // pending deep-link fields survive configuration changes and process death/recreation.
+    // Previously these were plain mutableStateOf fields on the Activity itself, which meant
+    // a deep-link tap during authentication would be silently lost on process recreation. (#93)
+    private val deepLinkViewModel: DeepLinkViewModel by viewModels()
+
     private var showPermissionRationale by mutableStateOf(false)
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -44,10 +49,21 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIncomingIntent(intent)
+
+        // Only handle the launch intent on a fresh start (savedInstanceState == null).
+        // On recreation (config change or process death), SavedStateHandle already holds
+        // the pending state — re-parsing the original launch intent would overwrite it.
+        if (savedInstanceState == null) {
+            handleIncomingIntent(intent)
+        }
 
         setContent {
             EthosProtocolTheme {
+                val beneficiaryAcceptVaultId by deepLinkViewModel.pendingBeneficiaryAcceptVaultId
+                    .collectAsStateWithLifecycle()
+                val vaultDeepLink by deepLinkViewModel.pendingVaultDeepLink
+                    .collectAsStateWithLifecycle()
+
                 NotificationPermissionEffect(
                     showRationale = showPermissionRationale,
                     onRationaleShown = { showPermissionRationale = false },
@@ -59,10 +75,10 @@ class MainActivity : FragmentActivity() {
                     }
                 )
                 AppNavigation(
-                    beneficiaryAccept = pendingBeneficiaryAccept,
-                    vaultDeepLink = pendingVaultDeepLink,
-                    onBeneficiaryAcceptConsumed = { pendingBeneficiaryAccept = null },
-                    onVaultDeepLinkConsumed = { pendingVaultDeepLink = null }
+                    beneficiaryAcceptVaultId = beneficiaryAcceptVaultId,
+                    vaultDeepLink = vaultDeepLink,
+                    onBeneficiaryAcceptConsumed = { deepLinkViewModel.consumeBeneficiaryAccept() },
+                    onVaultDeepLinkConsumed = { deepLinkViewModel.consumeVaultDeepLink() }
                 )
             }
         }
@@ -76,17 +92,17 @@ class MainActivity : FragmentActivity() {
         handleIncomingIntent(intent)
     }
 
-    private fun handleIncomingIntent(intent: Intent) {
+    internal fun handleIncomingIntent(intent: Intent) {
         intent.data?.let { uri ->
             VaultDeepLinkParser.parse(uri)?.let {
-                pendingVaultDeepLink = it
-                pendingBeneficiaryAccept = null
+                deepLinkViewModel.setPendingVaultDeepLink(it)
+                deepLinkViewModel.setPendingBeneficiaryAccept(null)
                 return
             }
         }
-        extractBeneficiaryAccept(intent)?.let {
-            pendingBeneficiaryAccept = it
-            pendingVaultDeepLink = null
+        extractBeneficiaryAcceptVaultId(intent)?.let {
+            deepLinkViewModel.setPendingBeneficiaryAccept(it)
+            deepLinkViewModel.setPendingVaultDeepLink(null)
         }
     }
 
@@ -198,6 +214,30 @@ private fun AppNavigation(
             VaultDeepLinkScreen(
                 vaultId = vaultId,
                 actionPath = action,
+                onDone = { navController.popBackStack() },
+                onDeposit = { id -> navController.navigate("deposit/$id") },
+                onWithdraw = { id -> navController.navigate("withdraw/$id/0") }
+            )
+        }
+        // Deposit route: reached from VaultDeepLinkScreen (deposit action) or directly.
+        composable("deposit/{vaultId}") { backStack ->
+            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+            DepositScreen(
+                vaultId = vaultId,
+                onDone = { navController.popBackStack() }
+            )
+        }
+        // Withdraw route: vaultBalance is passed as a stroop-encoded Long string so the
+        // WithdrawScreen can enforce the client-side balance guard without a separate
+        // ViewModel load. The deep-link entry point passes 0 (balance unknown from the
+        // push notification context); the UI displays the field but the server always
+        // enforces the real balance server-side.
+        composable("withdraw/{vaultId}/{vaultBalance}") { backStack ->
+            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+            val vaultBalance = backStack.arguments?.getString("vaultBalance")?.toLongOrNull() ?: 0L
+            WithdrawScreen(
+                vaultId = vaultId,
+                vaultBalanceStroops = vaultBalance,
                 onDone = { navController.popBackStack() }
             )
         }

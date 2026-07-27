@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# verify_assetlinks.sh
+#
+# Verifies that the Android Digital Asset Links file hosted at
+# https://ethos-protocol.app/.well-known/assetlinks.json is:
+#   1. Reachable (HTTP 200).
+#   2. Valid JSON.
+#   3. Contains a "delegate_permission/common.handle_all_urls" relation entry for this app's
+#      package name and at least one of the expected SHA-256 certificate fingerprints.
+#
+# Usage:
+#   ./verify_assetlinks.sh
+#
+# Environment variables (override defaults for testing against staging):
+#   ASSETLINKS_URL      – full URL to assetlinks.json
+#                         (default: https://ethos-protocol.app/.well-known/assetlinks.json)
+#   APP_PACKAGE         – Android package name to look for
+#                         (default: com.ethosprotocol)
+#   CERT_FINGERPRINTS   – colon-separated list of expected SHA-256 certificate fingerprints
+#                         (upper-case, colon-delimited bytes, e.g. "AB:CD:...:EF:01:CD:...:23")
+#                         At least one must appear in the file.
+#                         Set to empty string to skip fingerprint verification.
+#
+# Exit codes:
+#   0 – all checks passed
+#   1 – one or more checks failed (details printed to stderr)
+#
+# Cross-reference: #63 (iOS AASA check), #94 (this check).
+# If #63's fetch helper is ever extracted into a shared script, consider reusing it here
+# rather than duplicating the curl invocation.
+
+set -euo pipefail
+
+ASSETLINKS_URL="${ASSETLINKS_URL:-https://ethos-protocol.app/.well-known/assetlinks.json}"
+APP_PACKAGE="${APP_PACKAGE:-com.ethosprotocol}"
+# Default fingerprints list is intentionally empty — CI must inject the real value via the
+# CERT_FINGERPRINTS env var (or the repo secret ANDROID_CERT_SHA256).  Leaving it empty here
+# disables fingerprint verification so the script is usable without secrets during development,
+# while still catching "file gone / wrong package" regressions.
+CERT_FINGERPRINTS="${CERT_FINGERPRINTS:-}"
+
+FAIL=0
+
+# ── 1. Fetch ──────────────────────────────────────────────────────────────────
+echo "Fetching: $ASSETLINKS_URL"
+HTTP_CODE=$(curl --silent --output /tmp/assetlinks.json \
+                 --write-out "%{http_code}" \
+                 --max-time 15 \
+                 --fail-with-body \
+                 "$ASSETLINKS_URL" 2>/tmp/assetlinks_err.txt || true)
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+    echo "ERROR: Expected HTTP 200, got $HTTP_CODE" >&2
+    cat /tmp/assetlinks_err.txt >&2 2>/dev/null || true
+    exit 1
+fi
+echo "OK: HTTP $HTTP_CODE"
+
+# ── 2. Valid JSON ─────────────────────────────────────────────────────────────
+if ! python3 -c "import json,sys; json.load(sys.stdin)" < /tmp/assetlinks.json; then
+    echo "ERROR: assetlinks.json is not valid JSON" >&2
+    FAIL=1
+else
+    echo "OK: valid JSON"
+fi
+
+# ── 3. Package name present ───────────────────────────────────────────────────
+if python3 - "$APP_PACKAGE" <<'PY'
+import json, sys
+data = json.load(open("/tmp/assetlinks.json"))
+pkg = sys.argv[1]
+found = any(
+    entry.get("target", {}).get("package_name") == pkg
+    for entry in data
+)
+sys.exit(0 if found else 1)
+PY
+then
+    echo "OK: package '$APP_PACKAGE' found"
+else
+    echo "ERROR: package '$APP_PACKAGE' not found in assetlinks.json" >&2
+    FAIL=1
+fi
+
+# ── 4. Relation present ───────────────────────────────────────────────────────
+if python3 - "$APP_PACKAGE" <<'PY'
+import json, sys
+data = json.load(open("/tmp/assetlinks.json"))
+pkg = sys.argv[1]
+rel = "delegate_permission/common.handle_all_urls"
+found = any(
+    rel in entry.get("relation", [])
+    and entry.get("target", {}).get("package_name") == pkg
+    for entry in data
+)
+sys.exit(0 if found else 1)
+PY
+then
+    echo "OK: 'delegate_permission/common.handle_all_urls' relation present for '$APP_PACKAGE'"
+else
+    echo "ERROR: required relation missing for '$APP_PACKAGE'" >&2
+    FAIL=1
+fi
+
+# ── 5. Namespace is 'android_app' ─────────────────────────────────────────────
+if python3 - "$APP_PACKAGE" <<'PY'
+import json, sys
+data = json.load(open("/tmp/assetlinks.json"))
+pkg = sys.argv[1]
+found = any(
+    entry.get("target", {}).get("namespace") == "android_app"
+    and entry.get("target", {}).get("package_name") == pkg
+    for entry in data
+)
+sys.exit(0 if found else 1)
+PY
+then
+    echo "OK: target namespace is 'android_app'"
+else
+    echo "ERROR: target namespace is not 'android_app' for '$APP_PACKAGE'" >&2
+    FAIL=1
+fi
+
+# ── 6. Certificate fingerprint check (skipped when CERT_FINGERPRINTS is empty) ─
+if [[ -z "$CERT_FINGERPRINTS" ]]; then
+    echo "SKIP: CERT_FINGERPRINTS not set — skipping fingerprint verification"
+else
+    # Split colon-separated list into individual fingerprints.
+    # Format of each fingerprint: "AB:CD:EF:...:01" (32 colon-delimited hex byte pairs)
+    IFS=':' read -ra SEGMENTS <<< "$CERT_FINGERPRINTS"
+    # Rebuild into individual fingerprints (each fingerprint is 32 hex pairs = 31 colons,
+    # so every 32 SEGMENTS = one fingerprint).
+    # However, passing the full list to Python is simpler and less fragile — just let Python
+    # do the comparison against whatever is in the file.
+    MATCH=0
+    python3 - "$APP_PACKAGE" "$CERT_FINGERPRINTS" <<'PY' && MATCH=1 || true
+import json, sys
+data = json.load(open("/tmp/assetlinks.json"))
+pkg  = sys.argv[1]
+# The expected fingerprints are passed as a newline-separated list (each line is one
+# 32-byte-pair, colon-delimited fingerprint).  The env-var convention allows multiple
+# fingerprints separated by a newline so CI can pass both debug and release certs.
+expected = set(fp.strip().upper() for fp in sys.argv[2].splitlines() if fp.strip())
+found_fps = set(
+    fp.upper()
+    for entry in data
+    if entry.get("target", {}).get("package_name") == pkg
+    for fp in entry.get("target", {}).get("sha256_cert_fingerprints", [])
+)
+matched = expected & found_fps
+if not matched:
+    print(f"Expected one of: {sorted(expected)}", file=sys.stderr)
+    print(f"Found in file:   {sorted(found_fps)}", file=sys.stderr)
+    sys.exit(1)
+PY
+    if [[ "$MATCH" -eq 1 ]]; then
+        echo "OK: at least one expected certificate fingerprint found"
+    else
+        echo "ERROR: none of the expected certificate fingerprints found in assetlinks.json" >&2
+        FAIL=1
+    fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+if [[ "$FAIL" -ne 0 ]]; then
+    echo ""
+    echo "FAILED: assetlinks.json verification failed — Android App Links (autoVerify) may break."
+    exit 1
+fi
+
+echo ""
+echo "PASSED: assetlinks.json looks correct for Android App Links."

@@ -13,10 +13,22 @@ import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Factory that produces a [CredentialManager] from an [Activity].
+ *
+ * Injecting this interface instead of calling [CredentialManager.create] directly lets unit
+ * tests supply a fake implementation without requiring Robolectric or a real device.  The
+ * production binding in [com.ethosprotocol.di.AppModule] simply wraps the static factory call.
+ */
+fun interface CredentialManagerFactory {
+    fun create(activity: Activity): CredentialManager
+}
+
 @Singleton
 class PasskeyService @Inject constructor(
     private val apiClient: ApiClient,
-    private val tokenProvider: TokenProvider
+    private val tokenProvider: TokenProvider,
+    private val credentialManagerFactory: CredentialManagerFactory
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
@@ -33,7 +45,7 @@ class PasskeyService @Inject constructor(
                 .put("userVerification", "required"))
         }.toString()
 
-        val credManager = CredentialManager.create(activity)
+        val credManager = credentialManagerFactory.create(activity)
         val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
                 as CreatePublicKeyCredentialResponse
         val json = JSONObject(resp.registrationResponseJson)
@@ -51,7 +63,7 @@ class PasskeyService @Inject constructor(
             .put("challenge", challenge).put("rpId", "ethos-protocol.app")
             .put("userVerification", "required").toString()
 
-        val credManager = CredentialManager.create(activity)
+        val credManager = credentialManagerFactory.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
         val credential = credManager.getCredential(activity, request).credential as PublicKeyCredential
         val json = JSONObject(credential.authenticationResponseJson)
@@ -63,7 +75,7 @@ class PasskeyService @Inject constructor(
         tokenProvider.token = requireSuccess(apiClient.verifyPasskey(verifyReq)).token
     }
 
-    private fun <T> requireSuccess(result: ApiResult<T>): T {
+    internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
             is ApiResult.Error -> error(result.message)

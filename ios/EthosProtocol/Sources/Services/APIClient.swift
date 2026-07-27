@@ -35,8 +35,19 @@ public final class APIClient {
     private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
             ?? "https://api.ethos-protocol.app/v1"
+        // #117: Create a URLSession backed by PinningDelegate.
+        // The delegate enforces public-key pinning against the hash(es) listed in
+        // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
+        // present: the current certificate and the next backup certificate — see
+        // CertificatePinning.swift for the rotation strategy.
+        let pinningDelegate = PinningDelegate()
+        let session = URLSession(
+            configuration: .default,
+            delegate: pinningDelegate,
+            delegateQueue: nil
+        )
         self.init(baseURL: URL(string: urlString)!,
-                  session: URLSession(configuration: .default),
+                  session: session,
                   retryPolicy: .networkDefault)
     }
 
@@ -159,6 +170,10 @@ public final class APIClient {
         var req = request(path: "/notifications/register")
         req.httpMethod = "DELETE"
         req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios"))
+        // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         _ = try await execute(req)
     }
 
@@ -191,6 +206,10 @@ public final class APIClient {
         var req = request(path: path)
         req.httpMethod = "POST"
         req.httpBody = try JSONEncoder().encode(body)
+        // Anti-replay: add nonce + timestamp to every mutating request (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         let data = try await execute(req)
         return try decode(data)
     }
@@ -204,8 +223,24 @@ public final class APIClient {
         return req
     }
 
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes from CryptoKit, hex-encoded.
+    //           The server stores seen nonces and rejects any duplicate within
+    //           the token's validity window.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window).
+    static func makeAntiReplayHeaders() -> [String: String] {
+        // CryptoKit guarantees OS-CSPRNG quality randomness (SecRandomCopyBytes underneath).
+        let nonceBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
+        let timestamp = String(Int(Date().timeIntervalSince1970))
+        return ["X-Nonce": nonce, "X-Timestamp": timestamp]
+    }
+
     private func execute(_ request: URLRequest) async throws -> Data {
-        // Only idempotent reads (GET) may be served from / written to the offline cache.
         // Falling back to a cached response for a mutating request (POST/DELETE — e.g.
         // check-in, withdraw, disable2FA) would make the app report success for an action
         // that never actually reached the server, which is unacceptable for this app.
