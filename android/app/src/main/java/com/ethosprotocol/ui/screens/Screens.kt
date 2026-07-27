@@ -431,14 +431,28 @@ fun VaultDeepLinkScreen(
 private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> Unit) {
     var beneficiary by remember { mutableStateOf("") }
     var days by remember { mutableStateOf(30f) }
+    var touched by remember { mutableStateOf(false) }
+    val isValidAddress = com.ethosprotocol.models.StellarAddress.isValidPublicKey(beneficiary)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Vault") },
         text = {
             Column {
-                OutlinedTextField(value = beneficiary, onValueChange = { beneficiary = it },
-                    label = { Text("Beneficiary address") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = beneficiary,
+                    onValueChange = { beneficiary = it; touched = true },
+                    label = { Text("Beneficiary address") },
+                    singleLine = true,
+                    isError = touched && beneficiary.isNotBlank() && !isValidAddress,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (touched && beneficiary.isNotBlank() && !isValidAddress) {
+                    Text(
+                        "Enter a valid Stellar address (56 characters, starts with \"G\").",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 Text("Check-in interval: ${days.toInt()} days",
                     style = MaterialTheme.typography.bodySmall)
@@ -447,7 +461,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         },
         confirmButton = {
             TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
-                enabled = beneficiary.isNotBlank()) { Text("Create") }
+                enabled = isValidAddress) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
