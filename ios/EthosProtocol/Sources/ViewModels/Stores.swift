@@ -49,6 +49,22 @@ final class AuthStore: ObservableObject {
         isLoading = false
     }
 
+    /// "Lost your device?" path: links a new passkey to an existing account once the
+    /// user has proven ownership via email/backup code, then signs in with it — the
+    /// same two-step shape as register() (link the credential, then authenticate).
+    func recoverAccess(email: String, backupCode: String, username: String) async {
+        isLoading = true; error = nil
+        do {
+            let proof = AccountRecoveryProof(email: email, backupCode: backupCode)
+            let credID = try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
+            KeychainService.shared.saveCredentialID(credID)
+            if !Task.isCancelled { await signIn() }
+        } catch {
+            ifNotCancelled { self.error = error.localizedDescription }
+        }
+        isLoading = false
+    }
+
     func signOut() {
         KeychainService.shared.deleteToken()
         isAuthenticated = false

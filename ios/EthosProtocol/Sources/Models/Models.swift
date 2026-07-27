@@ -62,11 +62,36 @@ enum BeneficiaryUpdate {
 struct AuthChallenge: Codable {
     let challenge: String
     let expiresAt: Date
+    // Credential IDs already registered to the account this challenge is for. Empty
+    // when there are none yet (e.g. a brand-new account) or when the server predates
+    // this field — decoded defensively so older/partial responses still parse.
+    let existingCredentialIds: [String]
+
+    init(challenge: String, expiresAt: Date, existingCredentialIds: [String] = []) {
+        self.challenge = challenge
+        self.expiresAt = expiresAt
+        self.existingCredentialIds = existingCredentialIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        challenge = try container.decode(String.self, forKey: .challenge)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        existingCredentialIds = try container.decodeIfPresent([String].self, forKey: .existingCredentialIds) ?? []
+    }
 }
 
 struct AuthToken: Codable {
     let token: String
     let expiresAt: Date
+}
+
+/// Proof of identity for an existing vault-owning account that lost its original
+/// passkey-holding device, gathered by RecoverAccessView before a new passkey may
+/// be linked to that account (see PasskeyService.linkAdditionalPasskey).
+struct AccountRecoveryProof: Codable {
+    let email: String
+    let backupCode: String
 }
 
 struct PushRegistration: Codable {

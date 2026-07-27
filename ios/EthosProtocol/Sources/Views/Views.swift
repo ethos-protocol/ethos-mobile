@@ -56,6 +56,7 @@ struct AuthView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var username = ""
     @State private var showRegister = false
+    @State private var showRecovery = false
 
     var body: some View {
         NavigationStack {
@@ -80,10 +81,15 @@ struct AuthView: View {
 
                 Button("Create account") { showRegister = true }
                     .foregroundStyle(.blue)
+
+                Button("Lost your device?") { showRecovery = true }
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
             }
             .padding(32)
             .overlay { if authStore.isLoading { ProgressView() } }
             .sheet(isPresented: $showRegister) { RegisterView() }
+            .sheet(isPresented: $showRecovery) { RecoverAccessView() }
         }
     }
 }
@@ -112,6 +118,59 @@ struct RegisterView: View {
                         Task { await authStore.register(username: username); dismiss() }
                     }
                     .disabled(username.isEmpty || authStore.isLoading)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+struct RecoverAccessView: View {
+    @EnvironmentObject var authStore: AuthStore
+    @Environment(\.dismiss) var dismiss
+    @State private var email = ""
+    @State private var backupCode = ""
+    @State private var username = ""
+
+    private var canSubmit: Bool {
+        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty && !authStore.isLoading
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Verify your identity") {
+                    TextField("Email", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                    TextField("Backup code", text: $backupCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text("Enter the email and backup code from when you created your account. We'll use them to link a new passkey on this device.")
+                }
+                Section("New Passkey") {
+                    TextField("Username", text: $username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                if let error = authStore.error {
+                    Section { Text(error).foregroundStyle(.red).font(.caption) }
+                }
+            }
+            .navigationTitle("Recover Access")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Link Passkey") {
+                        Task {
+                            await authStore.recoverAccess(email: email, backupCode: backupCode, username: username)
+                            if authStore.isAuthenticated { dismiss() }
+                        }
+                    }
+                    .disabled(!canSubmit)
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
