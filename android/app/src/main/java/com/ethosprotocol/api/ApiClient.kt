@@ -66,8 +66,8 @@ class ApiClient @Inject constructor(
         post("/vaults/$vaultId/withdraw", mapOf("amount" to amount))
 
     // Beneficiary
-    suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
-        post("/vaults/$vaultId/accept", Unit)
+    suspend fun acceptBeneficiary(vaultId: String, token: String): ApiResult<Unit> =
+        post("/vaults/$vaultId/accept", mapOf("token" to token))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")

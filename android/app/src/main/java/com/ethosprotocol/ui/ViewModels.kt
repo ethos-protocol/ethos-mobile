@@ -203,9 +203,9 @@ class AcceptanceViewModel @Inject constructor(
     private val _state = MutableStateFlow(AcceptanceUiState())
     val state = _state.asStateFlow()
 
-    fun accept(vaultId: String) = viewModelScope.launch {
+    fun accept(vaultId: String, token: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.acceptBeneficiary(vaultId)) {
+        when (val result = apiClient.acceptBeneficiary(vaultId, token)) {
             is ApiResult.Success -> _state.update { it.copy(isLoading = false, isAccepted = true) }
             is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network. Please try again.") }

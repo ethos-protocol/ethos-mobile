@@ -26,6 +26,7 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 | POST | `/vaults/{id}/withdraw` | Withdraw funds |
 | POST | `/vaults/{id}/beneficiary` | Update vault beneficiary (owner-only) |
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
+| POST | `/vaults/{id}/accept` | Accept beneficiary invitation (requires token, see below) |
 
 ### Notifications
 | Method | Path | Description |
@@ -67,3 +68,15 @@ JWT is obtained via Passkey (WebAuthn) challenge/response flow.
 { "beneficiary": "string" }
 ```
 Response: the updated `Vault` object (see above), reflecting the new `beneficiary` value.
+
+### BeneficiaryAcceptRequest
+```json
+{ "token": "string" }
+```
+**Note:** The `token` field is required and proves the request originates from the originally
+invited beneficiary. The server generates this token when the invitation is created and includes
+it in the acceptance URL sent to the beneficiary. Requests without a valid token must be rejected
+with `403 Forbidden`. Both platforms (iOS and Android) must extract and send this token from the
+accept URL query parameter (`?vault_id=...&token=...`).
+
+Response: `204 No Content` on success.
