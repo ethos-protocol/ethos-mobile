@@ -2,7 +2,11 @@ package com.ethosprotocol
 
 import android.content.Context
 import androidx.work.WorkManager
+import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.models.RecoveryInitiateRequest
+import com.ethosprotocol.models.RecoveryInitiateResponse
 import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
@@ -11,6 +15,7 @@ import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.widget.VaultStatusWidget
 import com.ethosprotocol.widget.VaultWidgetUpdateWorker
 import io.mockk.Runs
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
@@ -33,6 +38,7 @@ import org.junit.Test
 class AuthViewModelTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
+    private val apiClient: ApiClient = mockk()
     private val passkeyService: PasskeyService = mockk()
     private val tokenProvider: TokenProvider = mockk(relaxed = true)
     private val pendingCheckInDao: PendingCheckInDao = mockk(relaxed = true)
@@ -48,7 +54,7 @@ class AuthViewModelTest {
         every { VaultStatusWidget.clearVaultData(any()) } just Runs
         every { VaultStatusWidget.refreshAll(any()) } just Runs
         every { tokenProvider.token } returns "existing-token"
-        vm = AuthViewModel(passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context)
+        vm = AuthViewModel(apiClient, passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context)
         vm.relockTimeoutMillis = 30_000L
     }
 
@@ -91,7 +97,7 @@ class AuthViewModelTest {
     fun `backgrounding while signed out does not arm the timer`() {
         every { tokenProvider.token } returns null
         val signedOutVm = AuthViewModel(
-            passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context
+            apiClient, passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context
         )
 
         signedOutVm.onAppBackgrounded(now = 1_000L)
@@ -123,5 +129,45 @@ class AuthViewModelTest {
         verify { VaultStatusWidget.clearVaultData(context) }
         verify { VaultStatusWidget.refreshAll(context) }
         verify { notificationHelper.cancelQueuedCheckIn() }
+    }
+
+    @Test
+    fun `initiateRecovery success stores the recovery token`() = runTest {
+        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
+            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
+
+        vm.initiateRecovery("alice")
+
+        assertEquals("recovery-token", vm.state.value.recoveryToken)
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `completeRecovery signs in and clears the recovery token on success`() = runTest {
+        val activity: android.app.Activity = mockk(relaxed = true)
+        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
+            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
+        vm.initiateRecovery("alice")
+
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token") } returns Result.success(Unit)
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+
+        vm.completeRecovery(activity, "alice")
+
+        coVerify { passkeyService.recoverAccount(activity, "alice", "recovery-token") }
+        assertNull(vm.state.value.recoveryToken)
+        assertTrue(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `cancelRecovery clears the recovery token`() = runTest {
+        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
+            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
+        vm.initiateRecovery("alice")
+        assertNotNull(vm.state.value.recoveryToken)
+
+        vm.cancelRecovery()
+
+        assertNull(vm.state.value.recoveryToken)
     }
 }

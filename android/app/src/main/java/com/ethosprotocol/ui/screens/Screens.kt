@@ -22,6 +22,7 @@ import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
+import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
@@ -33,11 +34,21 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current as android.app.Activity
     var showRegister by remember { mutableStateOf(false) }
+    var showRecovery by remember { mutableStateOf(false) }
 
     if (showRegister) {
         RegisterSheet(
             onRegister = { username -> vm.register(activity, username); showRegister = false },
             onDismiss = { showRegister = false }
+        )
+    }
+
+    if (showRecovery) {
+        RecoverySheet(
+            state = state,
+            onSendCode = { username -> vm.initiateRecovery(username) },
+            onFinish = { username -> vm.completeRecovery(activity, username) },
+            onDismiss = { vm.cancelRecovery(); showRecovery = false }
         )
     }
 
@@ -69,6 +80,7 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = { showRegister = true }) { Text("Create account") }
+        TextButton(onClick = { showRecovery = true }) { Text("Lost your device?") }
     }
 }
 
@@ -84,6 +96,60 @@ private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = { onRegister(username) }, enabled = username.isNotBlank()) { Text("Register") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun RecoverySheet(
+    state: AuthUiState,
+    onSendCode: (String) -> Unit,
+    onFinish: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var username by remember { mutableStateOf("") }
+    val codeSent = state.recoveryToken != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Recover Your Account") },
+        text = {
+            Column {
+                if (!codeSent) {
+                    Text(
+                        "Enter your username and we'll send a recovery code to your account's " +
+                        "verified email.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(value = username, onValueChange = { username = it },
+                        label = { Text("Username") }, singleLine = true,
+                        enabled = !state.isLoading, modifier = Modifier.fillMaxWidth())
+                } else {
+                    Text(
+                        "Check your email for a confirmation, then tap Continue to link a new " +
+                        "passkey on this device to your account.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                state.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            if (!codeSent) {
+                TextButton(
+                    onClick = { onSendCode(username) },
+                    enabled = username.isNotBlank() && !state.isLoading
+                ) { Text("Send Code") }
+            } else {
+                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text("Continue") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

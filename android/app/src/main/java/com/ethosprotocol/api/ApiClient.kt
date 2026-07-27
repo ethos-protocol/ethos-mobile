@@ -55,6 +55,12 @@ class ApiClient @Inject constructor(
     suspend fun verifyPasskey(req: PasskeyVerifyRequest): ApiResult<AuthToken> = post("/auth/verify", req)
     suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<Unit> = post("/auth/register", req)
 
+    // Account recovery ("lost your device?") — shared contract with iOS's #5.
+    suspend fun initiateRecovery(req: RecoveryInitiateRequest): ApiResult<RecoveryInitiateResponse> =
+        post("/auth/recovery/initiate", req)
+    suspend fun completeRecovery(req: RecoveryCompleteRequest): ApiResult<Unit> =
+        post("/auth/recovery/complete", req)
+
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")

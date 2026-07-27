@@ -37,11 +37,15 @@ data class AuthUiState(
     val isAuthenticated: Boolean = false,
     val isLocked: Boolean = false,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    // Set once initiateRecovery() succeeds — its presence means a recovery code has been
+    // sent and the UI should show the "finish recovery" step.
+    val recoveryToken: String? = null
 )
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
+    private val apiClient: ApiClient,
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
     private val pendingCheckInDao: PendingCheckInDao,
@@ -89,6 +93,33 @@ class AuthViewModel @Inject constructor(
         passkeyService.register(activity, username)
             .onSuccess { signIn(activity) }
             .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+    }
+
+    // --- Account recovery ("lost your device?") — shared contract with iOS's #5 ---
+
+    fun initiateRecovery(username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.initiateRecovery(RecoveryInitiateRequest(username))) {
+            is ApiResult.Success ->
+                _state.update { it.copy(isLoading = false, recoveryToken = result.data.recoveryToken) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun completeRecovery(activity: Activity, username: String) = viewModelScope.launch {
+        val token = _state.value.recoveryToken ?: return@launch
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.recoverAccount(activity, username, token)
+            .onSuccess {
+                _state.update { it.copy(recoveryToken = null) }
+                signIn(activity)
+            }
+            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+    }
+
+    fun cancelRecovery() {
+        _state.update { it.copy(recoveryToken = null, error = null) }
     }
 
     // On a shared or handed-down device, anything left behind here (queued check-ins,

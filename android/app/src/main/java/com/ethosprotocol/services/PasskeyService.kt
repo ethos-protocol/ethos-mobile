@@ -17,6 +17,7 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
+import com.ethosprotocol.models.RecoveryCompleteRequest
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Base64
@@ -32,6 +33,29 @@ class PasskeyService @Inject constructor(
     private val tokenProvider: TokenProvider
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val regReq = PasskeyRegisterRequest(
+            credentialId = json.getString("id"),
+            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.registerPasskey(regReq))
+    }
+
+    // Links a freshly-created passkey to an existing account for a user who lost their
+    // original device — the recovery token proves they completed initiateRecovery() first.
+    suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val completeReq = RecoveryCompleteRequest(
+            recoveryToken = recoveryToken,
+            credentialId = json.getString("id"),
+            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.completeRecovery(completeReq))
+    }
+
+    private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
         val requestJson = buildCreateCredentialRequestJson(challenge, username)
 
@@ -42,13 +66,7 @@ class PasskeyService @Inject constructor(
         } catch (e: CreateCredentialException) {
             throw PasskeyException(mapCreateCredentialError(e))
         }
-        val json = JSONObject(resp.registrationResponseJson)
-        val regReq = PasskeyRegisterRequest(
-            credentialId = json.getString("id"),
-            publicKey = json.getJSONObject("response").getString("attestationObject"),
-            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
-        )
-        requireSuccess(apiClient.registerPasskey(regReq))
+        return JSONObject(resp.registrationResponseJson)
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
