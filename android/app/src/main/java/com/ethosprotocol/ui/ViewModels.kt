@@ -271,3 +271,105 @@ class AcceptanceViewModel @Inject constructor(
         }
     }
 }
+
+// --- Deposit ViewModel ---
+
+data class DepositUiState(
+    val isLoading: Boolean = false,
+    val isSuccess: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class DepositViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(DepositUiState())
+    val state = _state.asStateFlow()
+
+    /**
+     * Validates and submits a deposit for [vaultId].
+     *
+     * [amountXlm] is the user-entered string in XLM (e.g. "5.0"). It is converted
+     * to stroops (1 XLM = 10,000,000 stroops) here so the ViewModel owns the
+     * parsing/validation logic and the UI only has to display [state].
+     */
+    fun deposit(vaultId: String, amountXlm: String) = viewModelScope.launch {
+        val stroops = parseStroops(amountXlm)
+        if (stroops == null || stroops <= 0) {
+            _state.update { it.copy(error = "Enter a valid positive XLM amount.") }
+            return@launch
+        }
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.deposit(vaultId, stroops)) {
+            is ApiResult.Success -> _state.update { it.copy(isLoading = false, isSuccess = true) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearError() = _state.update { it.copy(error = null) }
+
+    /** Converts an XLM string to stroops, or null if the input is invalid. */
+    private fun parseStroops(xlm: String): Long? {
+        val value = xlm.toDoubleOrNull() ?: return null
+        if (!value.isFinite() || value <= 0.0) return null
+        val stroops = value * 10_000_000.0
+        if (stroops > Long.MAX_VALUE.toDouble()) return null
+        return stroops.toLong()
+    }
+}
+
+// --- Withdraw ViewModel ---
+
+data class WithdrawUiState(
+    val isLoading: Boolean = false,
+    val isSuccess: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class WithdrawViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(WithdrawUiState())
+    val state = _state.asStateFlow()
+
+    /**
+     * Validates and submits a withdrawal for [vaultId].
+     *
+     * Client-side guard: [amountXlm] must parse to a positive stroop count that
+     * does not exceed [vaultBalanceStroops]. The matching check runs on the server
+     * too; this gate provides immediate UX feedback before the network round-trip.
+     * Biometric auth must be completed by the caller before invoking this method.
+     */
+    fun withdraw(vaultId: String, amountXlm: String, vaultBalanceStroops: Long) = viewModelScope.launch {
+        val stroops = parseStroops(amountXlm)
+        when {
+            stroops == null || stroops <= 0 ->
+                _state.update { it.copy(error = "Enter a valid positive XLM amount.") }
+            stroops > vaultBalanceStroops ->
+                _state.update { it.copy(error = "Amount exceeds available balance.") }
+            else -> {
+                _state.update { it.copy(isLoading = true, error = null) }
+                when (val result = apiClient.withdraw(vaultId, stroops)) {
+                    is ApiResult.Success -> _state.update { it.copy(isLoading = false, isSuccess = true) }
+                    is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+                    ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+                }
+            }
+        }
+    }
+
+    fun clearError() = _state.update { it.copy(error = null) }
+
+    private fun parseStroops(xlm: String): Long? {
+        val value = xlm.toDoubleOrNull() ?: return null
+        if (!value.isFinite() || value <= 0.0) return null
+        val stroops = value * 10_000_000.0
+        if (stroops > Long.MAX_VALUE.toDouble()) return null
+        return stroops.toLong()
+    }
+}

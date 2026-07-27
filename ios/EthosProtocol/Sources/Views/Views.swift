@@ -246,6 +246,11 @@ struct VaultDetailView: View {
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
     @State private var twoFactorLoadError: String?
+    @State private var showDeposit = false
+    @State private var showWithdraw = false
+    @State private var showManageBeneficiary = false
+    /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
+    @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
         List {
@@ -363,9 +368,14 @@ struct VaultDetailView: View {
         ifNotCancelled { ttlRemaining = ttl }
     }
 
-    private func load2FAStatus() async {
-        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
-        ifNotCancelled { twoFactorStatus = status }
+    /// Polls the server TTL every 60 s for as long as the view is on screen.
+    /// The `.task` modifier that calls this cancels it automatically on disappear.
+    private func refreshTTLPeriodically() async {
+        ttlRemaining = vault.ttlRemaining   // seed with value from vault list
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+        }
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
@@ -974,6 +984,7 @@ struct VaultActionDeepLinkView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var hasAttemptedLoad = false
+    @State private var showWithdrawSheet = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
@@ -1016,7 +1027,8 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "arrow.up.circle.fill",
                         description: "Withdraw funds from vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Withdrawal is not yet available in the mobile app."
+                        if let vault { showWithdrawSheet = true }
+                        else { error = "Vault not found" }
                     }
                 case .manageBeneficiary:
                     actionContent(
@@ -1031,6 +1043,11 @@ struct VaultActionDeepLinkView: View {
         }
         .task {
             await loadVaultIfNeeded()
+        }
+        .sheet(isPresented: $showWithdrawSheet) {
+            if let vault {
+                NavigationStack { WithdrawView(vault: vault) }
+            }
         }
     }
 
