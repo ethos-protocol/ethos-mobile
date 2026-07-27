@@ -128,7 +128,10 @@ data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
-    val isOffline: Boolean = false
+    val isOffline: Boolean = false,
+    // Set whenever `vaults` was served from OfflineCache rather than fetched live, so the UI
+    // can show "as of X ago" instead of implying the data is current.
+    val cachedAt: Long? = null
 )
 
 @HiltViewModel
@@ -146,7 +149,17 @@ class VaultViewModel @Inject constructor(
         _state.update { it.copy(isLoading = true, error = null) }
         when (val result = apiClient.listVaults()) {
             is ApiResult.Success -> {
-                _state.update { it.copy(vaults = result.data, isLoading = false, isOffline = false) }
+                // A non-null cachedAt means this response came from OfflineCache (the device is
+                // offline but had a cached copy) rather than a live fetch, so the offline
+                // indicator should still surface even though the call itself "succeeded".
+                _state.update {
+                    it.copy(
+                        vaults = result.data,
+                        isLoading = false,
+                        isOffline = result.cachedAt != null,
+                        cachedAt = result.cachedAt
+                    )
+                }
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoading = false, isOffline = true) }

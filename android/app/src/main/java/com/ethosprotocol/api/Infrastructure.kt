@@ -6,6 +6,8 @@ import android.net.NetworkCapabilities
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -22,15 +24,23 @@ class NetworkMonitor @Inject constructor(@ApplicationContext private val context
         }
 }
 
+// Wraps a cached response with the wall-clock time it was written, so callers can tell how
+// stale the data is instead of presenting it as unconditionally "current".
+@Serializable
+data class CacheEnvelope(val timestamp: Long, val data: String)
+
 @Singleton
 class OfflineCache @Inject constructor(@ApplicationContext private val context: Context) {
     private val dir = File(context.cacheDir, "ttl_offline").also { it.mkdirs() }
 
     fun save(key: String, json: String) {
-        File(dir, key.sha256()).writeText(json)
+        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = json)
+        File(dir, key.sha256()).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
     }
 
-    fun load(key: String): String? = runCatching { File(dir, key.sha256()).readText() }.getOrNull()
+    fun load(key: String): CacheEnvelope? = runCatching {
+        Json.decodeFromString(CacheEnvelope.serializer(), File(dir, key.sha256()).readText())
+    }.getOrNull()
 
     private fun String.sha256(): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(toByteArray())

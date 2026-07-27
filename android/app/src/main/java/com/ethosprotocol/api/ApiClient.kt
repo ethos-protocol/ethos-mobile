@@ -20,7 +20,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 sealed class ApiResult<out T> {
-    data class Success<T>(val data: T) : ApiResult<T>()
+    // cachedAt is non-null only when data was served from OfflineCache rather than fetched
+    // live, so callers can surface how stale it is (e.g. VaultViewModel/OfflineBanner).
+    data class Success<T>(val data: T, val cachedAt: Long? = null) : ApiResult<T>()
     data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
     object NetworkUnavailable : ApiResult<Nothing>()
 }
@@ -90,7 +92,7 @@ class ApiClient @Inject constructor(
     private suspend inline fun <reified T> get(path: String): ApiResult<T> {
         if (!networkMonitor.isConnected) {
             val cached = offlineCache.load(path)
-            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached))
+            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
             else ApiResult.NetworkUnavailable
         }
         return runCatching {
