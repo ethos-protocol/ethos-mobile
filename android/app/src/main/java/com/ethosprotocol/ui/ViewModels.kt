@@ -1,4 +1,5 @@
 package com.ethosprotocol.ui
+package com.ethosprotocol.ui
 
 import android.app.Activity
 import android.content.Context
@@ -15,6 +16,7 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.VaultPage
 import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
@@ -222,6 +224,37 @@ class VaultViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Fetches all vault pages via cursor-based pagination (#112) and replaces the local list.
+     * Accumulates pages until [VaultPage.hasMore] == false.
+     */
+    fun loadAll(limit: Int = 20) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        val accumulated = mutableListOf<Vault>()
+        var cursor: String? = null
+        do {
+            when (val result = apiClient.listVaults(limit = limit, after = cursor)) {
+                is ApiResult.Success -> {
+                    accumulated.addAll(result.data.vaults)
+                    cursor = result.data.nextCursor
+                    if (!result.data.hasMore) {
+                        _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+                        return@launch
+                    }
+                }
+                ApiResult.NetworkUnavailable -> {
+                    _state.update { it.copy(isLoading = false, isOffline = true) }
+                    return@launch
+                }
+                is ApiResult.Error -> {
+                    _state.update { it.copy(isLoading = false, error = result.message) }
+                    return@launch
+                }
+            }
+        } while (cursor != null)
+        _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+    }
+
     fun checkIn(vaultId: String) = viewModelScope.launch {
         when (val result = apiClient.checkIn(vaultId)) {
             is ApiResult.Success -> load()
@@ -262,9 +295,10 @@ class AcceptanceViewModel @Inject constructor(
     private val _state = MutableStateFlow(AcceptanceUiState())
     val state = _state.asStateFlow()
 
-    fun accept(vaultId: String) = viewModelScope.launch {
+    // token: parsed from the /accept deep-link URL (required by the server).
+    fun accept(vaultId: String, token: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.acceptBeneficiary(vaultId)) {
+        when (val result = apiClient.acceptBeneficiary(vaultId, token)) {
             is ApiResult.Success -> _state.update { it.copy(isLoading = false, isAccepted = true) }
             is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network. Please try again.") }

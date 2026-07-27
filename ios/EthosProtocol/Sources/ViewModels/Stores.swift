@@ -78,6 +78,30 @@ final class VaultStore: ObservableObject {
         isLoading = false
     }
 
+    /// Fetches all vault pages via cursor-based pagination (#112) and replaces the local list.
+    func loadAll(limit: Int = 20) async {
+        isLoading = true; error = nil
+        do {
+            var accumulated: [Vault] = []
+            var cursor: String? = nil
+            repeat {
+                let page = try await APIClient.shared.listVaults(limit: limit, after: cursor)
+                accumulated.append(contentsOf: page.vaults)
+                cursor = page.nextCursor
+                if Task.isCancelled { return }
+            } while cursor != nil
+            ifNotCancelled {
+                vaults = accumulated
+                scheduleReminders()
+            }
+        } catch APIError.networkUnavailable {
+            // Served from offline cache — keep whatever is already in `vaults`.
+        } catch {
+            ifNotCancelled { self.error = error.localizedDescription }
+        }
+        isLoading = false
+    }
+
     func checkIn(vault: Vault) async {
         do {
             try await APIClient.shared.checkIn(vaultID: vault.id)

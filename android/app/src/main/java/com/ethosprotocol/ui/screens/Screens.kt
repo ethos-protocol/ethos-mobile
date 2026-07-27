@@ -304,6 +304,8 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
 @Composable
 fun BeneficiaryAcceptanceScreen(
     vaultId: String,
+    // token: parsed from the /accept deep-link URL; required by the server (#109).
+    token: String,
     onAccepted: () -> Unit,
     onDecline: () -> Unit,
     vm: AcceptanceViewModel = hiltViewModel()

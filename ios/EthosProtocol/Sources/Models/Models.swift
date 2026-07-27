@@ -107,3 +107,13 @@ struct Enable2FAResponse: Codable {
 struct Verify2FARequest: Codable {
     let otp: String
 }
+
+// MARK: - Pagination Models (#112)
+
+/// Paginated response for `GET /vaults`. See api-contract.md §Pagination.
+struct VaultPage: Codable {
+    let vaults: [Vault]
+    /// Opaque cursor for the next page, or `nil` if this is the last page.
+    let nextCursor: String?
+    let hasMore: Bool
+}

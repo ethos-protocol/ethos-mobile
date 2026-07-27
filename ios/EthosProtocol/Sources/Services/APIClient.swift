@@ -89,6 +89,14 @@ public final class APIClient {
         try await get(path: "/vaults")
     }
 
+    /// Paginated variant of listVaults (#112).
+    /// Pass `after: page.nextCursor` to fetch subsequent pages until `page.hasMore == false`.
+    func listVaults(limit: Int = 20, after cursor: String? = nil) async throws -> VaultPage {
+        var path = "/vaults?limit=\(limit)"
+        if let cursor = cursor { path += "&after=\(cursor)" }
+        return try await get(path: path)
+    }
+
     func getVault(id: String) async throws -> Vault {
         try await get(path: "/vaults/\(id)")
     }
@@ -168,6 +176,22 @@ public final class APIClient {
         }
         _ = try await execute(req)
     }
+
+    // MARK: - Logging Redaction Audit (#111)
+    //
+    // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.
+    // No request or response body, header, or sensitive field is written to os_log, print,
+    // NSLog, or any other diagnostic channel anywhere in APIClient.swift.
+    //
+    // Invariant: any future addition of a logging layer to this client MUST:
+    //   1. Be guarded by #if DEBUG ... #endif (or equivalent) so it is stripped from
+    //      release builds entirely.
+    //   2. Log only HTTP method, path (no query strings bearing tokens), and status code —
+    //      never request/response bodies, Authorization headers, 2FA secrets, vault balances,
+    //      beneficiary/owner wallet addresses, or acceptance tokens.
+    //
+    // See shared/api-contract.md §Logging Redaction Policy (#111) for the authoritative
+    // cross-platform policy.
 
     // MARK: - Private helpers
 
