@@ -923,6 +923,60 @@ final class VaultStoreTests: XCTestCase {
     }
 }
 
+// MARK: - #24 Sign-Out Push Token Unregistration Tests
+
+@MainActor
+final class AuthStoreSignOutTests: XCTestCase {
+
+    func test_signOut_unregistersPersistedPushToken() async throws {
+        // Arranging via KeychainService requires a real read-back of a just-written
+        // value, which — like KeychainServiceTests.test_saveAndLoadToken above — is
+        // unreliable from this unsigned, hostless SPM test bundle in CI. See the
+        // HostedTests counterpart for CI coverage of this behavior.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        KeychainService.shared.saveToken("auth-token-abc")
+        KeychainService.shared.savePushToken("push-token-abc")
+
+        let store = AuthStore()
+        var unregisteredToken: String?
+        store.unregisterPushToken = { token in unregisteredToken = token }
+
+        await store.signOut()
+
+        XCTAssertEqual(unregisteredToken, "push-token-abc")
+        XCTAssertNil(KeychainService.shared.loadPushToken(), "push token should be cleared after unregistering")
+        XCTAssertNil(KeychainService.shared.loadToken())
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_withNoPersistedPushToken_doesNotCallUnregister() async {
+        KeychainService.shared.deletePushToken()
+
+        let store = AuthStore()
+        var wasCalled = false
+        store.unregisterPushToken = { _ in wasCalled = true }
+
+        await store.signOut()
+
+        XCTAssertFalse(wasCalled)
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_unregisterFailure_stillSignsOutLocally() async {
+        KeychainService.shared.saveToken("auth-token-abc")
+
+        let store = AuthStore()
+        store.unregisterPushToken = { _ in throw APIError.networkUnavailable }
+
+        await store.signOut()
+
+        XCTAssertFalse(store.isAuthenticated)
+        XCTAssertNil(KeychainService.shared.loadToken())
+    }
+}
+
 // MARK: - #13/#14 Deposit & Withdraw Amount Validation Tests
 
 final class VaultAmountTests: XCTestCase {
@@ -990,5 +1044,189 @@ final class BeneficiaryUpdateTests: XCTestCase {
 
     func test_isValidNewBeneficiary_trimsWhitespaceBeforeComparison() {
         XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("  GNEW123  ", currentBeneficiary: "GOLD456"))
+    }
+}
+
+// MARK: - #23 Actionable Error Copy Tests
+
+final class APIErrorTests: XCTestCase {
+
+    func test_decodingFailed_hasActionableDescriptionAndSuggestion() {
+        let error = APIError.decodingFailed
+        XCTAssertEqual(error.errorDescription, "We couldn't read the server's response")
+        XCTAssertNotNil(error.recoverySuggestion)
+        XCTAssertTrue(error.isRetryable)
+        XCTAssertTrue(error.suggestsContactSupport)
+    }
+
+    func test_serverError_passesThroughServerMessage_butStillOffersRecovery() {
+        let error = APIError.serverError("Vault balance service is temporarily unavailable")
+        XCTAssertEqual(error.errorDescription, "Vault balance service is temporarily unavailable")
+        XCTAssertNotNil(error.recoverySuggestion)
+        XCTAssertTrue(error.isRetryable)
+        XCTAssertTrue(error.suggestsContactSupport)
+    }
+
+    func test_networkUnavailable_isRetryable_butDoesNotSuggestSupport() {
+        let error = APIError.networkUnavailable
+        XCTAssertTrue(error.isRetryable)
+        XCTAssertFalse(error.suggestsContactSupport)
+    }
+
+    func test_unauthorized_isNotRetryable_andDoesNotSuggestSupport() {
+        let error = APIError.unauthorized
+        XCTAssertFalse(error.isRetryable)
+        XCTAssertFalse(error.suggestsContactSupport)
+    }
+
+    func test_notFound_hasNoRecoverySuggestion_andIsNotRetryable() {
+        let error = APIError.notFound
+        XCTAssertNil(error.recoverySuggestion)
+        XCTAssertFalse(error.isRetryable)
+        XCTAssertFalse(error.suggestsContactSupport)
+    }
+}
+
+final class ErrorPresentationTests: XCTestCase {
+
+    func test_apiError_decodingFailed_rendersRetryAndContactSupportAffordances() {
+        let presentation = ErrorPresentation(APIError.decodingFailed)
+        XCTAssertEqual(presentation.message, "We couldn't read the server's response")
+        XCTAssertNotNil(presentation.recoverySuggestion)
+        XCTAssertTrue(presentation.showsRetry)
+        XCTAssertTrue(presentation.showsContactSupport)
+    }
+
+    func test_apiError_notFound_rendersNeitherAffordance() {
+        let presentation = ErrorPresentation(APIError.notFound)
+        XCTAssertFalse(presentation.showsRetry)
+        XCTAssertFalse(presentation.showsContactSupport)
+    }
+
+    func test_nonAPIError_fallsBackToLocalizedDescription_withNoAffordances() {
+        struct SomeOtherError: LocalizedError {
+            var errorDescription: String? { "Something unrelated broke" }
+        }
+        let presentation = ErrorPresentation(SomeOtherError())
+        XCTAssertEqual(presentation.message, "Something unrelated broke")
+        XCTAssertNil(presentation.recoverySuggestion)
+        XCTAssertFalse(presentation.showsRetry)
+        XCTAssertFalse(presentation.showsContactSupport)
+    }
+}
+
+final class DecodingFailureLoggerTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        DecodingFailureLogger.shared.clearLog()
+    }
+
+    override func tearDown() {
+        DecodingFailureLogger.shared.clearLog()
+        super.tearDown()
+    }
+
+    func test_log_recordsPathAndExpectedType() {
+        let body = Data(#"{"unexpected": "shape"}"#.utf8)
+        DecodingFailureLogger.shared.log(path: "/vaults", expectedType: "[Vault]", responseBody: body)
+
+        let events = DecodingFailureLogger.shared.getLoggedEvents()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.path, "/vaults")
+        XCTAssertEqual(events.first?.expectedType, "[Vault]")
+    }
+
+    func test_redact_masksSensitiveFields_butPreservesOtherShape() {
+        let body = Data(#"{"token": "super-secret-jwt", "status": "active", "balance": 100}"#.utf8)
+        let redacted = DecodingFailureLogger.redact(body)
+
+        XCTAssertFalse(redacted.contains("super-secret-jwt"))
+        XCTAssertTrue(redacted.contains("[REDACTED]"))
+        XCTAssertTrue(redacted.contains("active"))
+        XCTAssertTrue(redacted.contains("100"))
+    }
+
+    func test_redact_masksNestedAndCaseInsensitiveSensitiveKeys() {
+        let body = Data(#"{"Auth": {"Token": "abc123"}, "credential_id": "cred-xyz"}"#.utf8)
+        let redacted = DecodingFailureLogger.redact(body)
+
+        XCTAssertFalse(redacted.contains("abc123"))
+        XCTAssertFalse(redacted.contains("cred-xyz"))
+    }
+
+    func test_redact_nonJSONBody_returnsPlaceholderWithoutCrashing() {
+        let body = Data("not json at all".utf8)
+        let redacted = DecodingFailureLogger.redact(body)
+        XCTAssertTrue(redacted.contains("non-JSON response"))
+    }
+
+    func test_clearLog_removesAllEvents() {
+        DecodingFailureLogger.shared.log(path: "/vaults", expectedType: "[Vault]", responseBody: Data())
+        DecodingFailureLogger.shared.clearLog()
+        XCTAssertEqual(DecodingFailureLogger.shared.getLoggedEvents().count, 0)
+    }
+}
+
+// MARK: - #21 listVaults() Pagination Tests
+//
+// listVaults() itself hits APIClient/the network, which — like the rest of
+// APIClient's methods (see VaultStoreTests above) — isn't mockable in this bare
+// SPM test bundle. The cursor/limit query-building and next-cursor-header
+// parsing are split into standalone static helpers specifically so the actual
+// pagination contract is unit-testable without a network layer.
+
+final class VaultsPaginationTests: XCTestCase {
+
+    func test_vaultsQueryItems_firstPage_omitsCursor() {
+        let items = APIClient.vaultsQueryItems(cursor: nil, limit: 50)
+        XCTAssertEqual(items, [URLQueryItem(name: "limit", value: "50")])
+    }
+
+    func test_vaultsQueryItems_withCursor_includesCursorAfterLimit() {
+        let items = APIClient.vaultsQueryItems(cursor: "opaque-cursor-abc", limit: 20)
+        XCTAssertEqual(items, [
+            URLQueryItem(name: "limit", value: "20"),
+            URLQueryItem(name: "cursor", value: "opaque-cursor-abc")
+        ])
+    }
+
+    func test_vaultsQueryItems_emptyCursor_treatedAsNoCursor() {
+        let items = APIClient.vaultsQueryItems(cursor: "", limit: 50)
+        XCTAssertEqual(items, [URLQueryItem(name: "limit", value: "50")])
+    }
+
+    func test_defaultVaultPageSize_isFifty() {
+        XCTAssertEqual(APIClient.defaultVaultPageSize, 50)
+    }
+
+    func test_parseNextCursor_nilHeader_returnsNil() {
+        XCTAssertNil(APIClient.parseNextCursor(fromHeaderValue: nil))
+    }
+
+    func test_parseNextCursor_emptyHeader_returnsNil() {
+        XCTAssertNil(APIClient.parseNextCursor(fromHeaderValue: ""))
+    }
+
+    func test_parseNextCursor_presentHeader_returnsItsValue() {
+        XCTAssertEqual(APIClient.parseNextCursor(fromHeaderValue: "opaque-cursor-xyz"), "opaque-cursor-xyz")
+    }
+}
+
+@MainActor
+final class VaultStorePaginationTests: XCTestCase {
+
+    func test_hasMorePages_falseByDefault() {
+        let store = VaultStore()
+        XCTAssertFalse(store.hasMorePages)
+    }
+
+    func test_loadMore_withNoCursor_isNoOp() async {
+        // Guards against calling loadMore() before any page has been loaded, or
+        // once the last page has already been reached.
+        let store = VaultStore()
+        await store.loadMore()
+        XCTAssertTrue(store.vaults.isEmpty)
+        XCTAssertFalse(store.isLoadingMore)
     }
 }

@@ -50,6 +50,53 @@ struct CopyableIDView: View {
     }
 }
 
+// MARK: - Error Presentation
+
+/// Renders an ErrorPresentation's message + recovery suggestion, plus a "Try
+/// Again" button (when the error is retryable and a retry action is supplied)
+/// and a "Contact Support" mail link (when the error warrants escalating).
+struct ErrorActionView: View {
+    let error: ErrorPresentation
+    var retry: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(error.message)
+                .foregroundStyle(.red)
+                .font(.caption)
+            if let suggestion = error.recoverySuggestion {
+                Text(suggestion)
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+            }
+            HStack(spacing: 16) {
+                if error.showsRetry, let retry {
+                    Button("Try Again", action: retry)
+                        .font(.caption.bold())
+                }
+                if error.showsContactSupport {
+                    Link("Contact Support", destination: SupportContact.mailURL(errorMessage: error.message))
+                        .font(.caption.bold())
+                }
+            }
+        }
+        .multilineTextAlignment(.leading)
+    }
+}
+
+enum SupportContact {
+    static let email = "support@ethos-protocol.app"
+
+    static func mailURL(errorMessage: String) -> URL {
+        var components = URLComponents(string: "mailto:\(email)")!
+        components.queryItems = [
+            URLQueryItem(name: "subject", value: "Ethos-Protocol app issue"),
+            URLQueryItem(name: "body", value: "I ran into this error:\n\(errorMessage)")
+        ]
+        return components.url ?? URL(string: "mailto:\(email)")!
+    }
+}
+
 // MARK: - Auth
 
 struct AuthView: View {
@@ -68,7 +115,7 @@ struct AuthView: View {
                 Text("Secure digital inheritance").foregroundStyle(.secondary)
 
                 if let error = authStore.error {
-                    Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+                    ErrorActionView(error: error, retry: { Task { await authStore.signIn() } })
                 }
 
                 Button(action: { Task { await authStore.signIn() } }) {
@@ -102,7 +149,7 @@ struct RegisterView: View {
                         .autocorrectionDisabled()
                 }
                 if let error = authStore.error {
-                    Section { Text(error).foregroundStyle(.red).font(.caption) }
+                    Section { ErrorActionView(error: error, retry: { Task { await authStore.register(username: username) } }) }
                 }
             }
             .navigationTitle("Create Account")
@@ -132,18 +179,31 @@ struct VaultListView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if vaultStore.isLoading && vaultStore.vaults.isEmpty {
-                    ProgressView("Loading vaults…")
-                } else if vaultStore.vaults.isEmpty {
-                    ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
-                } else {
-                    List(vaultStore.vaults) { vault in
-                        NavigationLink(destination: VaultDetailView(vault: vault)) {
-                            VaultRowView(vault: vault)
+            VStack(spacing: 0) {
+                if let error = vaultStore.error {
+                    ErrorActionView(error: error, retry: { Task { await vaultStore.load() } })
+                        .padding()
+                }
+                Group {
+                    if vaultStore.isLoading && vaultStore.vaults.isEmpty {
+                        ProgressView("Loading vaults…")
+                    } else if vaultStore.vaults.isEmpty {
+                        ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
+                    } else {
+                        List {
+                            ForEach(vaultStore.vaults) { vault in
+                                NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                    VaultRowView(vault: vault)
+                                }
+                            }
+                            if vaultStore.hasMorePages {
+                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                    Task { await vaultStore.loadMore() }
+                                }
+                            }
                         }
+                        .refreshable { await vaultStore.load() }
                     }
-                    .refreshable { await vaultStore.load() }
                 }
             }
             .navigationTitle("My Vaults")
@@ -157,7 +217,7 @@ struct VaultListView: View {
                         NavigationLink(destination: SettingsView()) {
                             Label("Settings", systemImage: "gear")
                         }
-                        Button("Sign Out") { authStore.signOut() }
+                        Button("Sign Out") { Task { await authStore.signOut() } }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -174,6 +234,27 @@ struct VaultListView: View {
                 if link != nil { showDeepLinkSheet = true }
             }
         }
+    }
+}
+
+/// Trailing row in VaultListView's list: a "Load More" button while a further
+/// page is available, or a spinner while that page is being fetched.
+struct LoadMoreRow: View {
+    let isLoading: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            if isLoading {
+                ProgressView()
+            } else {
+                Button("Load More", action: action)
+                    .font(.subheadline)
+            }
+            Spacer()
+        }
+        .listRowSeparator(.hidden)
     }
 }
 
@@ -237,6 +318,20 @@ struct VaultDetailView: View {
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
     @State private var twoFactorLoadError: String?
+    @State private var showDeposit = false
+    @State private var showWithdraw = false
+    @State private var showManageBeneficiary = false
+    @State private var ttlRemaining: UInt64?
+
+    // How often to re-fetch the live TTL from the server while this view is on
+    // screen (the `ttlRemaining` a vault list row shows can go stale between the
+    // last listVaults() fetch and the user opening this detail screen).
+    static let ttlRefreshInterval: UInt64 = 60_000_000_000 // 60s, in nanoseconds
+
+    init(vault: Vault) {
+        self.vault = vault
+        _ttlRemaining = State(initialValue: vault.ttlRemaining)
+    }
 
     var body: some View {
         List {
@@ -248,7 +343,7 @@ struct VaultDetailView: View {
                     Spacer()
                     CopyableIDView(fullID: vault.beneficiary, displayLength: 16)
                 }
-                if let ttl = vault.ttlRemaining {
+                if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
             }
@@ -315,7 +410,13 @@ struct VaultDetailView: View {
         // `.task` auto-cancels when the view disappears, so this polling loop
         // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
         // on navigating away instead of continuing to run in the background.
-        .task { await refreshTTLPeriodically() }
+        // The real-time event subscription (#20) rides along on the same task:
+        // opened before the loop starts, torn down via `defer` once it exits.
+        .task {
+            vaultStore.subscribeToEvents(vaultID: vault.id)
+            defer { vaultStore.unsubscribeFromEvents() }
+            await refreshTTLPeriodically()
+        }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
         }
@@ -342,21 +443,26 @@ struct VaultDetailView: View {
     private func load2FAStatus() async {
         twoFactorLoadError = nil
         do {
-            twoFactorStatus = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            let status = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            ifNotCancelled { twoFactorStatus = status }
         } catch {
-            twoFactorLoadError = error.localizedDescription
-            twoFactorStatus = nil
+            ifNotCancelled {
+                twoFactorLoadError = error.localizedDescription
+                twoFactorStatus = nil
+            }
+        }
+    }
+
+    private func refreshTTLPeriodically() async {
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 
     private func refreshTTL() async {
         guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
         ifNotCancelled { ttlRemaining = ttl }
-    }
-
-    private func load2FAStatus() async {
-        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
-        ifNotCancelled { twoFactorStatus = status }
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
@@ -505,7 +611,7 @@ struct DepositView: View {
         Task {
             await vaultStore.deposit(vault: vault, amount: amount)
             if let storeError = vaultStore.error {
-                error = storeError
+                error = storeError.message
             } else {
                 dismiss()
             }
@@ -567,7 +673,7 @@ struct WithdrawView: View {
                 try await BiometricService.shared.authenticate(reason: "Confirm vault withdrawal")
                 await vaultStore.withdraw(vault: vault, amount: amount)
                 if let storeError = vaultStore.error {
-                    error = storeError
+                    error = storeError.message
                 } else {
                     dismiss()
                 }
@@ -665,7 +771,7 @@ struct ManageBeneficiaryView: View {
                 try await BiometricService.shared.authenticate(reason: "Confirm beneficiary change")
                 await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: newBeneficiary)
                 if let storeError = vaultStore.error {
-                    error = storeError
+                    error = storeError.message
                 } else {
                     updated = true
                 }

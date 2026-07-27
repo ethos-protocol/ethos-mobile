@@ -1,7 +1,7 @@
 import Foundation
 
 // `public` here (and on the members below): TTLWidget.swift's WidgetKit
-// timeline provider reads Vault fields from APIClient.listVaults() across
+// timeline provider reads Vault fields from APIClient.listAllVaults() across
 // a real module boundary in the SPM build (Package.swift declares TTLWidget
 // as a separate target depending on the EthosProtocol target) — internal
 // (the Swift default) is invisible outside the defining module.
@@ -47,6 +47,30 @@ enum VaultAmount {
 
     static func hasSufficientBalance(amount: Int64, vaultBalance: Int64) -> Bool {
         amount > 0 && amount <= vaultBalance
+    }
+}
+
+/// Structured, user-facing presentation of an error — derived from APIError when
+/// possible so decode/server failures surface a concrete next step ("Try Again" /
+/// "Contact Support") instead of a bare message with no available action.
+struct ErrorPresentation: Equatable {
+    let message: String
+    let recoverySuggestion: String?
+    let showsRetry: Bool
+    let showsContactSupport: Bool
+
+    init(_ error: Error) {
+        if let apiError = error as? APIError {
+            message = apiError.errorDescription ?? "Something went wrong"
+            recoverySuggestion = apiError.recoverySuggestion
+            showsRetry = apiError.isRetryable
+            showsContactSupport = apiError.suggestsContactSupport
+        } else {
+            message = error.localizedDescription
+            recoverySuggestion = nil
+            showsRetry = false
+            showsContactSupport = false
+        }
     }
 }
 

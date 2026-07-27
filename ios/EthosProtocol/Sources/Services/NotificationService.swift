@@ -22,7 +22,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func handleDeviceToken(_ tokenData: Data) {
         let token = tokenData.map { String(format: "%02x", $0) }.joined()
-        Task { try? await APIClient.shared.registerPushToken(token) }
+        Task {
+            do {
+                try await APIClient.shared.registerPushToken(token)
+                // Persisted only on success so AuthStore.signOut() unregisters a token
+                // the server actually has on file for this device.
+                KeychainService.shared.savePushToken(token)
+            } catch {
+                // Best-effort: the OS redelivers the device token on next launch/refresh.
+            }
+        }
     }
 
     // Schedule a local check-in reminder scaled to the vault's check-in interval.
