@@ -27,6 +27,31 @@ final class KeychainServiceHostedTests: XCTestCase {
     }
 }
 
+// MARK: - #24 Sign-Out Push Token Unregistration Tests with Real Host
+
+@MainActor
+final class AuthStoreSignOutHostedTests: XCTestCase {
+
+    func test_signOut_unregistersPersistedPushToken() async {
+        // Runs in the hosted EthosProtocolTests target, which has real Keychain
+        // access — see AuthStoreSignOutTests in the SPM bundle for the same
+        // assertions, skipped there in CI.
+        KeychainService.shared.saveToken("auth-token-abc")
+        KeychainService.shared.savePushToken("push-token-abc")
+
+        let store = AuthStore()
+        var unregisteredToken: String?
+        store.unregisterPushToken = { token in unregisteredToken = token }
+
+        await store.signOut()
+
+        XCTAssertEqual(unregisteredToken, "push-token-abc")
+        XCTAssertNil(KeychainService.shared.loadPushToken())
+        XCTAssertNil(KeychainService.shared.loadToken())
+        XCTAssertFalse(store.isAuthenticated)
+    }
+}
+
 // MARK: - Notification Tests with Real Host
 
 final class NotificationServiceHostedTests: XCTestCase {

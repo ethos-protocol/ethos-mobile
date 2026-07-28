@@ -99,6 +99,8 @@ targets:
       # APIClient.execute() retries idempotent GET requests through withRetry(),
       # defined here.
       - path: Sources/Services/RetryPolicy.swift
+      # APIClient.decode() logs decode failures through this.
+      - path: Sources/Services/DecodingFailureLogger.swift
     info:
       # See the EthosProtocol target's info.path comment above.
       path: ../TTLWidget/Info.plist

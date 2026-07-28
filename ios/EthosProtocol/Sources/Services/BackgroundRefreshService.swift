@@ -17,8 +17,10 @@ final class BackgroundRefreshService {
     static let shared = BackgroundRefreshService()
     static let taskIdentifier = "app.ethos-protocol.vault-ttl-refresh"
 
-    // Injected dependency for testing; defaults to APIClient.shared.listVaults()
-    var vaultListProvider: VaultListProvider = { try await APIClient.shared.listVaults() }
+    // Injected dependency for testing; defaults to APIClient.shared.listAllVaults()
+    // — every page, not just the first (#21), so a TTL warning isn't missed for
+    // an account with more vaults than fit on one page.
+    var vaultListProvider: VaultListProvider = { try await APIClient.shared.listAllVaults() }
 
     // Injected dependency for testing; defaults to the shared check-in retry queue.
     var checkInSync: CheckInSyncService = .shared
