@@ -5,25 +5,26 @@ final class PasskeyService: NSObject {
     static let shared = PasskeyService()
     private override init() {}
 
+    private static let relyingPartyIdentifier = "ethos-protocol.app"
+
     func register(username: String) async throws -> String {
-        let challenge = try await APIClient.shared.getChallenge()
-        guard let challengeData = Data(base64URLEncoded: challenge.challenge) else {
-            throw PasskeyError.registrationFailed
-        }
-        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
-        let request = provider.createCredentialRegistrationRequest(
-            challenge: challengeData,
-            name: username,
-            userID: Data(username.utf8)
+        let credential = try await createRegistrationCredential(username: username)
+        try await APIClient.shared.registerPasskey(
+            credentialID: credential.credentialID,
+            publicKey: credential.publicKey,
+            clientDataJSON: credential.clientDataJSON
         )
         let credential = try await performRequest(request)
         guard let reg = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
             throw PasskeyError.registrationFailed
         }
         let credID = reg.credentialID.base64URLEncodedString()
-        let pubKey = reg.rawAttestationObject?.base64URLEncodedString() ?? ""
+        // Send the raw WebAuthn attestation object — not the public key itself.
+        // The backend extracts the COSE-encoded public key from this object during
+        // verification. Field name is `attestation_object` per shared/api-contract.md.
+        let attestationObject = reg.rawAttestationObject?.base64URLEncodedString() ?? ""
         let clientData = reg.rawClientDataJSON.base64URLEncodedString()
-        try await APIClient.shared.registerPasskey(credentialID: credID, publicKey: pubKey, clientDataJSON: clientData)
+        try await APIClient.shared.registerPasskey(credentialID: credID, attestationObject: attestationObject, clientDataJSON: clientData)
         return credID
     }
 
@@ -32,9 +33,14 @@ final class PasskeyService: NSObject {
         guard let challengeData = Data(base64URLEncoded: challenge.challenge) else {
             throw PasskeyError.authenticationFailed
         }
-        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: Self.relyingPartyIdentifier)
         let request = provider.createCredentialAssertionRequest(challenge: challengeData)
-        let credential = try await performRequest(request)
+        let credential: ASAuthorizationCredential
+        do {
+            credential = try await performRequest(request)
+        } catch {
+            throw PasskeyError.map(error, fallback: .authenticationFailed)
+        }
         guard let assertion = credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
             throw PasskeyError.authenticationFailed
         }
@@ -44,32 +50,63 @@ final class PasskeyService: NSObject {
         return try await APIClient.shared.verifyPasskey(credentialID: credID, clientDataJSON: clientData, signature: signature)
     }
 
-    // ASAuthorizationController.delegate is a weak reference, so whatever creates the
-    // delegate has to keep it alive itself until the request completes. This used to rely
-    // on objc_setAssociatedObject hung off the controller instance — fragile, since it'd
-    // silently break if performRequest were ever refactored to reuse a controller instead
-    // of creating a fresh one per call. Keyed by controller identity (rather than a single
-    // property) so two concurrent performRequest calls — e.g. a register() and an
-    // authenticate() in flight at once — each retain their own delegate without clobbering
-    // the other's reference.
-    //
-    // `internal` (not `private`): lets tests exercise the retention/release bookkeeping
-    // directly via `@testable import`, without needing to drive a real system passkey
-    // prompt through `performRequests()`.
-    var activeDelegates: [ObjectIdentifier: PasskeyDelegate] = [:]
+    /// Registers a new passkey on this device and links it to an existing vault-owning
+    /// account, for a user who lost their original device and thus their platform
+    /// passkey. `existingAccountProof` must already have been verified by the caller
+    /// (e.g. via a "lost your device?" recovery flow) before this is invoked.
+    func linkAdditionalPasskey(username: String, existingAccountProof proof: AccountRecoveryProof) async throws -> String {
+        let credential = try await createRegistrationCredential(username: username)
+        try await APIClient.shared.linkAdditionalPasskey(
+            existingAccountProof: proof,
+            credentialID: credential.credentialID,
+            publicKey: credential.publicKey,
+            clientDataJSON: credential.clientDataJSON
+        )
+        return credential.credentialID
+    }
 
-    var activeDelegateCount: Int { activeDelegates.count }
+    private struct RegistrationCredential {
+        let credentialID: String
+        let publicKey: String
+        let clientDataJSON: String
+    }
 
-    func makeRetainedDelegate(
-        for controller: ASAuthorizationController,
-        continuation: CheckedContinuation<ASAuthorizationCredential, Error>
-    ) -> PasskeyDelegate {
-        let key = ObjectIdentifier(controller)
-        let delegate = PasskeyDelegate(continuation: continuation) { [weak self] in
-            self?.activeDelegates[key] = nil
+    private func createRegistrationCredential(username: String) async throws -> RegistrationCredential {
+        let challenge = try await APIClient.shared.getChallenge()
+        guard let challengeData = Data(base64URLEncoded: challenge.challenge) else {
+            throw PasskeyError.registrationFailed
         }
-        activeDelegates[key] = delegate
-        return delegate
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: Self.relyingPartyIdentifier)
+        let request = provider.createCredentialRegistrationRequest(
+            challenge: challengeData,
+            name: username,
+            userID: Data(username.utf8)
+        )
+        // Without this, a user (or anyone with physical access) can register a second,
+        // independent passkey for an account that already has one on this device — the
+        // system stays silent instead of warning that a credential already exists.
+        request.excludedCredentials = Self.excludedCredentialDescriptors(from: challenge.existingCredentialIds)
+        let credential: ASAuthorizationCredential
+        do {
+            credential = try await performRequest(request)
+        } catch {
+            throw PasskeyError.map(error, fallback: .registrationFailed)
+        }
+        guard let reg = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
+            throw PasskeyError.registrationFailed
+        }
+        return RegistrationCredential(
+            credentialID: reg.credentialID.base64URLEncodedString(),
+            publicKey: reg.rawAttestationObject?.base64URLEncodedString() ?? "",
+            clientDataJSON: reg.rawClientDataJSON.base64URLEncodedString()
+        )
+    }
+
+    static func excludedCredentialDescriptors(from credentialIDs: [String]) -> [ASAuthorizationPlatformPublicKeyCredentialDescriptor] {
+        credentialIDs.compactMap { id in
+            guard let data = Data(base64URLEncoded: id) else { return nil }
+            return ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: data)
+        }
     }
 
     private func performRequest(_ request: ASAuthorizationRequest) async throws -> ASAuthorizationCredential {
@@ -104,12 +141,37 @@ class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate {
     }
 }
 
-enum PasskeyError: LocalizedError {
-    case registrationFailed, authenticationFailed
+enum PasskeyError: LocalizedError, Equatable {
+    case registrationFailed
+    case authenticationFailed
+    case userCancelled
+    case notInteractive
+    case credentialAlreadyExists
+
     var errorDescription: String? {
         switch self {
-        case .registrationFailed: return "Passkey registration failed"
-        case .authenticationFailed: return "Passkey authentication failed"
+        case .registrationFailed:      return "Passkey registration failed. Please try again."
+        case .authenticationFailed:    return "Passkey sign-in failed. Please try again."
+        case .userCancelled:           return "Passkey request was cancelled."
+        case .notInteractive:          return "Bring the app to the foreground to use your passkey."
+        case .credentialAlreadyExists: return "A passkey for this account already exists on this device."
+        }
+    }
+
+    /// Maps an error thrown by ASAuthorizationController to the PasskeyError case that
+    /// best describes it, so the UI can show distinct guidance instead of one generic
+    /// failure message for cancellation, backgrounding, and duplicate-credential cases.
+    static func map(_ error: Error, fallback: PasskeyError) -> PasskeyError {
+        guard let authError = error as? ASAuthorizationError else { return fallback }
+        switch authError.code {
+        case .canceled:
+            return .userCancelled
+        case .notInteractive:
+            return .notInteractive
+        case .matchedExcludedCredential:
+            return .credentialAlreadyExists
+        default:
+            return fallback
         }
     }
 }

@@ -58,15 +58,11 @@ final class MockURLProtocol: URLProtocol {
 // MARK: - APIClient Extension for Testing
 
 extension APIClient {
-    /// Creates a test instance of APIClient with a mocked URLSession
+    /// Creates a test instance of APIClient with a mocked URLSession, via the
+    /// `init(baseURL:session:retryPolicy:)` designated initializer APIClient.swift exposes
+    /// as `internal` specifically for this purpose (see the comment on that initializer).
     static func makeTestInstance(session: URLSession) -> APIClient {
-        let instance = APIClient()
-        // Use reflection to set the private session property for testing
-        let sessionKey = "session"
-        if instance.responds(to: NSSelectorFromString("setValue:forKey:")) {
-            instance.setValue(session, forKey: sessionKey)
-        }
-        return instance
+        APIClient(baseURL: URL(string: "https://api.ethos-protocol.app/v1")!, session: session)
     }
 }
 
@@ -105,20 +101,25 @@ final class APIClientOfflineCacheTests: XCTestCase {
     // MARK: - GET Request Cache Tests
 
     func test_successfulGET_populatesCache() async throws {
+        // listVaults() is paginated (#21) and always sends a `limit` query param,
+        // so the request URL — and therefore the cache key — includes it.
+        let paginatedURL = "\(testURL)?limit=\(APIClient.defaultVaultPageSize)"
+
         // Arrange: Set up successful response
         let response = HTTPURLResponse(
-            url: URL(string: testURL)!,
+            url: URL(string: paginatedURL)!,
             statusCode: 200,
             httpVersion: "HTTP/1.1",
             headerFields: nil
         )!
-        MockURLProtocol.mockResponses[testURL] = (data: testVaultsData, response: response)
+        MockURLProtocol.mockResponses[paginatedURL] = (data: testVaultsData, response: response)
 
         // Act: Make the GET request while online
-        let _: [Vault] = try await client.listVaults()
+        let page = try await client.listVaults()
+        XCTAssertEqual(page.vaults.count, 1)
 
         // Assert: Cache should be populated
-        let cachedData = OfflineCache.shared.load(for: testURL)
+        let cachedData = OfflineCache.shared.load(for: paginatedURL)
         XCTAssertNotNil(cachedData, "Successful GET should populate cache")
         XCTAssertEqual(cachedData, testVaultsData, "Cached data should match response")
     }
@@ -241,5 +242,95 @@ final class APIClientOfflineCacheTests: XCTestCase {
         deleteRequest.httpMethod = "DELETE"
         let deleteIsCacheable = deleteRequest.httpMethod == "GET"
         XCTAssertFalse(deleteIsCacheable, "DELETE requests should NOT be marked as cacheable")
+    }
+}
+
+// MARK: - #6/#8 Auth Challenge & Passkey Recovery Tests
+
+final class APIClientAuthTests: XCTestCase {
+
+    var client: APIClient!
+    let challengeURL = "https://api.ethos-protocol.app/v1/auth/challenge"
+    let linkURL = "https://api.ethos-protocol.app/v1/auth/recover/link"
+
+    override func setUpWithError() throws {
+        super.setUp()
+        MockURLProtocol.reset()
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        client = APIClient.makeTestInstance(session: session)
+    }
+
+    override func tearDownWithError() throws {
+        MockURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private func mockResponse(for url: String, status: Int = 200, body: Data) {
+        let response = HTTPURLResponse(url: URL(string: url)!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+        MockURLProtocol.mockResponses[url] = (data: body, response: response)
+    }
+
+    // MARK: getChallenge existingCredentialIds
+
+    func test_getChallenge_decodesExistingCredentialIds() async throws {
+        let json = """
+        {"challenge": "AAAA", "expires_at": "2026-01-01T00:00:00Z", "existing_credential_ids": ["BBBB", "CCCC"]}
+        """.data(using: .utf8)!
+        mockResponse(for: challengeURL, body: json)
+
+        let challenge = try await client.getChallenge()
+
+        XCTAssertEqual(challenge.existingCredentialIds, ["BBBB", "CCCC"])
+    }
+
+    func test_getChallenge_missingExistingCredentialIds_defaultsToEmptyArray() async throws {
+        let json = """
+        {"challenge": "AAAA", "expires_at": "2026-01-01T00:00:00Z"}
+        """.data(using: .utf8)!
+        mockResponse(for: challengeURL, body: json)
+
+        let challenge = try await client.getChallenge()
+
+        XCTAssertEqual(challenge.existingCredentialIds, [])
+    }
+
+    // MARK: linkAdditionalPasskey (recovery-then-authenticate path)
+
+    func test_linkAdditionalPasskey_postsRecoveryProofAndCredentialToRecoveryEndpoint() async throws {
+        mockResponse(for: linkURL, body: Data("{}".utf8))
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+        try await client.linkAdditionalPasskey(
+            existingAccountProof: proof,
+            credentialID: "cred-1",
+            publicKey: "pubkey-1",
+            clientDataJSON: "client-data-1"
+        )
+
+        XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == linkURL })
+    }
+
+    func test_linkAdditionalPasskey_serverRejection_throwsServerError() async throws {
+        let errorBody = """
+        {"error": "backup code did not match"}
+        """.data(using: .utf8)!
+        mockResponse(for: linkURL, status: 400, body: errorBody)
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "wrong-code")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw for a rejected recovery proof")
+        } catch APIError.serverError(let message) {
+            XCTAssertEqual(message, "backup code did not match")
+        }
     }
 }

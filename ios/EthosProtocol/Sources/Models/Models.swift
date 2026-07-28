@@ -1,7 +1,7 @@
 import Foundation
 
 // `public` here (and on the members below): TTLWidget.swift's WidgetKit
-// timeline provider reads Vault fields from APIClient.listVaults() across
+// timeline provider reads Vault fields from APIClient.listAllVaults() across
 // a real module boundary in the SPM build (Package.swift declares TTLWidget
 // as a separate target depending on the EthosProtocol target) — internal
 // (the Swift default) is invisible outside the defining module.
@@ -50,40 +50,27 @@ enum VaultAmount {
     }
 }
 
-// Client-side mirror of the backend's username policy for passkey registration, so
-// malformed input is caught before it's sent as the WebAuthn userID/display name instead
-// of surfacing as a generic backend rejection.
-enum UsernameValidation {
-    static let minLength = 3
-    static let maxLength = 30
-    private static let allowedCharacters = CharacterSet(charactersIn:
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+/// Structured, user-facing presentation of an error — derived from APIError when
+/// possible so decode/server failures surface a concrete next step ("Try Again" /
+/// "Contact Support") instead of a bare message with no available action.
+struct ErrorPresentation: Equatable {
+    let message: String
+    let recoverySuggestion: String?
+    let showsRetry: Bool
+    let showsContactSupport: Bool
 
-    enum ValidationError: LocalizedError, Equatable {
-        case tooShort
-        case tooLong
-        case invalidCharacters
-
-        var errorDescription: String? {
-            switch self {
-            case .tooShort:
-                return "Username must be at least \(UsernameValidation.minLength) characters."
-            case .tooLong:
-                return "Username must be \(UsernameValidation.maxLength) characters or fewer."
-            case .invalidCharacters:
-                return "Username can only contain letters, numbers, underscores, and hyphens."
-            }
+    init(_ error: Error) {
+        if let apiError = error as? APIError {
+            message = apiError.errorDescription ?? "Something went wrong"
+            recoverySuggestion = apiError.recoverySuggestion
+            showsRetry = apiError.isRetryable
+            showsContactSupport = apiError.suggestsContactSupport
+        } else {
+            message = error.localizedDescription
+            recoverySuggestion = nil
+            showsRetry = false
+            showsContactSupport = false
         }
-    }
-
-    /// Trims leading/trailing whitespace, then validates length and character set.
-    /// Returns the trimmed username on success, or the first validation failure found.
-    static func validate(_ input: String) -> Result<String, ValidationError> {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= minLength else { return .failure(.tooShort) }
-        guard trimmed.count <= maxLength else { return .failure(.tooLong) }
-        guard trimmed.unicodeScalars.allSatisfy(allowedCharacters.contains) else { return .failure(.invalidCharacters) }
-        return .success(trimmed)
     }
 }
 
@@ -99,11 +86,36 @@ enum BeneficiaryUpdate {
 struct AuthChallenge: Codable {
     let challenge: String
     let expiresAt: Date
+    // Credential IDs already registered to the account this challenge is for. Empty
+    // when there are none yet (e.g. a brand-new account) or when the server predates
+    // this field — decoded defensively so older/partial responses still parse.
+    let existingCredentialIds: [String]
+
+    init(challenge: String, expiresAt: Date, existingCredentialIds: [String] = []) {
+        self.challenge = challenge
+        self.expiresAt = expiresAt
+        self.existingCredentialIds = existingCredentialIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        challenge = try container.decode(String.self, forKey: .challenge)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        existingCredentialIds = try container.decodeIfPresent([String].self, forKey: .existingCredentialIds) ?? []
+    }
 }
 
 struct AuthToken: Codable {
     let token: String
     let expiresAt: Date
+}
+
+/// Proof of identity for an existing vault-owning account that lost its original
+/// passkey-holding device, gathered by RecoverAccessView before a new passkey may
+/// be linked to that account (see PasskeyService.linkAdditionalPasskey).
+struct AccountRecoveryProof: Codable {
+    let email: String
+    let backupCode: String
 }
 
 struct PushRegistration: Codable {
@@ -143,4 +155,14 @@ struct Enable2FAResponse: Codable {
 
 struct Verify2FARequest: Codable {
     let otp: String
+}
+
+// MARK: - Pagination Models (#112)
+
+/// Paginated response for `GET /vaults`. See api-contract.md §Pagination.
+struct VaultPage: Codable {
+    let vaults: [Vault]
+    /// Opaque cursor for the next page, or `nil` if this is the last page.
+    let nextCursor: String?
+    let hasMore: Bool
 }

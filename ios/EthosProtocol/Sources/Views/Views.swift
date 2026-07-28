@@ -126,12 +126,60 @@ struct CopyableIDView: View {
     }
 }
 
+// MARK: - Error Presentation
+
+/// Renders an ErrorPresentation's message + recovery suggestion, plus a "Try
+/// Again" button (when the error is retryable and a retry action is supplied)
+/// and a "Contact Support" mail link (when the error warrants escalating).
+struct ErrorActionView: View {
+    let error: ErrorPresentation
+    var retry: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(error.message)
+                .foregroundStyle(.red)
+                .font(.caption)
+            if let suggestion = error.recoverySuggestion {
+                Text(suggestion)
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+            }
+            HStack(spacing: 16) {
+                if error.showsRetry, let retry {
+                    Button("Try Again", action: retry)
+                        .font(.caption.bold())
+                }
+                if error.showsContactSupport {
+                    Link("Contact Support", destination: SupportContact.mailURL(errorMessage: error.message))
+                        .font(.caption.bold())
+                }
+            }
+        }
+        .multilineTextAlignment(.leading)
+    }
+}
+
+enum SupportContact {
+    static let email = "support@ethos-protocol.app"
+
+    static func mailURL(errorMessage: String) -> URL {
+        var components = URLComponents(string: "mailto:\(email)")!
+        components.queryItems = [
+            URLQueryItem(name: "subject", value: "Ethos-Protocol app issue"),
+            URLQueryItem(name: "body", value: "I ran into this error:\n\(errorMessage)")
+        ]
+        return components.url ?? URL(string: "mailto:\(email)")!
+    }
+}
+
 // MARK: - Auth
 
 struct AuthView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var username = ""
     @State private var showRegister = false
+    @State private var showRecovery = false
 
     var body: some View {
         NavigationStack {
@@ -144,7 +192,7 @@ struct AuthView: View {
                 Text("Secure digital inheritance").foregroundStyle(.secondary)
 
                 if let error = authStore.error {
-                    Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+                    ErrorActionView(error: error, retry: { Task { await authStore.signIn() } })
                 }
 
                 Button(action: { Task { await authStore.signIn() } }) {
@@ -156,10 +204,15 @@ struct AuthView: View {
 
                 Button("Create account") { showRegister = true }
                     .foregroundStyle(.blue)
+
+                Button("Lost your device?") { showRecovery = true }
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
             }
             .padding(32)
             .overlay { if authStore.isLoading { ProgressView() } }
             .sheet(isPresented: $showRegister) { RegisterView() }
+            .sheet(isPresented: $showRecovery) { RecoverAccessView() }
         }
     }
 }
@@ -187,7 +240,7 @@ struct RegisterView: View {
                     }
                 }
                 if let error = authStore.error {
-                    Section { Text(error).foregroundStyle(.red).font(.caption) }
+                    Section { ErrorActionView(error: error, retry: { Task { await authStore.register(username: username) } }) }
                 }
             }
             .navigationTitle("Create Account")
@@ -212,6 +265,59 @@ struct RegisterView: View {
     }
 }
 
+struct RecoverAccessView: View {
+    @EnvironmentObject var authStore: AuthStore
+    @Environment(\.dismiss) var dismiss
+    @State private var email = ""
+    @State private var backupCode = ""
+    @State private var username = ""
+
+    private var canSubmit: Bool {
+        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty && !authStore.isLoading
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Verify your identity") {
+                    TextField("Email", text: $email)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                    TextField("Backup code", text: $backupCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text("Enter the email and backup code from when you created your account. We'll use them to link a new passkey on this device.")
+                }
+                Section("New Passkey") {
+                    TextField("Username", text: $username)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                if let error = authStore.error {
+                    Section { Text(error).foregroundStyle(.red).font(.caption) }
+                }
+            }
+            .navigationTitle("Recover Access")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Link Passkey") {
+                        Task {
+                            await authStore.recoverAccess(email: email, backupCode: backupCode, username: username)
+                            if authStore.isAuthenticated { dismiss() }
+                        }
+                    }
+                    .disabled(!canSubmit)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Vault List
 
 struct VaultListView: View {
@@ -220,21 +326,37 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
+    // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
+    // block access to the app, consistent with the "secure digital inheritance" posture.
+    @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
 
     var body: some View {
         NavigationStack {
-            Group {
-                if vaultStore.isLoading && vaultStore.vaults.isEmpty {
-                    ProgressView("Loading vaults…")
-                } else if vaultStore.vaults.isEmpty {
-                    ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
-                } else {
-                    List(vaultStore.vaults) { vault in
-                        NavigationLink(destination: VaultDetailView(vault: vault)) {
-                            VaultRowView(vault: vault)
+            VStack(spacing: 0) {
+                if let error = vaultStore.error {
+                    ErrorActionView(error: error, retry: { Task { await vaultStore.load() } })
+                        .padding()
+                }
+                Group {
+                    if vaultStore.isLoading && vaultStore.vaults.isEmpty {
+                        ProgressView("Loading vaults…")
+                    } else if vaultStore.vaults.isEmpty {
+                        ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
+                    } else {
+                        List {
+                            ForEach(vaultStore.vaults) { vault in
+                                NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                    VaultRowView(vault: vault)
+                                }
+                            }
+                            if vaultStore.hasMorePages {
+                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                    Task { await vaultStore.loadMore() }
+                                }
+                            }
                         }
+                        .refreshable { await vaultStore.load() }
                     }
-                    .refreshable { await vaultStore.load() }
                 }
             }
             .navigationTitle("My Vaults")
@@ -248,7 +370,7 @@ struct VaultListView: View {
                         NavigationLink(destination: SettingsView()) {
                             Label("Settings", systemImage: "gear")
                         }
-                        Button("Sign Out") { authStore.signOut() }
+                        Button("Sign Out") { Task { await authStore.signOut() } }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -264,7 +386,76 @@ struct VaultListView: View {
             .onChange(of: vaultStore.pendingDeepLink) { _, link in
                 if link != nil { showDeepLinkSheet = true }
             }
+            // #118: Non-blocking jailbreak warning — dismissible by the user.
+            .alert("Security Warning", isPresented: $showIntegrityWarning) {
+                Button("I Understand", role: .cancel) { showIntegrityWarning = false }
+            } message: {
+                Text("This device appears to be jailbroken. Your vault data, passkeys, and 2FA secrets may be at greater risk. Consider using a stock device for maximum security.")
+            }
         }
+    }
+
+    // Surfaces staleness (issue #25) and any check-ins still waiting to sync (issue #28) above
+    // the vault list, so both stay visible without blocking the list itself.
+    @ViewBuilder
+    private var statusBanners: some View {
+        if let age = vaultStore.vaultsCacheAge {
+            StatusBannerView(
+                text: "Offline — showing vaults from \(Self.relativeAge(age))",
+                systemImage: "wifi.slash",
+                color: .orange)
+        }
+        if vaultStore.queuedCheckInCount > 0 {
+            StatusBannerView(
+                text: vaultStore.queuedCheckInCount == 1
+                    ? "1 check-in queued — will retry when back online"
+                    : "\(vaultStore.queuedCheckInCount) check-ins queued — will retry when back online",
+                systemImage: "clock.arrow.circlepath",
+                color: .blue)
+        }
+    }
+
+    private static func relativeAge(_ interval: TimeInterval) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(fromTimeInterval: -interval)
+    }
+}
+
+struct StatusBannerView: View {
+    let text: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.1))
+    }
+}
+
+/// Trailing row in VaultListView's list: a "Load More" button while a further
+/// page is available, or a spinner while that page is being fetched.
+struct LoadMoreRow: View {
+    let isLoading: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            if isLoading {
+                ProgressView()
+            } else {
+                Button("Load More", action: action)
+                    .font(.subheadline)
+            }
+            Spacer()
+        }
+        .listRowSeparator(.hidden)
     }
 }
 
@@ -328,6 +519,11 @@ struct VaultDetailView: View {
     @State private var show2FAVerify = false
     @State private var twoFactorStatus: TwoFactorStatus?
     @State private var twoFactorLoadError: String?
+    @State private var showDeposit = false
+    @State private var showWithdraw = false
+    @State private var showManageBeneficiary = false
+    /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
+    @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
         List {
@@ -339,7 +535,7 @@ struct VaultDetailView: View {
                     Spacer()
                     CopyableIDView(fullID: vault.beneficiary, displayLength: 16)
                 }
-                if let ttl = vault.ttlRemaining {
+                if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
                 }
             }
@@ -383,6 +579,11 @@ struct VaultDetailView: View {
                 if let error = biometricError {
                     Text(error).foregroundStyle(.red).font(.caption)
                 }
+                if vaultStore.queuedCheckInCount > 0 {
+                    Label("Check-in queued — will retry automatically when back online", systemImage: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section("Funds") {
@@ -406,7 +607,13 @@ struct VaultDetailView: View {
         // `.task` auto-cancels when the view disappears, so this polling loop
         // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
         // on navigating away instead of continuing to run in the background.
-        .task { await refreshTTLPeriodically() }
+        // The real-time event subscription (#20) rides along on the same task:
+        // opened before the loop starts, torn down via `defer` once it exits.
+        .task {
+            vaultStore.subscribeToEvents(vaultID: vault.id)
+            defer { vaultStore.unsubscribeFromEvents() }
+            await refreshTTLPeriodically()
+        }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
         }
@@ -433,10 +640,20 @@ struct VaultDetailView: View {
     private func load2FAStatus() async {
         twoFactorLoadError = nil
         do {
-            twoFactorStatus = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            let status = try await APIClient.shared.get2FAStatus(vaultID: vault.id)
+            ifNotCancelled { twoFactorStatus = status }
         } catch {
-            twoFactorLoadError = error.localizedDescription
-            twoFactorStatus = nil
+            ifNotCancelled {
+                twoFactorLoadError = error.localizedDescription
+                twoFactorStatus = nil
+            }
+        }
+    }
+
+    private func refreshTTLPeriodically() async {
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 
@@ -445,9 +662,14 @@ struct VaultDetailView: View {
         ifNotCancelled { ttlRemaining = ttl }
     }
 
-    private func load2FAStatus() async {
-        let status = try? await APIClient.shared.get2FAStatus(vaultID: vault.id)
-        ifNotCancelled { twoFactorStatus = status }
+    /// Polls the server TTL every 60 s for as long as the view is on screen.
+    /// The `.task` modifier that calls this cancels it automatically on disappear.
+    private func refreshTTLPeriodically() async {
+        ttlRemaining = vault.ttlRemaining   // seed with value from vault list
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+        }
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
@@ -455,10 +677,14 @@ struct VaultDetailView: View {
     // the Task wouldn't stop the server from processing it, it would just make
     // the app forget whether it succeeded. `ifNotCancelled` still guards the
     // state write in case cancellation reaches here some other way.
+    //
+    // #120: Biometric gate is enforced via Disable2FACoordinator before the API
+    // call.  Disabling 2FA is at least as security-sensitive as a check-in — it
+    // must require explicit user confirmation.
     private func disable2FA() {
         Task {
             do {
-                try await APIClient.shared.disable2FA(vaultID: vault.id)
+                try await Disable2FACoordinator().run(vaultID: vault.id)
                 if !Task.isCancelled { await load2FAStatus() }
             } catch {
                 ifNotCancelled { biometricError = error.localizedDescription }
@@ -596,7 +822,7 @@ struct DepositView: View {
         Task {
             await vaultStore.deposit(vault: vault, amount: amount)
             if let storeError = vaultStore.error {
-                error = storeError
+                error = storeError.message
             } else {
                 dismiss()
             }
@@ -658,7 +884,7 @@ struct WithdrawView: View {
                 try await BiometricService.shared.authenticate(reason: "Confirm vault withdrawal")
                 await vaultStore.withdraw(vault: vault, amount: amount)
                 if let storeError = vaultStore.error {
-                    error = storeError
+                    error = storeError.message
                 } else {
                     dismiss()
                 }
@@ -756,7 +982,7 @@ struct ManageBeneficiaryView: View {
                 try await BiometricService.shared.authenticate(reason: "Confirm beneficiary change")
                 await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: newBeneficiary)
                 if let storeError = vaultStore.error {
-                    error = storeError
+                    error = storeError.message
                 } else {
                     updated = true
                 }
@@ -882,6 +1108,9 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
+    // #119: Escalating cooldown after repeated OTP failures.
+    @StateObject private var rateLimiter = OTPRateLimiter()
+
     private var isInitialSetup: Bool {
         provisioningUri != nil || secret != nil
     }
@@ -919,6 +1148,19 @@ struct TwoFactorVerifyView: View {
                 .frame(maxWidth: 200)
                 .multilineTextAlignment(.center)
                 .font(.title2)
+                .disabled(rateLimiter.isBlocked)
+
+            // #119: Show remaining cooldown when the user is locked out.
+            if rateLimiter.isBlocked {
+                Label("Too many attempts — wait \(rateLimiter.cooldownSecondsRemaining)s",
+                      systemImage: "timer")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if rateLimiter.failureCount > 0 {
+                Text("\(rateLimiter.failureCount) failed attempt\(rateLimiter.failureCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
 
@@ -927,7 +1169,7 @@ struct TwoFactorVerifyView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(otp.count != 6 || isVerifying)
+            .disabled(otp.count != 6 || isVerifying || rateLimiter.isBlocked)
         }
         .padding(32)
         .navigationTitle("Verify 2FA")
@@ -968,10 +1210,12 @@ struct TwoFactorVerifyView: View {
         Task {
             do {
                 try await APIClient.shared.verify2FA(vaultID: vaultID, otp: otp)
+                rateLimiter.reset()   // #119: Reset on success
                 onVerified()
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
+                rateLimiter.recordFailure()   // #119: Record failure and possibly start cooldown
             }
             isVerifying = false
         }
@@ -1034,6 +1278,7 @@ struct VaultActionDeepLinkView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var hasAttemptedLoad = false
+    @State private var showWithdrawSheet = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
@@ -1076,7 +1321,8 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "arrow.up.circle.fill",
                         description: "Withdraw funds from vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Withdrawal is not yet available in the mobile app."
+                        if let vault { showWithdrawSheet = true }
+                        else { error = "Vault not found" }
                     }
                 case .manageBeneficiary:
                     actionContent(
@@ -1084,13 +1330,19 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "person.2.fill",
                         description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Beneficiary management is not yet available in the mobile app."
+                        guard vault != nil else { error = "Vault not found"; return }
+                        showManageBeneficiary = true
                     }
                 }
             }
         }
         .task {
             await loadVaultIfNeeded()
+        }
+        .sheet(isPresented: $showWithdrawSheet) {
+            if let vault {
+                NavigationStack { WithdrawView(vault: vault) }
+            }
         }
     }
 

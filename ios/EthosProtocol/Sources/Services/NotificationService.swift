@@ -22,7 +22,16 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func handleDeviceToken(_ tokenData: Data) {
         let token = tokenData.map { String(format: "%02x", $0) }.joined()
-        Task { try? await APIClient.shared.registerPushToken(token) }
+        Task {
+            do {
+                try await APIClient.shared.registerPushToken(token)
+                // Persisted only on success so AuthStore.signOut() unregisters a token
+                // the server actually has on file for this device.
+                KeychainService.shared.savePushToken(token)
+            } catch {
+                // Best-effort: the OS redelivers the device token on next launch/refresh.
+            }
+        }
     }
 
     // Schedule a local check-in reminder scaled to the vault's check-in interval.
@@ -70,6 +79,36 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    // MARK: - Offline Check-In Queue Indicator
+
+    private static let queuedCheckInIdentifier = "checkin-queued"
+
+    /// Surfaces a persistent local notification while check-ins are queued for retry, mirroring
+    /// Android's NotificationHelper.showQueuedCheckIn. iOS has no true "ongoing" notification
+    /// (UNNotificationRequest has no non-dismissable/foreground-service equivalent to Android's
+    /// setOngoing(true)), so this re-posts the same identifier every time the queue changes;
+    /// cancelQueuedCheckIn() removes it once the queue drains. VaultStore's queuedCheckInCount
+    /// mirrors this in-app for while the app is foregrounded.
+    func showQueuedCheckIn(count: Int) {
+        let center = UNUserNotificationCenter.current()
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in queued"
+        content.body = count == 1
+            ? "1 check-in will be submitted when back online"
+            : "\(count) check-ins will be submitted when back online"
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: Self.queuedCheckInIdentifier, content: content, trigger: trigger)
+        center.removePendingNotificationRequests(withIdentifiers: [Self.queuedCheckInIdentifier])
+        center.add(request)
+    }
+
+    func cancelQueuedCheckIn() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [Self.queuedCheckInIdentifier])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.queuedCheckInIdentifier])
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
@@ -99,10 +138,31 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.add(request)
     }
 
-    /// Removes every pending local notification (used on sign-out, so a previously
-    /// signed-in user's check-in/TTL reminders don't fire for whoever uses the app next).
-    func removeAllPendingNotifications() {
-        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    /// Dismiss the "check-in queued" persistent notification once all pending
+    /// check-ins have been delivered. Mirrors Android's
+    /// `NotificationHelper.cancelQueuedCheckIn()` called from `CheckInSyncWorker`.
+    func cancelQueuedCheckIn() {
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: ["checkin-queued-badge"])
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: ["checkin-queued-badge"])
+    }
+
+    /// Show a persistent notification while offline check-ins are queued.
+    /// Mirrors Android's `NotificationHelper.showQueuedCheckIn(count)`.
+    func showQueuedCheckIn(count: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in Queued"
+        content.body = count == 1
+            ? "1 check-in is queued and will be sent when you're back online."
+            : "\(count) check-ins are queued and will be sent when you're back online."
+        content.sound = nil // silent — informational only
+        let request = UNNotificationRequest(
+            identifier: "checkin-queued-badge",
+            content: content,
+            trigger: nil // deliver immediately
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     func registerNotificationCategories() {
