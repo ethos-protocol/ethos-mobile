@@ -22,10 +22,18 @@ final class BackgroundRefreshService {
     // an account with more vaults than fit on one page.
     var vaultListProvider: VaultListProvider = { try await APIClient.shared.listAllVaults() }
 
-    // Tracks whether scheduleAppRefresh was called (for testing)
-    private(set) var scheduleAppRefreshCallCount = 0
+    // Injected dependency for testing; defaults to the shared check-in retry queue.
+    var checkInSync: CheckInSyncService = .shared
 
-    private init() {}
+    // Tracks whether scheduleAppRefresh was called (for testing). `internal` (not
+    // `private(set)`): HandleRefreshTests resets this between runs via `@testable import`,
+    // which — like `private init()` — a `private` setter would block from another file.
+    var scheduleAppRefreshCallCount = 0
+
+    // `internal` (not `private`): lets tests construct a BackgroundRefreshService via
+    // `@testable import` instead of only exercising the shared singleton, mirroring
+    // APIClient's testable init.
+    init() {}
 
     func registerBackgroundTask() {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskIdentifier, using: nil) { [weak self] task in
@@ -45,10 +53,23 @@ final class BackgroundRefreshService {
 
         // Register the expiration handler before kicking off the async work so there's no
         // window where the system could expire the task before we're able to cancel it.
+        // `BackgroundRefreshTask` isn't class-constrained, so the compiler won't assign through
+        // the immutable `task` parameter directly even though every real conformer
+        // (BGAppRefreshTask, MockBackgroundRefreshTask) is a class — shadow it with a local
+        // `var` for this one synchronous mutation. The `Task { ... }` closure below captures
+        // the original `task` (never mutated) instead, so it doesn't need to capture a `var`
+        // across a concurrency boundary.
+        var mutableTask = task
         var refreshTask: Task<Void, Never>?
-        task.expirationHandler = { refreshTask?.cancel() }
+        mutableTask.expirationHandler = { refreshTask?.cancel() }
 
         refreshTask = Task {
+            // Piggyback the offline check-in retry queue on this already-registered,
+            // already-scheduled BGAppRefreshTask rather than registering a second background
+            // task identifier — see issue #28. Best-effort: a flush failure shouldn't fail the
+            // TTL refresh this task also performs.
+            await checkInSync.flush()
+
             do {
                 let vaults = try await vaultListProvider()
                 for vault in vaults where vault.status == .active {

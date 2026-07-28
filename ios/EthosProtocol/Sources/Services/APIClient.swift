@@ -184,6 +184,13 @@ public final class APIClient {
         return try await get(path: path)
     }
 
+    /// How long ago the cached `/vaults` response was written, or nil if nothing is cached yet.
+    /// Lets VaultStore surface "data as of X ago" when a `listVaults()` call was served from
+    /// the offline cache. Uses the same cache key `execute(_:)` saves under (the request URL).
+    func vaultsCacheAge() -> TimeInterval? {
+        OfflineCache.shared.age(for: request(path: "/vaults").url?.absoluteString ?? "")
+    }
+
     func getVault(id: String) async throws -> Vault {
         try await get(path: "/vaults/\(id)")
     }

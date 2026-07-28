@@ -63,6 +63,9 @@ final class AuthStore: ObservableObject {
             KeychainService.shared.deletePushToken()
         }
         KeychainService.shared.deleteToken()
+        // Ties into #10: a subsequent user signing in on the same device must never be served
+        // the previous user's cached vault data while offline.
+        OfflineCache.shared.clearAll()
         isAuthenticated = false
     }
 }
@@ -81,6 +84,10 @@ final class VaultStore: ObservableObject {
 
     func load() async {
         isLoading = true; error = nil
+        if NetworkMonitor.shared.isConnected {
+            await CheckInSyncService.shared.flush()
+            updateQueuedIndicator()
+        }
         do {
             let page = try await APIClient.shared.listVaults()
             ifNotCancelled {
@@ -90,6 +97,7 @@ final class VaultStore: ObservableObject {
             }
         } catch APIError.networkUnavailable {
             // Vaults already populated from offline cache via APIClient
+            ifNotCancelled { vaultsCacheAge = APIClient.shared.vaultsCacheAge() }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }

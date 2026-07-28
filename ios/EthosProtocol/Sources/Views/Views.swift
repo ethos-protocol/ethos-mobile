@@ -244,6 +244,48 @@ struct VaultListView: View {
             }
         }
     }
+
+    // Surfaces staleness (issue #25) and any check-ins still waiting to sync (issue #28) above
+    // the vault list, so both stay visible without blocking the list itself.
+    @ViewBuilder
+    private var statusBanners: some View {
+        if let age = vaultStore.vaultsCacheAge {
+            StatusBannerView(
+                text: "Offline — showing vaults from \(Self.relativeAge(age))",
+                systemImage: "wifi.slash",
+                color: .orange)
+        }
+        if vaultStore.queuedCheckInCount > 0 {
+            StatusBannerView(
+                text: vaultStore.queuedCheckInCount == 1
+                    ? "1 check-in queued — will retry when back online"
+                    : "\(vaultStore.queuedCheckInCount) check-ins queued — will retry when back online",
+                systemImage: "clock.arrow.circlepath",
+                color: .blue)
+        }
+    }
+
+    private static func relativeAge(_ interval: TimeInterval) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(fromTimeInterval: -interval)
+    }
+}
+
+struct StatusBannerView: View {
+    let text: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.1))
+    }
 }
 
 /// Trailing row in VaultListView's list: a "Load More" button while a further
@@ -386,6 +428,11 @@ struct VaultDetailView: View {
                 .disabled(isCheckingIn || vault.status != .active)
                 if let error = biometricError {
                     Text(error).foregroundStyle(.red).font(.caption)
+                }
+                if vaultStore.queuedCheckInCount > 0 {
+                    Label("Check-in queued — will retry automatically when back online", systemImage: "clock.arrow.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
 
