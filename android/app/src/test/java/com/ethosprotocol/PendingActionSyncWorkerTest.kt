@@ -5,6 +5,7 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.models.CreateVaultRequest
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultStatus
@@ -30,11 +31,13 @@ class PendingActionSyncWorkerTest {
     private val apiClient: ApiClient = mockk()
     private val dao: PendingActionDao = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
+    private val networkMonitor: NetworkMonitor = mockk()
     private lateinit var worker: PendingActionSyncWorker
 
     @Before
     fun setup() {
-        worker = PendingActionSyncWorker(context, params, apiClient, dao, notificationHelper)
+        every { networkMonitor.isConnected } returns true
+        worker = PendingActionSyncWorker(context, params, apiClient, dao, notificationHelper, networkMonitor)
     }
 
     @Test

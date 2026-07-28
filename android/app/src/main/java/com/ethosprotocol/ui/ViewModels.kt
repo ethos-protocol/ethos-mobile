@@ -45,7 +45,9 @@ data class AuthUiState(
 class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val notificationHelper: NotificationHelper,
+    private val pendingActionDao: PendingActionDao
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -60,8 +62,10 @@ class AuthViewModel @Inject constructor(
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
+        // PasskeyService.register already stores the session token returned by the
+        // backend, so there's no need to run a second sign-in ceremony here.
         passkeyService.register(activity, username)
-            .onSuccess { signIn(activity) }
+            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
             .onFailure { e -> handleAuthFailure(e) }
     }
 
@@ -72,6 +76,10 @@ class AuthViewModel @Inject constructor(
         tokenProvider.pushToken?.let { apiClient.unregisterPushToken(it) }
         tokenProvider.clear()
         tokenProvider.pushToken = null
+        // Clear pending actions: queued actions are tied to the authenticated session and
+        // should not persist or sync after sign-out (they belong to the previous user's vaults).
+        pendingActionDao.deleteAll()
+        notificationHelper.cancelQueuedActions()
         _state.update { it.copy(isAuthenticated = false) }
     }
 

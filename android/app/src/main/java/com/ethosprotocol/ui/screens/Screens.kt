@@ -7,10 +7,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -65,7 +69,7 @@ fun AuthScreenContent(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(Icons.Default.Lock, contentDescription = null,
+        Icon(Icons.Default.Lock, contentDescription = "Secure sign-in",
             modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
         Text("Ethos-Protocol", style = MaterialTheme.typography.headlineLarge)
@@ -187,23 +191,31 @@ fun VaultListScreen(
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    LazyColumn {
-                        if (state.isOffline) item {
-                            OfflineBanner()
-                        }
-                        val errorMsg = biometricError ?: state.error
-                        errorMsg?.let { err ->
-                            item {
-                                Text(err, color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.padding(16.dp))
+                    // Ties the pull gesture to the same VaultViewModel.load() used for the initial
+                    // fetch, so state.isLoading naturally drives the pull indicator too.
+                    PullToRefreshBox(
+                        isRefreshing = state.isLoading,
+                        onRefresh = { vm.load() },
+                        modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
+                    ) {
+                        LazyColumn {
+                            if (state.isOffline) item {
+                                OfflineBanner()
                             }
-                        }
-                        items(state.vaults, key = { it.id }) { vault ->
-                            VaultCard(
-                                vault = vault,
-                                onClick = { onVaultClick(vault.id) },
-                                onCheckIn = { pendingCheckIn = vault },
-                            )
+                            val errorMsg = biometricError ?: state.error
+                            errorMsg?.let { err ->
+                                item {
+                                    Text(err, color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(16.dp))
+                                }
+                            }
+                            items(state.vaults, key = { it.id }) { vault ->
+                                VaultCard(
+                                    vault = vault,
+                                    onClick = { onVaultClick(vault.id) },
+                                    onCheckIn = { pendingCheckIn = vault },
+                                )
+                            }
                         }
                     }
                 }
@@ -246,8 +258,14 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
 @Composable
 private fun OfflineBanner() {
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.WifiOff, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+        // mergeDescendants groups the icon + label into a single TalkBack stop instead of two,
+        // so giving the icon a description adds context without a duplicate announcement.
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp).semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.WifiOff, contentDescription = "Offline",
+                tint = MaterialTheme.colorScheme.onTertiaryContainer)
             Spacer(Modifier.width(8.dp))
             Text("Offline — showing cached data", color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
@@ -259,8 +277,11 @@ private fun OfflineBanner() {
 private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
+            // At the largest font scale a full-length id + chip in one row will clip rather than
+            // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
                 StatusChip(vault.status)
             }
@@ -269,12 +290,17 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (vault.isExpiringSoon) {
                 Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error,
+                // mergeDescendants groups the icon + label into a single TalkBack stop instead of two.
+                Row(
+                    Modifier.semantics(mergeDescendants = true) {},
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = "Warning", tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall)
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {
@@ -295,8 +321,11 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
         com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
         com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
     }
-    SuggestionChip(onClick = {}, label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color))
+    SuggestionChip(
+        onClick = {},
+        label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+    )
 }
 
 // MARK: - Beneficiary Acceptance Screen
@@ -345,7 +374,7 @@ fun BeneficiaryAcceptanceScreenContent(
     ) {
         Icon(
             Icons.Default.Lock,
-            contentDescription = null,
+            contentDescription = "Secure beneficiary acceptance",
             modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
@@ -417,6 +446,7 @@ fun VaultDeepLinkScreen(
         null -> "Vault Link" to "Unrecognised vault action."
     }
 
+    // VIEW_DETAILS early-exit case with full vault card
     if (action == VaultDeepLinkAction.VIEW_DETAILS && vault != null) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.headlineSmall)
@@ -428,7 +458,10 @@ fun VaultDeepLinkScreen(
         return
     }
 
-    val displayError = error ?: if (action == VaultDeepLinkAction.VIEW_DETAILS && vault == null) {
+    // Determine display error:
+    // - Show "Vault not found" ONLY if loading has completed and vault is still null
+    // - Do NOT show "not found" while still loading (prevents false flash)
+    val displayError = error ?: if (!state.isLoading && vault == null && action == VaultDeepLinkAction.VIEW_DETAILS) {
         "Vault not found"
     } else {
         null
@@ -507,6 +540,16 @@ fun VaultDeepLinkScreenContent(
             .padding(32.dp),
         verticalArrangement = Arrangement.Center
     ) {
+        if (state.isLoading && vault == null) {
+            // Show explicit loading indicator while vault list is being fetched
+            CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+            Spacer(Modifier.height(16.dp))
+            Text("Loading vault details…", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.CenterHorizontally))
+            return@Column
+        }
+
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,
@@ -662,6 +705,8 @@ private fun TwoFactorVerifyScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        // Decorative: the method-specific instructions below ("Scan the URI…", "A verification
+        // code has been sent to your phone/email") already convey which method is active.
         Icon(
             when (method) {
                 TwoFactorMethod.totp -> Icons.Default.Lock
