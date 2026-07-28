@@ -64,6 +64,28 @@ The server must:
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
 | POST | `/vaults/{id}/accept` | Beneficiary accepts vault (token required — see §Beneficiary Acceptance) |
 
+#### List Pagination (`GET /vaults`)
+
+Cursor-based. The response body stays a bare JSON array of `Vault` (unchanged,
+backward-compatible with clients that don't send pagination params) — the cursor
+for the next page is returned via a response header instead of wrapping the body.
+
+Request query parameters (both optional):
+
+| Param | Description |
+|-------|-------------|
+| `cursor` | Opaque cursor returned by the previous page's `X-Next-Cursor` response header. Omit to request the first page. |
+| `limit` | Max vaults to return in this page. Server may cap this. Client default: 50. |
+
+Response headers:
+
+| Header | Description |
+|--------|-------------|
+| `X-Next-Cursor` | Opaque cursor for the next page. Absent (or empty) when this is the last page. |
+
+Cursors are opaque — clients must not parse or construct them, only round-trip
+the value returned by `X-Next-Cursor` back as the `cursor` query param.
+
 ### Notifications
 | Method | Path | Description |
 |--------|------|-------------|
@@ -71,7 +93,23 @@ The server must:
 | DELETE | `/notifications/register` | Unregister push token |
 
 ## WebSocket
-`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events
+`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events for
+a single vault. Requires the same `Authorization: Bearer <jwt>` header as REST
+requests, sent on the handshake request.
+
+Server → client messages are JSON text frames:
+
+```json
+{ "type": "vault_updated", "vault": { /* full Vault object, see below */ } }
+```
+
+`type` is open-ended (clients should ignore unrecognized values instead of
+erroring, to allow adding new event types without breaking older clients).
+
+Clients are expected to reconnect with backoff on an unexpected drop, and to
+fall back to their existing polling mechanism (periodic `GET /vaults/{id}`) if
+the socket can't be established after a few attempts — this stream is a
+latency optimization, not the source of truth.
 
 Authentication: pass the JWT as a query parameter or `Authorization` header on the initial
 handshake request. The server closes the connection with code 4401 if authentication fails.

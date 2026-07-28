@@ -1046,6 +1046,60 @@ final class VaultStoreTests: XCTestCase {
     }
 }
 
+// MARK: - #24 Sign-Out Push Token Unregistration Tests
+
+@MainActor
+final class AuthStoreSignOutTests: XCTestCase {
+
+    func test_signOut_unregistersPersistedPushToken() async throws {
+        // Arranging via KeychainService requires a real read-back of a just-written
+        // value, which — like KeychainServiceTests.test_saveAndLoadToken above — is
+        // unreliable from this unsigned, hostless SPM test bundle in CI. See the
+        // HostedTests counterpart for CI coverage of this behavior.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        KeychainService.shared.saveToken("auth-token-abc")
+        KeychainService.shared.savePushToken("push-token-abc")
+
+        let store = AuthStore()
+        var unregisteredToken: String?
+        store.unregisterPushToken = { token in unregisteredToken = token }
+
+        await store.signOut()
+
+        XCTAssertEqual(unregisteredToken, "push-token-abc")
+        XCTAssertNil(KeychainService.shared.loadPushToken(), "push token should be cleared after unregistering")
+        XCTAssertNil(KeychainService.shared.loadToken())
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_withNoPersistedPushToken_doesNotCallUnregister() async {
+        KeychainService.shared.deletePushToken()
+
+        let store = AuthStore()
+        var wasCalled = false
+        store.unregisterPushToken = { _ in wasCalled = true }
+
+        await store.signOut()
+
+        XCTAssertFalse(wasCalled)
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_unregisterFailure_stillSignsOutLocally() async {
+        KeychainService.shared.saveToken("auth-token-abc")
+
+        let store = AuthStore()
+        store.unregisterPushToken = { _ in throw APIError.networkUnavailable }
+
+        await store.signOut()
+
+        XCTAssertFalse(store.isAuthenticated)
+        XCTAssertNil(KeychainService.shared.loadToken())
+    }
+}
+
 // MARK: - #13/#14 Deposit & Withdraw Amount Validation Tests
 
 final class VaultAmountTests: XCTestCase {

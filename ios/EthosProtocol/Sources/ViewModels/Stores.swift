@@ -16,7 +16,13 @@ func ifNotCancelled(_ mutation: () -> Void) {
 final class AuthStore: ObservableObject {
     @Published var isAuthenticated = false
     @Published var isLoading = false
-    @Published var error: String?
+    @Published var error: ErrorPresentation?
+
+    // Injected for testing; defaults to the real APIClient call. See
+    // BackgroundRefreshService.vaultListProvider for the same pattern.
+    var unregisterPushToken: (String) async throws -> Void = { token in
+        try await APIClient.shared.unregisterPushToken(token)
+    }
 
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
@@ -29,7 +35,7 @@ final class AuthStore: ObservableObject {
             KeychainService.shared.saveToken(token.token)
             ifNotCancelled { isAuthenticated = true }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         // Unlike the writes above, always reset regardless of cancellation: it's
         // a loading-spinner flag, not stale request data, and leaving it true
@@ -44,12 +50,18 @@ final class AuthStore: ObservableObject {
             KeychainService.shared.saveCredentialID(credID)
             if !Task.isCancelled { await signIn() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
 
-    func signOut() {
+    func signOut() async {
+        // Unregister before dropping the auth token: the request needs the
+        // still-valid Bearer token to authenticate, or the server rejects it.
+        if let pushToken = KeychainService.shared.loadPushToken() {
+            try? await unregisterPushToken(pushToken)
+            KeychainService.shared.deletePushToken()
+        }
         KeychainService.shared.deleteToken()
         isAuthenticated = false
     }
@@ -59,21 +71,27 @@ final class AuthStore: ObservableObject {
 final class VaultStore: ObservableObject {
     @Published var vaults: [Vault] = []
     @Published var isLoading = false
-    @Published var error: String?
+    @Published var isLoadingMore = false
+    @Published var error: ErrorPresentation?
     @Published var pendingDeepLink: UniversalLinkRouter.DeepLink?
+    @Published private(set) var nextCursor: String?
+
+    /// Whether a further page is available for VaultListView's "Load More".
+    var hasMorePages: Bool { nextCursor != nil }
 
     func load() async {
         isLoading = true; error = nil
         do {
-            let fetched = try await APIClient.shared.listVaults()
+            let page = try await APIClient.shared.listVaults()
             ifNotCancelled {
-                vaults = fetched
+                vaults = page.vaults
+                nextCursor = page.nextCursor
                 scheduleReminders()
             }
         } catch APIError.networkUnavailable {
             // Vaults already populated from offline cache via APIClient
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
@@ -117,7 +135,7 @@ final class VaultStore: ObservableObject {
             CheckInSyncTask.shared.scheduleSync()
             ifNotCancelled { self.error = "Offline — check-in queued and will retry automatically" }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -154,6 +172,13 @@ final class VaultStore: ObservableObject {
         } catch {
             ifNotCancelled { self.error = error.localizedDescription }
         }
+        eventSocket = socket
+        socket.connect(vaultID: vaultID)
+    }
+
+    func unsubscribeFromEvents() {
+        eventSocket?.stop()
+        eventSocket = nil
     }
 
     private func scheduleReminders() {
