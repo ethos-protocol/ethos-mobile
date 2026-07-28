@@ -7,6 +7,7 @@ struct EthosProtocolApp: App {
 
     init() {
         BackgroundRefreshService.shared.registerBackgroundTask()
+        CheckInSyncTask.shared.registerBackgroundTask()
         ICloudSyncService.shared.restoreFromICloud()
 
         NotificationCenter.default.addObserver(

@@ -41,8 +41,41 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest
 
+      - name: Verify Paparazzi screenshots
+        run: ./gradlew verifyPaparazziDebug
+
       - name: Assemble release APK (R8/shrinking smoke check)
         run: ./gradlew assembleRelease
+
+      # task #123: Confirm that R8 produced a mapping file (i.e. minification/obfuscation
+      # actually ran) and spot-check that sensitive model classes are NOT left fully open
+      # in the mapping file. A missing mapping.txt means R8 did not run, which would leave
+      # debug symbols intact in the release APK.
+      - name: Verify R8 mapping file exists and sensitive classes are obfuscated
+        run: |
+          MAPPING=app/build/outputs/mapping/release/mapping.txt
+          if [ ! -f "$MAPPING" ]; then
+            echo "ERROR: R8 mapping file not found at $MAPPING — minification may not have run."
+            exit 1
+          fi
+          echo "R8 mapping file found ($(wc -l < "$MAPPING") lines)."
+
+          # Spot-check: AuthToken should appear in the mapping (meaning R8 processed it).
+          if ! grep -q "com.ethosprotocol.models.AuthToken" "$MAPPING"; then
+            echo "WARNING: AuthToken not found in mapping file — verify R8 processed model classes."
+          else
+            echo "AuthToken found in mapping file — R8 processed model classes."
+          fi
+
+          echo "Mapping file check passed."
+
+      - name: Upload R8 mapping file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-r8-mapping
+          path: android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
 
       - name: Run lint
         run: ./gradlew lint
@@ -55,10 +88,81 @@ jobs:
           path: android/app/build/reports/tests/testDebugUnitTest
           if-no-files-found: ignore
 
+      - name: Upload Paparazzi diff report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paparazzi-diff-report
+          path: android/app/build/paparazzi/failures
+          if-no-files-found: ignore
+
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-lint-report
           path: android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Instrumented tests — runs VaultListScreenTest and any other @HiltAndroidTest
+  # or Compose UI tests under src/androidTest on an actual Android emulator.
+  #
+  # Uses reactivecircus/android-emulator-runner which:
+  #   - boots an x86_64 AVD (API 34, AOSP ATD image — fast, no Play Services)
+  #   - runs the given script inside the live emulator
+  #   - tears down afterwards
+  #
+  # Kept in a separate job so a flaky emulator boot does not block the faster
+  # JVM unit-test + build job above.
+  # ---------------------------------------------------------------------------
+  instrumented-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Enable KVM acceleration on GitHub-hosted Linux runners for faster boot.
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run instrumented tests (emulator)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # API 34 matches targetSdk in build.gradle.kts; x86_64 ATD image is
+          # the fastest option available on GitHub-hosted runners.
+          api-level: 34
+          arch: x86_64
+          target: aosp_atd
+          profile: Nexus 6
+          # Disable window animations so Espresso / Compose tests are not flaky.
+          disable-animations: true
+          # Use the correct working directory via env; the `working-directory`
+          # default above does not apply to `uses:` steps.
+          script: cd android && ./gradlew connectedDebugAndroidTest
+
+      - name: Upload instrumented test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-instrumented-test-reports
+          path: android/app/build/reports/androidTests/connected
           if-no-files-found: ignore

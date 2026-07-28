@@ -7,6 +7,7 @@ final class KeychainService {
 
     private let tokenKey = "com.ethosprotocol.auth_token"
     private let credentialKey = "com.ethosprotocol.passkey_credential"
+    private let pushTokenKey = "com.ethosprotocol.push_token"
 
     func saveToken(_ token: String) {
         // The auth token must be readable by BackgroundRefreshService's BGAppRefreshTask and by
@@ -31,6 +32,21 @@ final class KeychainService {
 
     func loadCredentialID() -> String? {
         load(forKey: credentialKey)
+    }
+
+    /// Tracks the device push token last successfully registered with the server,
+    /// so AuthStore.signOut() knows what to unregister without needing a fresh
+    /// UIApplication device-token callback at sign-out time.
+    func savePushToken(_ token: String) {
+        save(token, forKey: pushTokenKey)
+    }
+
+    func loadPushToken() -> String? {
+        load(forKey: pushTokenKey)
+    }
+
+    func deletePushToken() {
+        delete(forKey: pushTokenKey)
     }
 
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {
