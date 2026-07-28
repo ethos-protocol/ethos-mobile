@@ -372,7 +372,12 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
 }
 
 @Composable
-private fun OfflineBanner() {
+private fun OfflineBanner(cachedAt: Long? = null) {
+    val message = if (cachedAt != null) {
+        "Offline — showing cached data (as of ${formatCacheAge(cachedAt)} ago)"
+    } else {
+        "Offline — showing cached data"
+    }
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
         // mergeDescendants groups the icon + label into a single TalkBack stop instead of two,
         // so giving the icon a description adds context without a duplicate announcement.
@@ -383,9 +388,22 @@ private fun OfflineBanner() {
             Icon(Icons.Default.WifiOff, contentDescription = "Offline",
                 tint = MaterialTheme.colorScheme.onTertiaryContainer)
             Spacer(Modifier.width(8.dp))
-            Text("Offline — showing cached data", color = MaterialTheme.colorScheme.onTertiaryContainer,
+            Text(message, color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+private fun formatCacheAge(cachedAt: Long): String {
+    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
+    val minutes = elapsedSeconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+    return when {
+        days > 0 -> "${days}d"
+        hours > 0 -> "${hours}h"
+        minutes > 0 -> "${minutes}m"
+        else -> "a few seconds"
     }
 }
 

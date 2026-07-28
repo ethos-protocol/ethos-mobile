@@ -20,11 +20,37 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         const val QUEUED_CHANNEL_ID = "ttl_queued"
         const val QUEUED_CHANNEL_NAME = "Queued Requests"
         const val QUEUED_NOTIFICATION_ID = 9_001
+
+        // Reserved range for per-vault notification IDs, kept clear of QUEUED_NOTIFICATION_ID
+        // and NO_VAULT_NOTIFICATION_ID below.
+        const val VAULT_NOTIFICATION_ID_RANGE_START = 10_000
+        // Fallback ID for the (practically unused) case where show() is called without a
+        // vaultId — sits below the reserved vault range so it can never collide with it.
+        const val NO_VAULT_NOTIFICATION_ID = 1
+
+        private const val VAULT_NOTIFICATION_IDS_PREFS = "vault_notification_ids"
     }
+
+    // String.hashCode() collides between distinct vault IDs within the 32-bit hash space, which
+    // would make one vault's notification silently replace another's. Instead, persist a stable
+    // assignment of each vault ID to the next free slot in a reserved ID range — two distinct
+    // vault IDs are then guaranteed distinct notification IDs for as long as the mapping lives,
+    // rather than merely "unlikely" to collide.
+    private val vaultNotificationIdPrefs =
+        context.getSharedPreferences(VAULT_NOTIFICATION_IDS_PREFS, Context.MODE_PRIVATE)
 
     init {
         createChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
         createChannel(QUEUED_CHANNEL_ID, QUEUED_CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT)
+    }
+
+    @Synchronized
+    fun notificationIdFor(vaultId: String?): Int {
+        if (vaultId == null) return NO_VAULT_NOTIFICATION_ID
+        vaultNotificationIdPrefs.getInt(vaultId, -1).takeIf { it != -1 }?.let { return it }
+        val id = VAULT_NOTIFICATION_ID_RANGE_START + vaultNotificationIdPrefs.all.size
+        vaultNotificationIdPrefs.edit().putInt(vaultId, id).apply()
+        return id
     }
 
     fun show(title: String, body: String, vaultId: String?) {
@@ -42,10 +68,14 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            // Groups all of a vault's notifications together so they visually cluster even if
+            // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
+            // for replace-vs-append behavior.
+            .setGroup(vaultId ?: "general")
             .build()
 
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.notify(vaultId.hashCode(), notification)
+        nm.notify(notificationIdFor(vaultId), notification)
     }
 
     fun showQueuedActions(count: Int) {

@@ -29,7 +29,9 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
-    data class Success<T>(val data: T) : ApiResult<T>()
+    // cachedAt is non-null only when data was served from OfflineCache rather than fetched
+    // live, so callers can surface how stale it is (e.g. VaultViewModel/OfflineBanner).
+    data class Success<T>(val data: T, val cachedAt: Long? = null) : ApiResult<T>()
     data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
     object NetworkUnavailable : ApiResult<Nothing>()
 }
@@ -150,7 +152,7 @@ class ApiClient(
         ensureFreshToken()
         if (!networkMonitor.isConnected) {
             val cached = offlineCache.load(path)
-            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached))
+            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
             else ApiResult.NetworkUnavailable
         }
         return runCatching {

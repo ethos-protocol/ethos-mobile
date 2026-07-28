@@ -9,6 +9,7 @@ import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.CreateVaultRequest
