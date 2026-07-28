@@ -72,8 +72,19 @@ public final class APIClient {
     private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
             ?? "https://api.ethos-protocol.app/v1"
+        // #117: Create a URLSession backed by PinningDelegate.
+        // The delegate enforces public-key pinning against the hash(es) listed in
+        // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
+        // present: the current certificate and the next backup certificate — see
+        // CertificatePinning.swift for the rotation strategy.
+        let pinningDelegate = PinningDelegate()
+        let session = URLSession(
+            configuration: .default,
+            delegate: pinningDelegate,
+            delegateQueue: nil
+        )
         self.init(baseURL: URL(string: urlString)!,
-                  session: URLSession(configuration: .default),
+                  session: session,
                   retryPolicy: .networkDefault)
     }
 
@@ -102,9 +113,12 @@ public final class APIClient {
         return try await post(path: "/auth/verify", body: body)
     }
 
-    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws {
+    func registerPasskey(credentialID: String, attestationObject: String, clientDataJSON: String) async throws {
+        // Field name is `attestation_object` per shared/api-contract.md — the backend
+        // parses the COSE public key out of the attestation object itself.
+        // (Legacy field name `public_key` is not accepted by the server.)
         let body = ["credential_id": credentialID,
-                    "public_key": publicKey,
+                    "attestation_object": attestationObject,
                     "client_data_json": clientDataJSON]
         let _: EmptyBody = try await post(path: "/auth/register", body: body)
     }
@@ -160,6 +174,14 @@ public final class APIClient {
             cursor = page.nextCursor
         } while cursor != nil
         return all
+    }
+
+    /// Paginated variant of listVaults (#112).
+    /// Pass `after: page.nextCursor` to fetch subsequent pages until `page.hasMore == false`.
+    func listVaults(limit: Int = 20, after cursor: String? = nil) async throws -> VaultPage {
+        var path = "/vaults?limit=\(limit)"
+        if let cursor = cursor { path += "&after=\(cursor)" }
+        return try await get(path: path)
     }
 
     func getVault(id: String) async throws -> Vault {
@@ -235,8 +257,28 @@ public final class APIClient {
         var req = request(path: "/notifications/register")
         req.httpMethod = "DELETE"
         req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios"))
+        // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         _ = try await execute(req)
     }
+
+    // MARK: - Logging Redaction Audit (#111)
+    //
+    // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.
+    // No request or response body, header, or sensitive field is written to os_log, print,
+    // NSLog, or any other diagnostic channel anywhere in APIClient.swift.
+    //
+    // Invariant: any future addition of a logging layer to this client MUST:
+    //   1. Be guarded by #if DEBUG ... #endif (or equivalent) so it is stripped from
+    //      release builds entirely.
+    //   2. Log only HTTP method, path (no query strings bearing tokens), and status code —
+    //      never request/response bodies, Authorization headers, 2FA secrets, vault balances,
+    //      beneficiary/owner wallet addresses, or acceptance tokens.
+    //
+    // See shared/api-contract.md §Logging Redaction Policy (#111) for the authoritative
+    // cross-platform policy.
 
     // MARK: - Private helpers
 
@@ -251,8 +293,12 @@ public final class APIClient {
         var req = request(path: path)
         req.httpMethod = "POST"
         req.httpBody = try JSONEncoder().encode(body)
-        let (data, _) = try await execute(req)
-        return try decode(data, path: path)
+        // Anti-replay: add nonce + timestamp to every mutating request (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        let data = try await execute(req)
+        return try decode(data)
     }
 
     private func request(path: String, queryItems: [URLQueryItem]? = nil) -> URLRequest {
@@ -271,8 +317,24 @@ public final class APIClient {
         return req
     }
 
-    private func execute(_ request: URLRequest) async throws -> (data: Data, response: HTTPURLResponse) {
-        // Only idempotent reads (GET) may be served from / written to the offline cache.
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes from CryptoKit, hex-encoded.
+    //           The server stores seen nonces and rejects any duplicate within
+    //           the token's validity window.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window).
+    static func makeAntiReplayHeaders() -> [String: String] {
+        // CryptoKit guarantees OS-CSPRNG quality randomness (SecRandomCopyBytes underneath).
+        let nonceBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
+        let timestamp = String(Int(Date().timeIntervalSince1970))
+        return ["X-Nonce": nonce, "X-Timestamp": timestamp]
+    }
+
+    private func execute(_ request: URLRequest) async throws -> Data {
         // Falling back to a cached response for a mutating request (POST/DELETE — e.g.
         // check-in, withdraw, disable2FA) would make the app report success for an action
         // that never actually reached the server, which is unacceptable for this app.

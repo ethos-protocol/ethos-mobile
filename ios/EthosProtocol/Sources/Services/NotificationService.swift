@@ -108,6 +108,33 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.add(request)
     }
 
+    /// Dismiss the "check-in queued" persistent notification once all pending
+    /// check-ins have been delivered. Mirrors Android's
+    /// `NotificationHelper.cancelQueuedCheckIn()` called from `CheckInSyncWorker`.
+    func cancelQueuedCheckIn() {
+        UNUserNotificationCenter.current()
+            .removeDeliveredNotifications(withIdentifiers: ["checkin-queued-badge"])
+        UNUserNotificationCenter.current()
+            .removePendingNotificationRequests(withIdentifiers: ["checkin-queued-badge"])
+    }
+
+    /// Show a persistent notification while offline check-ins are queued.
+    /// Mirrors Android's `NotificationHelper.showQueuedCheckIn(count)`.
+    func showQueuedCheckIn(count: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in Queued"
+        content.body = count == 1
+            ? "1 check-in is queued and will be sent when you're back online."
+            : "\(count) check-ins are queued and will be sent when you're back online."
+        content.sound = nil // silent — informational only
+        let request = UNNotificationRequest(
+            identifier: "checkin-queued-badge",
+            content: content,
+            trigger: nil // deliver immediately
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func registerNotificationCategories() {
         // .authenticationRequired ensures iOS forces the device to be unlocked before this
         // action fires — otherwise anyone with the phone in hand could trigger a check-in

@@ -176,6 +176,9 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
+    // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
+    // block access to the app, consistent with the "secure digital inheritance" posture.
+    @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
 
     var body: some View {
         NavigationStack {
@@ -232,6 +235,12 @@ struct VaultListView: View {
             }
             .onChange(of: vaultStore.pendingDeepLink) { _, link in
                 if link != nil { showDeepLinkSheet = true }
+            }
+            // #118: Non-blocking jailbreak warning — dismissible by the user.
+            .alert("Security Warning", isPresented: $showIntegrityWarning) {
+                Button("I Understand", role: .cancel) { showIntegrityWarning = false }
+            } message: {
+                Text("This device appears to be jailbroken. Your vault data, passkeys, and 2FA secrets may be at greater risk. Consider using a stock device for maximum security.")
             }
         }
     }
@@ -321,17 +330,8 @@ struct VaultDetailView: View {
     @State private var showDeposit = false
     @State private var showWithdraw = false
     @State private var showManageBeneficiary = false
-    @State private var ttlRemaining: UInt64?
-
-    // How often to re-fetch the live TTL from the server while this view is on
-    // screen (the `ttlRemaining` a vault list row shows can go stale between the
-    // last listVaults() fetch and the user opening this detail screen).
-    static let ttlRefreshInterval: UInt64 = 60_000_000_000 // 60s, in nanoseconds
-
-    init(vault: Vault) {
-        self.vault = vault
-        _ttlRemaining = State(initialValue: vault.ttlRemaining)
-    }
+    /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
+    @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
         List {
@@ -465,15 +465,29 @@ struct VaultDetailView: View {
         ifNotCancelled { ttlRemaining = ttl }
     }
 
+    /// Polls the server TTL every 60 s for as long as the view is on screen.
+    /// The `.task` modifier that calls this cancels it automatically on disappear.
+    private func refreshTTLPeriodically() async {
+        ttlRemaining = vault.ttlRemaining   // seed with value from vault list
+        while !Task.isCancelled {
+            await refreshTTL()
+            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+        }
+    }
+
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
     // polling above, this is a mutating request already in flight — cancelling
     // the Task wouldn't stop the server from processing it, it would just make
     // the app forget whether it succeeded. `ifNotCancelled` still guards the
     // state write in case cancellation reaches here some other way.
+    //
+    // #120: Biometric gate is enforced via Disable2FACoordinator before the API
+    // call.  Disabling 2FA is at least as security-sensitive as a check-in — it
+    // must require explicit user confirmation.
     private func disable2FA() {
         Task {
             do {
-                try await APIClient.shared.disable2FA(vaultID: vault.id)
+                try await Disable2FACoordinator().run(vaultID: vault.id)
                 if !Task.isCancelled { await load2FAStatus() }
             } catch {
                 ifNotCancelled { biometricError = error.localizedDescription }
@@ -897,6 +911,9 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
+    // #119: Escalating cooldown after repeated OTP failures.
+    @StateObject private var rateLimiter = OTPRateLimiter()
+
     private var isInitialSetup: Bool {
         provisioningUri != nil || secret != nil
     }
@@ -934,6 +951,19 @@ struct TwoFactorVerifyView: View {
                 .frame(maxWidth: 200)
                 .multilineTextAlignment(.center)
                 .font(.title2)
+                .disabled(rateLimiter.isBlocked)
+
+            // #119: Show remaining cooldown when the user is locked out.
+            if rateLimiter.isBlocked {
+                Label("Too many attempts — wait \(rateLimiter.cooldownSecondsRemaining)s",
+                      systemImage: "timer")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if rateLimiter.failureCount > 0 {
+                Text("\(rateLimiter.failureCount) failed attempt\(rateLimiter.failureCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
 
@@ -942,7 +972,7 @@ struct TwoFactorVerifyView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(otp.count != 6 || isVerifying)
+            .disabled(otp.count != 6 || isVerifying || rateLimiter.isBlocked)
         }
         .padding(32)
         .navigationTitle("Verify 2FA")
@@ -983,10 +1013,12 @@ struct TwoFactorVerifyView: View {
         Task {
             do {
                 try await APIClient.shared.verify2FA(vaultID: vaultID, otp: otp)
+                rateLimiter.reset()   // #119: Reset on success
                 onVerified()
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
+                rateLimiter.recordFailure()   // #119: Record failure and possibly start cooldown
             }
             isVerifying = false
         }
@@ -1049,6 +1081,7 @@ struct VaultActionDeepLinkView: View {
     @State private var error: String?
     @State private var isLoading = false
     @State private var hasAttemptedLoad = false
+    @State private var showWithdrawSheet = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
@@ -1091,7 +1124,8 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "arrow.up.circle.fill",
                         description: "Withdraw funds from vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Withdrawal is not yet available in the mobile app."
+                        if let vault { showWithdrawSheet = true }
+                        else { error = "Vault not found" }
                     }
                 case .manageBeneficiary:
                     actionContent(
@@ -1099,13 +1133,19 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "person.2.fill",
                         description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Beneficiary management is not yet available in the mobile app."
+                        guard vault != nil else { error = "Vault not found"; return }
+                        showManageBeneficiary = true
                     }
                 }
             }
         }
         .task {
             await loadVaultIfNeeded()
+        }
+        .sheet(isPresented: $showWithdrawSheet) {
+            if let vault {
+                NavigationStack { WithdrawView(vault: vault) }
+            }
         }
     }
 

@@ -96,106 +96,81 @@ final class VaultStore: ObservableObject {
         isLoading = false
     }
 
-    /// Fetches and appends the next page. No-ops if there is no further page or
-    /// a load-more is already in flight.
-    func loadMore() async {
-        guard let cursor = nextCursor, !isLoadingMore else { return }
-        isLoadingMore = true; error = nil
+    /// Fetches all vault pages via cursor-based pagination (#112) and replaces the local list.
+    func loadAll(limit: Int = 20) async {
+        isLoading = true; error = nil
         do {
-            let page = try await APIClient.shared.listVaults(cursor: cursor)
+            var accumulated: [Vault] = []
+            var cursor: String? = nil
+            repeat {
+                let page = try await APIClient.shared.listVaults(limit: limit, after: cursor)
+                accumulated.append(contentsOf: page.vaults)
+                cursor = page.nextCursor
+                if Task.isCancelled { return }
+            } while cursor != nil
             ifNotCancelled {
-                vaults.append(contentsOf: page.vaults)
-                nextCursor = page.nextCursor
+                vaults = accumulated
                 scheduleReminders()
             }
+        } catch APIError.networkUnavailable {
+            // Served from offline cache — keep whatever is already in `vaults`.
         } catch {
-            ifNotCancelled { self.error = ErrorPresentation(error) }
+            ifNotCancelled { self.error = error.localizedDescription }
         }
-        isLoadingMore = false
+        isLoading = false
     }
 
     func checkIn(vault: Vault) async {
         do {
             try await APIClient.shared.checkIn(vaultID: vault.id)
-            if !Task.isCancelled { await refreshSingle(vaultID: vault.id) }
+            if !Task.isCancelled { await load() }
+        } catch APIError.networkUnavailable {
+            // Offline: queue the check-in durably so it is retried when connectivity
+            // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
+            // + CheckInSyncWorker pattern.
+            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
+            PendingCheckInStore.shared.insert(item)
+            let count = PendingCheckInStore.shared.count
+            NotificationService.shared.showQueuedCheckIn(count: count)
+            CheckInSyncTask.shared.scheduleSync()
+            ifNotCancelled { self.error = "Offline — check-in queued and will retry automatically" }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
-    /// Refetches a single vault and updates it in place, instead of reloading
-    /// and redecoding every vault the user owns.
-    func refreshSingle(vaultID: String) async {
-        do {
-            let updated = try await APIClient.shared.getVault(id: vaultID)
-            ifNotCancelled {
-                applyUpdate(updated)
-                scheduleReminder(for: updated)
-            }
-        } catch {
-            ifNotCancelled { self.error = ErrorPresentation(error) }
-        }
-    }
-
+    /// Deposits `amount` stroops into the vault and reloads the vault list on success.
     func deposit(vault: Vault, amount: Int64) async {
         error = nil
         do {
-            let updated = try await APIClient.shared.deposit(vaultID: vault.id, amount: amount)
-            ifNotCancelled { applyUpdate(updated) }
+            _ = try await APIClient.shared.deposit(vaultID: vault.id, amount: amount)
+            if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = ErrorPresentation(error) }
+            ifNotCancelled { self.error = error.localizedDescription }
         }
     }
 
+    /// Withdraws `amount` stroops from the vault (biometric gate must be called by the UI
+    /// before invoking this) and reloads the vault list on success.
     func withdraw(vault: Vault, amount: Int64) async {
         error = nil
         do {
-            let updated = try await APIClient.shared.withdraw(vaultID: vault.id, amount: amount)
-            ifNotCancelled { applyUpdate(updated) }
+            _ = try await APIClient.shared.withdraw(vaultID: vault.id, amount: amount)
+            if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = ErrorPresentation(error) }
+            ifNotCancelled { self.error = error.localizedDescription }
         }
     }
 
+    /// Updates the beneficiary address for a vault (biometric gate must be called by the UI
+    /// before invoking this) and reloads the vault list on success.
     func updateBeneficiary(vault: Vault, newBeneficiary: String) async {
         error = nil
         do {
-            let updated = try await APIClient.shared.updateBeneficiary(vaultID: vault.id, newBeneficiary: newBeneficiary)
-            ifNotCancelled { applyUpdate(updated) }
+            _ = try await APIClient.shared.updateBeneficiary(vaultID: vault.id, newBeneficiary: newBeneficiary)
+            if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = ErrorPresentation(error) }
-        }
-    }
-
-    /// Replaces a vault in the in-memory list in place (or appends it if it isn't
-    /// present yet), so callers that refetch a single vault don't need to touch
-    /// the rest of the list.
-    func applyUpdate(_ vault: Vault) {
-        if let index = vaults.firstIndex(where: { $0.id == vault.id }) {
-            vaults[index] = vault
-        } else {
-            vaults.append(vault)
-        }
-    }
-
-    // MARK: - Real-Time Events
-
-    private var eventSocket: VaultEventSocket?
-
-    /// Opens a real-time event stream for `vaultID` (shared/api-contract.md's
-    /// WebSocket section) and applies incoming vault-updated events in place via
-    /// applyUpdate(_:). If the socket can't connect after a few attempts it backs
-    /// off permanently for this subscription — existing polling (pull-to-refresh,
-    /// BackgroundRefreshService) never depended on the socket, so nothing else
-    /// needs to change for the app to keep working. Call unsubscribeFromEvents()
-    /// (e.g. from a `.task`'s cancellation) when the caller no longer needs it.
-    func subscribeToEvents(vaultID: String, socket: VaultEventSocket = VaultEventSocket(baseURL: APIClient.shared.baseURL)) {
-        eventSocket?.stop()
-        socket.onEvent = { [weak self] event in
-            guard case .vaultUpdated(let vault) = event, let self else { return }
-            Task { @MainActor in
-                self.applyUpdate(vault)
-            }
+            ifNotCancelled { self.error = error.localizedDescription }
         }
         eventSocket = socket
         socket.connect(vaultID: vaultID)
@@ -207,12 +182,38 @@ final class VaultStore: ObservableObject {
     }
 
     private func scheduleReminders() {
-        for vault in vaults { scheduleReminder(for: vault) }
+        for vault in vaults {
+            guard vault.status == .active, let ttl = vault.ttlRemaining else { continue }
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl,
+                checkInInterval: vault.checkInInterval)
+        }
+    }
+}
+
+// MARK: - #120 Disable2FACoordinator
+
+/// Encapsulates the two-step "authenticate then disable 2FA" sequence so it can
+/// be unit-tested independently of the view layer. Both `biometric` and
+/// `apiClient` are injected, letting tests supply mocks/spies.
+///
+/// Usage in the view:
+///   ```swift
+///   let coordinator = Disable2FACoordinator()
+///   try await coordinator.run(vaultID: vault.id)
+///   ```
+struct Disable2FACoordinator {
+    var biometric: BiometricAuthenticating = BiometricService.shared
+    var apiDisable: (String) async throws -> Void = { id in
+        try await APIClient.shared.disable2FA(vaultID: id)
     }
 
-    private func scheduleReminder(for vault: Vault) {
-        guard vault.status == .active, let ttl = vault.ttlRemaining else { return }
-        NotificationService.shared.scheduleCheckInReminder(
-            vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl, checkInInterval: vault.checkInInterval)
+    /// Runs biometric authentication and, on success, calls the disable-2FA API.
+    /// Throws `BiometricService.BiometricError` if authentication fails/is cancelled,
+    /// or an `APIError` if the network call fails — both propagate unmodified so the
+    /// call site can surface the right message.
+    func run(vaultID: String) async throws {
+        try await biometric.authenticate(reason: "Confirm disabling two-factor authentication")
+        try await apiDisable(vaultID)
     }
 }
