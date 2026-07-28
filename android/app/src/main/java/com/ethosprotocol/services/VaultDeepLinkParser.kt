@@ -1,6 +1,7 @@
 package com.ethosprotocol.services
 
 import android.net.Uri
+import android.util.Log
 
 enum class VaultDeepLinkAction(val pathSegment: String) {
     CHECK_IN("check-in"),
@@ -30,12 +31,41 @@ object VaultDeepLinkParser {
     /** True if [vaultId] is safe to interpolate into an API path / navigation route. */
     fun isValidVaultId(vaultId: String): Boolean = VAULT_ID_PATTERN.matches(vaultId)
 
+    /**
+     * Fires once per successfully parsed deep link, so usage of the still-stubbed
+     * WITHDRAW/MANAGE_BENEFICIARY actions can be compared against CHECK_IN/VIEW_DETAILS.
+     *
+     * Deliberately carries only [action] — never the vault ID or raw URI — so this can double as
+     * an analytics hook without becoming a privacy-sensitive log of who opened which vault.
+     *
+     * Event schema (kept in sync with iOS #40 so usage is comparable cross-platform):
+     *   name: "vault_deep_link_opened"
+     *   properties: { action: "check-in" | "withdraw" | "view-details" | "manage-beneficiary" }
+     */
+    fun interface EventLogger {
+        fun onDeepLinkParsed(action: VaultDeepLinkAction)
+    }
+
+    private val defaultEventLogger = EventLogger { action ->
+        // android.util.Log isn't available outside an Android runtime (e.g. plain JVM unit
+        // tests), and a logging failure must never break parsing — swallow and move on.
+        try {
+            Log.i("VaultDeepLink", "vault_deep_link_opened action=${action.pathSegment}")
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Overridable for tests; defaults to logging to Logcat. */
+    @Volatile
+    var eventLogger: EventLogger = defaultEventLogger
+
     /** Parses ethosprotocol://vault/{vault_id}/{action} from a URL string or returns null if unrecognised. */
     fun parseUrl(url: String): VaultDeepLink? {
         val match = URL_PATTERN.matchEntire(url.trim()) ?: return null
         val vaultId = match.groupValues[1]
         if (!isValidVaultId(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(match.groupValues[2]) ?: return null
+        eventLogger.onDeepLinkParsed(action)
         return VaultDeepLink(vaultId = vaultId, action = action)
     }
 
@@ -47,6 +77,7 @@ object VaultDeepLinkParser {
         val vaultId = segments[0]
         if (!isValidVaultId(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(segments[1]) ?: return null
+        eventLogger.onDeepLinkParsed(action)
         return VaultDeepLink(vaultId = vaultId, action = action)
     }
 
