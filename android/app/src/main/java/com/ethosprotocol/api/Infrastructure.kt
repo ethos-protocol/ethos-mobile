@@ -51,7 +51,7 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
     //
     //   1. ApiClient (foreground)       — always running while the UI is visible;
     //                                     device is unlocked. Any protection level works.
-    //   2. CheckInSyncWorker (background) — WorkManager task that can run while the
+    //   2. PendingActionSyncWorker (background) — WorkManager task that can run while the
     //                                     device screen is off but the device is NOT
     //                                     locked (WorkManager constraints use CONNECTED
     //                                     only). The device must be unlocked for
@@ -91,6 +91,14 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
         get() = prefs.getString("token", null)
         set(value) = prefs.edit().apply {
             if (value != null) putString("token", value) else remove("token")
+        }.apply()
+
+    // The last FCM token this device registered with the backend, so it can be
+    // unregistered on sign-out even if Firebase doesn't hand out a fresh token then.
+    var pushToken: String?
+        get() = prefs.getString("push_token", null)
+        set(value) = prefs.edit().apply {
+            if (value != null) putString("push_token", value) else remove("push_token")
         }.apply()
 
     private var expiresAtEpochMillis: Long?

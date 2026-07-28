@@ -1,5 +1,6 @@
 package com.ethosprotocol.api
 
+import android.util.Log
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.TwoFactorStatus
@@ -41,6 +42,10 @@ class ApiClient @Inject constructor(
     // networking; production callers (AppModule) get the real Android engine for free.
     engine: HttpClientEngine = Android.create()
 ) {
+    companion object {
+        private const val TAG = "ApiClient"
+    }
+
     private val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
@@ -154,7 +159,7 @@ class ApiClient @Inject constructor(
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> post(
@@ -176,7 +181,7 @@ class ApiClient @Inject constructor(
                 401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
@@ -197,7 +202,7 @@ class ApiClient @Inject constructor(
                 401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     // Best-effort: refreshes the stored token when it's near its expiry so the request

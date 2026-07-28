@@ -2,12 +2,14 @@ package com.ethosprotocol.services
 
 import android.app.Activity
 import androidx.credentials.*
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.AuthChallenge
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Base64
@@ -60,7 +62,7 @@ class PasskeyService @Inject constructor(
         // biometric prompt) just to sign in with the passkey we just created.
         val authToken = requireSuccess(apiClient.registerPasskey(regReq))
         tokenProvider.setSession(authToken)
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge())
@@ -70,7 +72,7 @@ class PasskeyService @Inject constructor(
 
         val credManager = credentialManagerFactory.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
-        val credential = credentialManager.getCredential(activity, request).credential as PublicKeyCredential
+        val credential = credManager.getCredential(activity, request).credential as PublicKeyCredential
         val json = JSONObject(credential.authenticationResponseJson)
         val verifyReq = PasskeyVerifyRequest(
             credentialId = json.getString("id"),
@@ -78,13 +80,13 @@ class PasskeyService @Inject constructor(
             signature = json.getJSONObject("response").getString("signature")
         )
         tokenProvider.setSession(requireSuccess(apiClient.verifyPasskey(verifyReq)))
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> error(result.message)
-            ApiResult.NetworkUnavailable -> error("No network connection")
+            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }
 }
