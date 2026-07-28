@@ -14,7 +14,18 @@ final class PasskeyService: NSObject {
             publicKey: credential.publicKey,
             clientDataJSON: credential.clientDataJSON
         )
-        return credential.credentialID
+        let credential = try await performRequest(request)
+        guard let reg = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
+            throw PasskeyError.registrationFailed
+        }
+        let credID = reg.credentialID.base64URLEncodedString()
+        // Send the raw WebAuthn attestation object — not the public key itself.
+        // The backend extracts the COSE-encoded public key from this object during
+        // verification. Field name is `attestation_object` per shared/api-contract.md.
+        let attestationObject = reg.rawAttestationObject?.base64URLEncodedString() ?? ""
+        let clientData = reg.rawClientDataJSON.base64URLEncodedString()
+        try await APIClient.shared.registerPasskey(credentialID: credID, attestationObject: attestationObject, clientDataJSON: clientData)
+        return credID
     }
 
     func authenticate() async throws -> AuthToken {

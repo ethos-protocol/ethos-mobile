@@ -13,21 +13,58 @@ enum APIError: LocalizedError {
         case .notFound:           return "Resource not found"
         case .serverError(let m): return m
         case .networkUnavailable: return "No internet connection"
-        case .decodingFailed:     return "Invalid server response"
+        case .decodingFailed:     return "We couldn't read the server's response"
+        }
+    }
+
+    /// A concrete next step to show alongside errorDescription. Without this, a
+    /// decode/server failure just tells the user something's wrong with no
+    /// indication of whether retrying will help or they should reach out — see
+    /// ErrorPresentation, which turns this (plus isRetryable/suggestsContactSupport
+    /// below) into the "Try Again" / "Contact Support" affordance shown in-app.
+    var recoverySuggestion: String? {
+        switch self {
+        case .unauthorized:       return "Sign in again to continue."
+        case .notFound:           return nil
+        case .serverError:        return "Try again. If the problem continues, contact support."
+        case .networkUnavailable: return "Check your connection and try again."
+        case .decodingFailed:     return "Try again. If the problem continues, contact support — this has been logged for us to investigate."
+        }
+    }
+
+    /// Whether a "Try Again" affordance makes sense for this error.
+    var isRetryable: Bool {
+        switch self {
+        case .serverError, .networkUnavailable, .decodingFailed: return true
+        case .unauthorized, .notFound: return false
+        }
+    }
+
+    /// Whether "Contact Support" should be offered — reserved for failures the
+    /// user can't resolve by retrying alone (a decode failure means the client
+    /// and server response shape have drifted; a persistent server error may be
+    /// an outage), as opposed to ones with a clear, actionable client-side fix
+    /// (sign in again, check your connection).
+    var suggestsContactSupport: Bool {
+        switch self {
+        case .decodingFailed, .serverError: return true
+        case .unauthorized, .notFound, .networkUnavailable: return false
         }
     }
 }
 
-// `public` here (and on listVaults() below): TTLWidget.swift calls
-// APIClient.shared.listVaults() across a real module boundary in the SPM
+// `public` here (and on listAllVaults() below): TTLWidget.swift calls
+// APIClient.shared.listAllVaults() across a real module boundary in the SPM
 // build (Package.swift declares TTLWidget as a separate target depending
 // on the EthosProtocol target) — internal (the Swift default) is invisible
 // outside the defining module. Other members stay internal since only
-// listVaults() is called from outside this module.
+// listAllVaults() is called from outside this module.
 public final class APIClient {
     public static let shared = APIClient()
 
-    private let baseURL: URL
+    // `internal` (not `private`): VaultEventSocket derives the wss:// URL from
+    // the same configured base URL instead of hardcoding a second copy of it.
+    let baseURL: URL
     private let session: URLSession
     private let decoder: JSONDecoder
     private let retryPolicy: RetryPolicy
@@ -35,8 +72,19 @@ public final class APIClient {
     private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
             ?? "https://api.ethos-protocol.app/v1"
+        // #117: Create a URLSession backed by PinningDelegate.
+        // The delegate enforces public-key pinning against the hash(es) listed in
+        // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
+        // present: the current certificate and the next backup certificate — see
+        // CertificatePinning.swift for the rotation strategy.
+        let pinningDelegate = PinningDelegate()
+        let session = URLSession(
+            configuration: .default,
+            delegate: pinningDelegate,
+            delegateQueue: nil
+        )
         self.init(baseURL: URL(string: urlString)!,
-                  session: URLSession(configuration: .default),
+                  session: session,
                   retryPolicy: .networkDefault)
     }
 
@@ -65,9 +113,12 @@ public final class APIClient {
         return try await post(path: "/auth/verify", body: body)
     }
 
-    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws {
+    func registerPasskey(credentialID: String, attestationObject: String, clientDataJSON: String) async throws {
+        // Field name is `attestation_object` per shared/api-contract.md — the backend
+        // parses the COSE public key out of the attestation object itself.
+        // (Legacy field name `public_key` is not accepted by the server.)
         let body = ["credential_id": credentialID,
-                    "public_key": publicKey,
+                    "attestation_object": attestationObject,
                     "client_data_json": clientDataJSON]
         let _: EmptyBody = try await post(path: "/auth/register", body: body)
     }
@@ -86,8 +137,70 @@ public final class APIClient {
 
     // MARK: - Vaults
 
-    public func listVaults() async throws -> [Vault] {
-        try await get(path: "/vaults")
+    /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"
+    /// section for the query-parameter/response-header contract this implements.
+    struct VaultPage {
+        let vaults: [Vault]
+        let nextCursor: String?
+    }
+
+    static let defaultVaultPageSize = 50
+    private static let nextCursorHeader = "X-Next-Cursor"
+
+    /// Fetches a single page of the caller's vaults, starting after `cursor`
+    /// (`nil` requests the first page). Drives VaultListView's "Load More".
+    func listVaults(cursor: String? = nil, limit: Int = APIClient.defaultVaultPageSize) async throws -> VaultPage {
+        var req = request(path: "/vaults", queryItems: Self.vaultsQueryItems(cursor: cursor, limit: limit))
+        req.httpMethod = "GET"
+        let (data, response) = try await execute(req)
+        let vaults: [Vault] = try decode(data, path: "/vaults")
+        let nextCursor = Self.parseNextCursor(fromHeaderValue: response.value(forHTTPHeaderField: Self.nextCursorHeader))
+        return VaultPage(vaults: vaults, nextCursor: nextCursor)
+    }
+
+    /// Builds the `GET /vaults` query items for `cursor`/`limit` — split out from
+    /// listVaults() so the cursor/limit contract is unit-testable independent of
+    /// the network layer.
+    static func vaultsQueryItems(cursor: String?, limit: Int) -> [URLQueryItem] {
+        var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor, !cursor.isEmpty {
+            queryItems.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        return queryItems
+    }
+
+    /// An empty `X-Next-Cursor` header means "no further page", same as a missing one.
+    static func parseNextCursor(fromHeaderValue value: String?) -> String? {
+        (value?.isEmpty ?? true) ? nil : value
+    }
+
+    /// Fetches every page and concatenates the results, for callers (background
+    /// refresh, the TTL widget) that need the complete vault set to compute
+    /// accurate TTL warnings rather than a single page at a time.
+    public func listAllVaults() async throws -> [Vault] {
+        var all: [Vault] = []
+        var cursor: String?
+        repeat {
+            let page = try await listVaults(cursor: cursor)
+            all.append(contentsOf: page.vaults)
+            cursor = page.nextCursor
+        } while cursor != nil
+        return all
+    }
+
+    /// Paginated variant of listVaults (#112).
+    /// Pass `after: page.nextCursor` to fetch subsequent pages until `page.hasMore == false`.
+    func listVaults(limit: Int = 20, after cursor: String? = nil) async throws -> VaultPage {
+        var path = "/vaults?limit=\(limit)"
+        if let cursor = cursor { path += "&after=\(cursor)" }
+        return try await get(path: path)
+    }
+
+    /// How long ago the cached `/vaults` response was written, or nil if nothing is cached yet.
+    /// Lets VaultStore surface "data as of X ago" when a `listVaults()` call was served from
+    /// the offline cache. Uses the same cache key `execute(_:)` saves under (the request URL).
+    func vaultsCacheAge() -> TimeInterval? {
+        OfflineCache.shared.age(for: request(path: "/vaults").url?.absoluteString ?? "")
     }
 
     func getVault(id: String) async throws -> Vault {
@@ -163,28 +276,59 @@ public final class APIClient {
         var req = request(path: "/notifications/register")
         req.httpMethod = "DELETE"
         req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios"))
+        // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         _ = try await execute(req)
     }
+
+    // MARK: - Logging Redaction Audit (#111)
+    //
+    // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.
+    // No request or response body, header, or sensitive field is written to os_log, print,
+    // NSLog, or any other diagnostic channel anywhere in APIClient.swift.
+    //
+    // Invariant: any future addition of a logging layer to this client MUST:
+    //   1. Be guarded by #if DEBUG ... #endif (or equivalent) so it is stripped from
+    //      release builds entirely.
+    //   2. Log only HTTP method, path (no query strings bearing tokens), and status code —
+    //      never request/response bodies, Authorization headers, 2FA secrets, vault balances,
+    //      beneficiary/owner wallet addresses, or acceptance tokens.
+    //
+    // See shared/api-contract.md §Logging Redaction Policy (#111) for the authoritative
+    // cross-platform policy.
 
     // MARK: - Private helpers
 
     private func get<T: Decodable>(path: String) async throws -> T {
         var req = request(path: path)
         req.httpMethod = "GET"
-        let data = try await execute(req)
-        return try decode(data)
+        let (data, _) = try await execute(req)
+        return try decode(data, path: path)
     }
 
     private func post<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
         var req = request(path: path)
         req.httpMethod = "POST"
         req.httpBody = try JSONEncoder().encode(body)
+        // Anti-replay: add nonce + timestamp to every mutating request (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         let data = try await execute(req)
         return try decode(data)
     }
 
-    private func request(path: String) -> URLRequest {
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+    private func request(path: String, queryItems: [URLQueryItem]? = nil) -> URLRequest {
+        let url = baseURL.appendingPathComponent(path)
+        var finalURL = url
+        if let queryItems, !queryItems.isEmpty,
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.queryItems = queryItems
+            finalURL = components.url ?? url
+        }
+        var req = URLRequest(url: finalURL)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token = KeychainService.shared.loadToken() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -192,8 +336,24 @@ public final class APIClient {
         return req
     }
 
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes from CryptoKit, hex-encoded.
+    //           The server stores seen nonces and rejects any duplicate within
+    //           the token's validity window.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window).
+    static func makeAntiReplayHeaders() -> [String: String] {
+        // CryptoKit guarantees OS-CSPRNG quality randomness (SecRandomCopyBytes underneath).
+        let nonceBytes = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
+        let timestamp = String(Int(Date().timeIntervalSince1970))
+        return ["X-Nonce": nonce, "X-Timestamp": timestamp]
+    }
+
     private func execute(_ request: URLRequest) async throws -> Data {
-        // Only idempotent reads (GET) may be served from / written to the offline cache.
         // Falling back to a cached response for a mutating request (POST/DELETE — e.g.
         // check-in, withdraw, disable2FA) would make the app report success for an action
         // that never actually reached the server, which is unacceptable for this app.
@@ -201,7 +361,11 @@ public final class APIClient {
 
         guard NetworkMonitor.shared.isConnected else {
             if isCacheableRead, let cached = OfflineCache.shared.load(for: request.url?.absoluteString ?? "") {
-                return cached
+                // No real HTTP response exists for a cache hit — synthesize a bare 200 with
+                // no headers, so e.g. listVaults()'s pagination-cursor header lookup just
+                // reports "no more pages" instead of crashing on a missing response.
+                let syntheticResponse = HTTPURLResponse(url: request.url ?? baseURL, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (cached, syntheticResponse)
             }
             throw APIError.networkUnavailable
         }
@@ -220,7 +384,7 @@ public final class APIClient {
             if isCacheableRead {
                 OfflineCache.shared.save(data, for: request.url?.absoluteString ?? "")
             }
-            return data
+            return (data, http)
         case 401:
             // The token the server rejected is no longer valid — drop it locally so we
             // don't keep sending it, and so a relaunch correctly shows the sign-in screen.
@@ -233,10 +397,13 @@ public final class APIClient {
         }
     }
 
-    private func decode<T: Decodable>(_ data: Data) throws -> T {
+    private func decode<T: Decodable>(_ data: Data, path: String) throws -> T {
         if T.self == EmptyBody.self { return EmptyBody() as! T }
         do { return try decoder.decode(T.self, from: data) }
-        catch { throw APIError.decodingFailed }
+        catch {
+            DecodingFailureLogger.shared.log(path: path, expectedType: String(describing: T.self), responseBody: data)
+            throw APIError.decodingFailed
+        }
     }
 
     // MARK: - Retry
