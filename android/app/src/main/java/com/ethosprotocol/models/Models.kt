@@ -60,6 +60,29 @@ data class PasskeyRegisterRequest(
     @SerialName("client_data_json") val clientDataJson: String
 )
 
+// MARK: - Account Recovery ("lost your device?")
+//
+// Shared contract with iOS's #5: initiate() sends a recovery code to the account's
+// verified email, complete() links a newly-created passkey to that existing account once
+// the recovery token proves the requester received that code.
+
+@Serializable
+data class RecoveryInitiateRequest(val username: String)
+
+@Serializable
+data class RecoveryInitiateResponse(
+    @SerialName("recovery_token") val recoveryToken: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+@Serializable
+data class RecoveryCompleteRequest(
+    @SerialName("recovery_token") val recoveryToken: String,
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("public_key") val publicKey: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
+
 // MARK: - 2FA Models
 
 @Serializable

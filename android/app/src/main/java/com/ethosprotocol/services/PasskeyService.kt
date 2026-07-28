@@ -64,6 +64,33 @@ class PasskeyService @Inject constructor(
         tokenProvider.setSession(authToken)
     }.onFailure { if (it is CancellationException) throw it }
 
+    // Links a freshly-created passkey to an existing account for a user who lost their
+    // original device — the recovery token proves they completed initiateRecovery() first.
+    suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val completeReq = RecoveryCompleteRequest(
+            recoveryToken = recoveryToken,
+            credentialId = json.getString("id"),
+            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.completeRecovery(completeReq))
+    }
+
+    private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {
+        val challenge = requireSuccess(apiClient.getChallenge()).challenge
+        val requestJson = buildCreateCredentialRequestJson(challenge, username)
+
+        val credManager = CredentialManager.create(activity)
+        val resp = try {
+            credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
+                    as CreatePublicKeyCredentialResponse
+        } catch (e: CreateCredentialException) {
+            throw PasskeyException(mapCreateCredentialError(e))
+        }
+        return JSONObject(resp.registrationResponseJson)
+    }
+
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
         val challenge = requireSuccess(apiClient.getChallenge())
         val requestJson = JSONObject()
@@ -72,7 +99,11 @@ class PasskeyService @Inject constructor(
 
         val credManager = credentialManagerFactory.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
-        val credential = credManager.getCredential(activity, request).credential as PublicKeyCredential
+        val credential = try {
+            credManager.getCredential(activity, request).credential as PublicKeyCredential
+        } catch (e: GetCredentialException) {
+            throw PasskeyException(mapGetCredentialError(e))
+        }
         val json = JSONObject(credential.authenticationResponseJson)
         val verifyReq = PasskeyVerifyRequest(
             credentialId = json.getString("id"),

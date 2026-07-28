@@ -53,6 +53,8 @@ credentials-play-services-auth = { group = "androidx.credentials", name = "crede
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebase-bom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging-ktx" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }
+json = { group = "org.json", name = "json", version = "20240303" }
+robolectric = { group = "org.robolectric", name = "robolectric", version = "4.14.1" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 mockk-android = { group = "io.mockk", name = "mockk-android", version.ref = "mockk" }
