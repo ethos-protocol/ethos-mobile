@@ -180,6 +180,8 @@ fun VaultListScreen(
     val context = LocalContext.current
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
+    var withdrawVault by remember { mutableStateOf<Vault?>(null) }
+    var depositVault by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     // #118: Non-blocking root warning. Shown once per session; does not block access.
@@ -229,6 +231,32 @@ fun VaultListScreen(
                 )
             },
             onDismiss = { pendingCheckIn = null },
+        )
+    }
+
+    withdrawVault?.let { vault ->
+        WithdrawDialog(
+            vault = vault,
+            onSubmit = { amount ->
+                withdrawVault = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Withdrawal",
+                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
+                    onSuccess = { vm.withdraw(vault.id, amount) },
+                    onError = { err -> biometricError = err },
+                )
+            },
+            onDismiss = { withdrawVault = null },
+        )
+    }
+
+    depositVault?.let { vault ->
+        DepositDialog(
+            onSubmit = { amount ->
+                depositVault = null
+                vm.deposit(vault.id, amount)
+            },
+            onDismiss = { depositVault = null },
         )
     }
 
@@ -331,7 +359,13 @@ private fun OfflineBanner() {
 }
 
 @Composable
-private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) {
+private fun VaultCard(
+    vault: Vault,
+    onClick: () -> Unit,
+    onCheckIn: () -> Unit,
+    onDeposit: () -> Unit = {},
+    onWithdraw: () -> Unit = {}
+) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
             // At the largest font scale a full-length id + chip in one row will clip rather than
@@ -365,9 +399,54 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                 OutlinedButton(onClick = onCheckIn, modifier = Modifier.fillMaxWidth()) {
                     Text("Check In")
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onDeposit, modifier = Modifier.weight(1f)) {
+                        Text("Deposit")
+                    }
+                    OutlinedButton(onClick = onWithdraw, modifier = Modifier.weight(1f)) {
+                        Text("Withdraw")
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun WithdrawDialog(vault: Vault, onSubmit: (Long) -> Unit, onDismiss: () -> Unit) {
+    var amountText by remember { mutableStateOf("") }
+    val amountStroops = amountText.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 10_000_000).toLong() }
+    val isSufficient = amountStroops != null && amountStroops <= vault.balance
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Withdraw") },
+        text = {
+            Column {
+                Text("Available balance: ${vault.formattedBalance}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = amountText, onValueChange = { amountText = it },
+                    label = { Text("Amount (XLM)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (amountStroops != null && !isSufficient) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Amount exceeds available balance.", color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(amountStroops!!) },
+                enabled = amountStroops != null && isSufficient
+            ) { Text("Withdraw") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -600,6 +679,8 @@ fun VaultDeepLinkScreen(
     val context = LocalContext.current
     var isProcessing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showBeneficiaryDialog by remember { mutableStateOf(false) }
+    var showWithdrawDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.load() }
 
@@ -735,6 +816,91 @@ fun VaultDeepLinkScreenContent(
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
     }
+
+    if (showBeneficiaryDialog && vault != null) {
+        ManageBeneficiaryDialog(
+            currentBeneficiary = vault.beneficiary,
+            onSubmit = { newBeneficiary ->
+                showBeneficiaryDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Beneficiary Change",
+                    subtitle = "Vault ${vault.id.take(12)}… beneficiary will change to ${newBeneficiary.take(12)}…",
+                    onSuccess = {
+                        vm.updateBeneficiary(vault.id, newBeneficiary)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showBeneficiaryDialog = false }
+        )
+    }
+
+    if (showWithdrawDialog && vault != null) {
+        WithdrawDialog(
+            vault = vault,
+            onSubmit = { amount ->
+                showWithdrawDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Withdrawal",
+                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
+                    onSuccess = {
+                        vm.withdraw(vault.id, amount)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showWithdrawDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun ManageBeneficiaryDialog(
+    currentBeneficiary: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var beneficiary by remember { mutableStateOf(currentBeneficiary) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Manage Beneficiary") },
+        text = {
+            Column {
+                Text(
+                    "This vault's funds are released to this address if it is never checked into again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = beneficiary, onValueChange = { beneficiary = it },
+                    label = { Text("Beneficiary address") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(beneficiary) },
+                enabled = beneficiary.isNotBlank() && beneficiary != currentBeneficiary
+            ) { Text("Continue") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -772,6 +938,27 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         confirmButton = {
             TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
                 enabled = isBeneficiaryValid) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun DepositDialog(onSubmit: (Long) -> Unit, onDismiss: () -> Unit) {
+    var amountText by remember { mutableStateOf("") }
+    val amountStroops = amountText.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 10_000_000).toLong() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Deposit") },
+        text = {
+            OutlinedTextField(
+                value = amountText, onValueChange = { amountText = it },
+                label = { Text("Amount (XLM)") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSubmit(amountStroops!!) }, enabled = amountStroops != null) { Text("Deposit") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

@@ -313,7 +313,7 @@ class VaultViewModel @Inject constructor(
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
         when (val result = apiClient.checkIn(vaultId)) {
-            is ApiResult.Success -> load()
+            is ApiResult.Success -> refreshSingle(vaultId)
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> queueAction(
                 PendingAction(
@@ -323,6 +323,15 @@ class VaultViewModel @Inject constructor(
                     dedupeKey = "check_in:$vaultId"
                 )
             )
+        }
+    }
+
+    /** Refetches a single vault and patches it into the existing list, instead of reloading all vaults. */
+    fun refreshSingle(vaultId: String) = viewModelScope.launch {
+        when (val result = apiClient.getVault(vaultId)) {
+            is ApiResult.Success -> updateVaultInPlace(result.data)
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
         }
     }
 

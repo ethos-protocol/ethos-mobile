@@ -92,15 +92,23 @@ class VaultViewModelTest {
     }
 
     @Test
-    fun `checkIn success reloads vaults`() = runTest {
-        val vaults = listOf(makeVault("v1"))
+    fun `checkIn success refreshes only the checked-in vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val refreshedV1 = v1.copy(lastCheckIn = "2026-05-01T00:00:00Z", ttlRemaining = 2_592_000L)
         coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(refreshedV1)
 
         vm.checkIn("v1")
 
         coVerify { apiClient.checkIn("v1") }
-        coVerify { apiClient.listVaults() }
+        coVerify { apiClient.getVault("v1") }
+        coVerify(exactly = 1) { apiClient.listVaults() }
+        coVerify(exactly = 0) { apiClient.getVault("v2") }
+        assertEquals(listOf(refreshedV1, v2), vm.state.value.vaults)
     }
 
     @Test
@@ -228,6 +236,108 @@ class VaultViewModelTest {
         assertEquals(100, vm.state.value.vaults.size)
         assertEquals(allVaults, vm.state.value.vaults)
         assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
+    fun `deposit success updates only the target vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val updatedV1 = v1.copy(balance = v1.balance + 1_000_000L)
+        coEvery { apiClient.deposit("v1", 1_000_000L) } returns ApiResult.Success(updatedV1)
+
+        vm.deposit("v1", 1_000_000L)
+
+        coVerify { apiClient.deposit("v1", 1_000_000L) }
+        assertEquals(listOf(updatedV1, v2), vm.state.value.vaults)
+    }
+
+    @Test
+    fun `deposit error sets error message`() = runTest {
+        coEvery { apiClient.deposit("v1", 1_000_000L) } returns ApiResult.Error("Server error", 500)
+
+        vm.deposit("v1", 1_000_000L)
+
+        assertEquals("Server error", vm.state.value.error)
+    }
+
+    @Test
+    fun `deposit network unavailable sets error`() = runTest {
+        coEvery { apiClient.deposit("v1", 1_000_000L) } returns ApiResult.NetworkUnavailable
+
+        vm.deposit("v1", 1_000_000L)
+
+        assertNotNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `withdraw success updates only the target vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val updatedV1 = v1.copy(balance = v1.balance - 1_000_000L)
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.Success(updatedV1)
+
+        vm.withdraw("v1", 1_000_000L)
+
+        coVerify { apiClient.withdraw("v1", 1_000_000L) }
+        assertEquals(listOf(updatedV1, v2), vm.state.value.vaults)
+    }
+
+    @Test
+    fun `withdraw error sets error message`() = runTest {
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.Error("Insufficient balance", 400)
+
+        vm.withdraw("v1", 1_000_000L)
+
+        assertEquals("Insufficient balance", vm.state.value.error)
+    }
+
+    @Test
+    fun `withdraw network unavailable sets error`() = runTest {
+        coEvery { apiClient.withdraw("v1", 1_000_000L) } returns ApiResult.NetworkUnavailable
+
+        vm.withdraw("v1", 1_000_000L)
+
+        assertNotNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `updateBeneficiary success updates only the target vault`() = runTest {
+        val v1 = makeVault("v1")
+        val v2 = makeVault("v2")
+        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        vm.load()
+
+        val updatedV1 = v1.copy(beneficiary = "GNEWBENEFICIARY")
+        coEvery { apiClient.updateBeneficiary("v1", "GNEWBENEFICIARY") } returns ApiResult.Success(updatedV1)
+
+        vm.updateBeneficiary("v1", "GNEWBENEFICIARY")
+
+        coVerify { apiClient.updateBeneficiary("v1", "GNEWBENEFICIARY") }
+        assertEquals(listOf(updatedV1, v2), vm.state.value.vaults)
+    }
+
+    @Test
+    fun `updateBeneficiary error sets error message`() = runTest {
+        coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.Error("Server error", 500)
+
+        vm.updateBeneficiary("v1", "GNEW")
+
+        assertEquals("Server error", vm.state.value.error)
+    }
+
+    @Test
+    fun `updateBeneficiary network unavailable sets error`() = runTest {
+        coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.NetworkUnavailable
+
+        vm.updateBeneficiary("v1", "GNEW")
+
+        assertNotNull(vm.state.value.error)
     }
 
     private fun makeVault(id: String) = Vault(
