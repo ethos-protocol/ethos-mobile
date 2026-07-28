@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.widget.RemoteViews
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
@@ -15,6 +16,8 @@ import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import java.time.Duration
+import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 class VaultStatusWidget : AppWidgetProvider() {
@@ -25,33 +28,35 @@ class VaultStatusWidget : AppWidgetProvider() {
 
     companion object {
         private const val PREFS = "vault_widget_prefs"
+        private const val KEY_VAULT_ID = "vault_id"
         private const val KEY_VAULT_NAME = "vault_name"
         private const val KEY_TTL = "ttl_remaining"
         private const val KEY_LAST_CHECK_IN = "last_check_in"
 
-        fun saveVaultData(context: Context, vaultName: String, ttlRemaining: String, lastCheckIn: String) {
+        fun saveVaultData(context: Context, vaultId: String, vaultName: String, ttlRemaining: String, lastCheckIn: String) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putString(KEY_VAULT_ID, vaultId)
                 .putString(KEY_VAULT_NAME, vaultName)
                 .putString(KEY_TTL, ttlRemaining)
                 .putString(KEY_LAST_CHECK_IN, lastCheckIn)
                 .apply()
         }
 
-        // Called on sign-out so a shared/handed-down device's home screen widget doesn't keep
-        // showing the previous user's vault name/TTL/last check-in until the next periodic
-        // VaultWidgetUpdateWorker run happens to overwrite it.
-        fun clearVaultData(context: Context) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
-        }
+        /** Builds the deep link used to open a widget tap directly onto the vault it displayed. */
+        internal fun deepLinkUri(vaultId: String): String = "ethosprotocol://vault/$vaultId/view-details"
 
         fun updateWidget(context: Context, manager: AppWidgetManager, widgetId: Int) {
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val vaultId = prefs.getString(KEY_VAULT_ID, null)
             val vaultName = prefs.getString(KEY_VAULT_NAME, "—") ?: "—"
             val ttl = prefs.getString(KEY_TTL, "Unknown") ?: "Unknown"
             val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, "Never") ?: "Never"
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (!vaultId.isNullOrEmpty()) {
+                    data = Uri.parse(deepLinkUri(vaultId))
+                }
             }
             val pendingIntent = PendingIntent.getActivity(
                 context, 0, openIntent,
@@ -72,6 +77,21 @@ class VaultStatusWidget : AppWidgetProvider() {
             val ids = manager.getAppWidgetIds(ComponentName(context, VaultStatusWidget::class.java))
             ids.forEach { updateWidget(context, manager, it) }
         }
+
+        /** Formats an ISO-8601 timestamp as a relative time ("2 hours ago") for widget display. */
+        internal fun formatLastCheckIn(isoTimestamp: String, now: Instant = Instant.now()): String {
+            val checkInInstant = runCatching { Instant.parse(isoTimestamp) }.getOrNull() ?: return isoTimestamp
+            val seconds = Duration.between(checkInInstant, now).seconds.coerceAtLeast(0)
+            return when {
+                seconds < 60 -> "Just now"
+                seconds < 3_600 -> relative(seconds / 60, "minute")
+                seconds < 86_400 -> relative(seconds / 3_600, "hour")
+                else -> relative(seconds / 86_400, "day")
+            }
+        }
+
+        private fun relative(value: Long, unit: String): String =
+            "$value $unit${if (value == 1L) "" else "s"} ago"
     }
 }
 
@@ -89,11 +109,13 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
             val ttl = formatTtl(vault.ttlRemaining)
             VaultStatusWidget.saveVaultData(
                 applicationContext,
+                vaultId = vault.id,
                 vaultName = vault.id.take(12) + "…",
                 ttlRemaining = ttl,
-                lastCheckIn = vault.lastCheckIn
+                lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
             )
             VaultStatusWidget.refreshAll(applicationContext)
+            schedule(applicationContext, determineUpdateInterval(vault.ttlRemaining))
         }
         return Result.success()
     }
@@ -108,8 +130,23 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME = "vault_widget_update"
 
-        fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(15, TimeUnit.MINUTES)
+        // WorkManager enforces a 15-minute floor on periodic work, so that's the shortest
+        // interval available for a vault close to expiring. Once it's not urgent, back off
+        // to a much longer interval to conserve battery (coordinated with iOS's #33 gap).
+        private const val URGENT_INTERVAL_MINUTES = 15L
+        private const val NORMAL_INTERVAL_MINUTES = 60L
+        private const val URGENCY_THRESHOLD_SECONDS = 86_400L // 24h, matches Vault.isExpiringSoon
+
+        /** Picks the widget refresh interval based on how close the most urgent vault is to expiring. */
+        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long =
+            if ((ttlRemainingSeconds ?: Long.MAX_VALUE) < URGENCY_THRESHOLD_SECONDS) {
+                URGENT_INTERVAL_MINUTES
+            } else {
+                NORMAL_INTERVAL_MINUTES
+            }
+
+        fun schedule(context: Context, intervalMinutes: Long = NORMAL_INTERVAL_MINUTES) {
+            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -118,7 +155,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
         }

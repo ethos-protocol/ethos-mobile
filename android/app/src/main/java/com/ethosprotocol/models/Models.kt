@@ -24,7 +24,8 @@ enum class VaultStatus { active, expired, released, paused }
 @Serializable
 data class AuthChallenge(
     val challenge: String,
-    @SerialName("expires_at") val expiresAt: String
+    @SerialName("expires_at") val expiresAt: String,
+    @SerialName("existing_credential_ids") val existingCredentialIds: List<String> = emptyList()
 )
 
 @Serializable
@@ -114,3 +115,21 @@ data class Enable2FAResponse(
 
 @Serializable
 data class Verify2FARequest(val otp: String)
+
+// #109: Beneficiary acceptance request body.
+// The token is parsed from the accept deep-link URL query parameter and is
+// required by the server to authorise acceptance. See api-contract.md §POST /vaults/{id}/accept.
+@Serializable
+data class BeneficiaryAcceptRequest(
+    @SerialName("vault_id") val vaultId: String,
+    val token: String
+)
+
+// #112: Paginated vault list response. See api-contract.md §Pagination.
+@Serializable
+data class VaultPage(
+    val vaults: List<Vault>,
+    /** Opaque cursor for the next page, or null when this is the last page. */
+    @SerialName("next_cursor") val nextCursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean
+)

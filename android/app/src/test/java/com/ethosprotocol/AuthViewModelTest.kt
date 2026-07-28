@@ -1,173 +1,125 @@
 package com.ethosprotocol
 
-import android.content.Context
-import androidx.work.WorkManager
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
-import com.ethosprotocol.models.RecoveryInitiateRequest
-import com.ethosprotocol.models.RecoveryInitiateResponse
-import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingAction
+import com.ethosprotocol.services.PendingActionDao
+import com.ethosprotocol.services.PendingActionType
 import com.ethosprotocol.ui.AuthViewModel
-import com.ethosprotocol.widget.VaultStatusWidget
-import com.ethosprotocol.widget.VaultWidgetUpdateWorker
-import io.mockk.Runs
-import io.mockk.coEvery
-import io.mockk.coVerify
-import io.mockk.every
-import io.mockk.just
-import io.mockk.mockk
-import io.mockk.mockkObject
-import io.mockk.unmockkObject
-import io.mockk.verify
+import io.mockk.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 
+/**
+ * Also covers issue #61: queued pending actions and their ongoing notification must be
+ * cleared on sign-out so that state from the previous session cannot sync after the user
+ * signs out.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuthViewModelTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()
-    private val apiClient: ApiClient = mockk()
     private val passkeyService: PasskeyService = mockk()
     private val tokenProvider: TokenProvider = mockk(relaxed = true)
-    private val pendingCheckInDao: PendingCheckInDao = mockk(relaxed = true)
+    private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
-    private val workManager: WorkManager = mockk(relaxed = true)
-    private val context: Context = mockk(relaxed = true)
+    private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private lateinit var vm: AuthViewModel
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
-        mockkObject(VaultStatusWidget.Companion)
-        every { VaultStatusWidget.clearVaultData(any()) } just Runs
-        every { VaultStatusWidget.refreshAll(any()) } just Runs
-        every { tokenProvider.token } returns "existing-token"
-        vm = AuthViewModel(apiClient, passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context)
-        vm.relockTimeoutMillis = 30_000L
+        every { tokenProvider.token } returns null
+        vm = AuthViewModel(passkeyService, tokenProvider, apiClient, notificationHelper, pendingActionDao)
     }
 
     @After
     fun teardown() {
         Dispatchers.resetMain()
-        unmockkObject(VaultStatusWidget.Companion)
     }
 
     @Test
-    fun `resuming before timeout does not lock`() {
-        assertTrue(vm.state.value.isAuthenticated)
-
-        vm.onAppBackgrounded(now = 1_000L)
-        vm.onAppForegrounded(now = 1_000L + 29_999L)
-
-        assertFalse(vm.state.value.isLocked)
-    }
-
-    @Test
-    fun `resuming after timeout locks the session`() {
-        vm.onAppBackgrounded(now = 1_000L)
-        vm.onAppForegrounded(now = 1_000L + 30_000L)
-
-        assertTrue(vm.state.value.isLocked)
-    }
-
-    @Test
-    fun `unlock clears the locked state`() {
-        vm.onAppBackgrounded(now = 1_000L)
-        vm.onAppForegrounded(now = 1_000L + 60_000L)
-        assertTrue(vm.state.value.isLocked)
-
-        vm.unlock()
-
-        assertFalse(vm.state.value.isLocked)
-    }
-
-    @Test
-    fun `backgrounding while signed out does not arm the timer`() {
-        every { tokenProvider.token } returns null
-        val signedOutVm = AuthViewModel(
-            apiClient, passkeyService, tokenProvider, pendingCheckInDao, notificationHelper, workManager, context
-        )
-
-        signedOutVm.onAppBackgrounded(now = 1_000L)
-        signedOutVm.onAppForegrounded(now = 1_000L + 60_000L)
-
-        assertFalse(signedOutVm.state.value.isLocked)
-    }
-
-    @Test
-    fun `signOut resets locked state`() = runTest {
-        vm.onAppBackgrounded(now = 1_000L)
-        vm.onAppForegrounded(now = 1_000L + 60_000L)
-        assertTrue(vm.state.value.isLocked)
+    fun `signOut with saved push token unregisters it before clearing local state`() = runTest {
+        every { tokenProvider.pushToken } returns "fcm-token-123"
+        coEvery { apiClient.unregisterPushToken("fcm-token-123") } returns ApiResult.Success(Unit)
 
         vm.signOut()
 
-        assertFalse(vm.state.value.isLocked)
+        coVerify { apiClient.unregisterPushToken("fcm-token-123") }
+        verify { tokenProvider.clear() }
         assertFalse(vm.state.value.isAuthenticated)
     }
 
     @Test
-    fun `signOut clears every surface that could leak vault data to the next user`() = runTest {
+    fun `signOut with no saved push token does not call unregisterPushToken`() = runTest {
+        every { tokenProvider.pushToken } returns null
+
+        vm.signOut()
+
+        coVerify(exactly = 0) { apiClient.unregisterPushToken(any()) }
+        verify { tokenProvider.clear() }
+        assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `signOut clears local state even when unregister fails`() = runTest {
+        every { tokenProvider.pushToken } returns "fcm-token-123"
+        coEvery { apiClient.unregisterPushToken(any()) } returns ApiResult.NetworkUnavailable
+
         vm.signOut()
 
         verify { tokenProvider.clear() }
-        coVerify { pendingCheckInDao.deleteAll() }
-        verify { workManager.cancelUniqueWork(CheckInSyncWorker.WORK_NAME) }
-        verify { workManager.cancelUniqueWork(VaultWidgetUpdateWorker.WORK_NAME) }
-        verify { VaultStatusWidget.clearVaultData(context) }
-        verify { VaultStatusWidget.refreshAll(context) }
-        verify { notificationHelper.cancelQueuedCheckIn() }
+        assertFalse(vm.state.value.isAuthenticated)
     }
 
     @Test
-    fun `initiateRecovery success stores the recovery token`() = runTest {
-        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
-            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
+    fun `signIn cancelled mid-request does not surface an error`() = runTest {
+        // Simulates the screen (and viewModelScope) being torn down while
+        // passkeyService.authenticate() is in flight — the coroutine should stop
+        // silently instead of writing a stray error/loading update to dead state.
+        coEvery { passkeyService.authenticate(any()) } throws CancellationException("scope cancelled")
 
-        vm.initiateRecovery("alice")
+        vm.signIn(mockk(relaxed = true))
 
-        assertEquals("recovery-token", vm.state.value.recoveryToken)
-        assertFalse(vm.state.value.isLoading)
+        assertNull(vm.state.value.error)
+        assertTrue(vm.state.value.isLoading)
+        assertFalse(vm.state.value.isAuthenticated)
     }
 
     @Test
-    fun `completeRecovery signs in and clears the recovery token on success`() = runTest {
-        val activity: android.app.Activity = mockk(relaxed = true)
-        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
-            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
-        vm.initiateRecovery("alice")
+    fun `signOut deletes all pending actions`() = runTest {
+        vm.signOut()
 
-        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token") } returns Result.success(Unit)
-        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
-
-        vm.completeRecovery(activity, "alice")
-
-        coVerify { passkeyService.recoverAccount(activity, "alice", "recovery-token") }
-        assertNull(vm.state.value.recoveryToken)
-        assertTrue(vm.state.value.isAuthenticated)
+        coVerify { pendingActionDao.deleteAll() }
     }
 
     @Test
-    fun `cancelRecovery clears the recovery token`() = runTest {
-        coEvery { apiClient.initiateRecovery(RecoveryInitiateRequest("alice")) } returns
-            ApiResult.Success(RecoveryInitiateResponse("recovery-token", "2026-01-01T00:00:00Z"))
-        vm.initiateRecovery("alice")
-        assertNotNull(vm.state.value.recoveryToken)
+    fun `signOut cancels queued action notification`() = runTest {
+        vm.signOut()
 
-        vm.cancelRecovery()
+        verify { notificationHelper.cancelQueuedActions() }
+    }
 
-        assertNull(vm.state.value.recoveryToken)
+    @Test
+    fun `signOut discards queued actions even when multiple are pending`() = runTest {
+        val items = listOf(
+            PendingAction(id = 1L, type = PendingActionType.CHECK_IN, vaultId = "vault-1", queuedAt = 1000L),
+            PendingAction(id = 2L, type = PendingActionType.CHECK_IN, vaultId = "vault-2", queuedAt = 2000L)
+        )
+        coEvery { pendingActionDao.getAll() } returns items
+
+        vm.signOut()
+
+        coVerify(exactly = 1) { pendingActionDao.deleteAll() }
+        verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
     }
 }

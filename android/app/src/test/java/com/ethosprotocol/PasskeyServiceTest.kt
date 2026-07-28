@@ -1,87 +1,280 @@
 package com.ethosprotocol
 
 import android.app.Activity
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.CreateCredentialCancellationException
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.NoCredentialException
+import androidx.credentials.*
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.AuthChallenge
+import com.ethosprotocol.models.AuthToken
+import com.ethosprotocol.models.PasskeyRegisterRequest
+import com.ethosprotocol.models.PasskeyVerifyRequest
+import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PasskeyService
-import io.mockk.coEvery
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.mockkObject
-import io.mockk.unmockkObject
+import io.mockk.*
 import kotlinx.coroutines.test.runTest
-import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 
-// CreatePublicKeyCredentialRequest/GetPublicKeyCredentialOption marshal their JSON payload into
-// a real android.os.Bundle, which needs Robolectric's framework shadows to run on the JVM.
-@RunWith(RobolectricTestRunner::class)
+/**
+ * Unit tests for [PasskeyService] (#95).
+ *
+ * [CredentialManager] is injected via [CredentialManagerFactory] so these tests run on the
+ * JVM without Robolectric.  The [Activity] parameter is only forwarded to the factory and
+ * manager; tests pass a MockK relaxed mock for it.
+ *
+ * Coverage:
+ *   - register: success path (challenge → createCredential → registerPasskey)
+ *   - register: CredentialManager throws → Result.isFailure, registerPasskey not called
+ *   - register: getChallenge returns NetworkUnavailable → Result.isFailure
+ *   - register: registerPasskey returns ApiResult.Error → Result.isFailure
+ *   - authenticate: success path → tokenProvider.token is set
+ *   - authenticate: getChallenge NetworkUnavailable → Result.isFailure, token unchanged
+ *   - authenticate: getCredential throws → Result.isFailure, token unchanged
+ *   - authenticate: verifyPasskey ApiResult.Error → Result.isFailure, token unchanged
+ *   - authenticate: verifyPasskey NetworkUnavailable → Result.isFailure, token unchanged
+ *   - requireSuccess: Success → returns data
+ *   - requireSuccess: Error → throws with message
+ *   - requireSuccess: NetworkUnavailable → throws with "No network connection"
+ */
 class PasskeyServiceTest {
 
-    private val apiClient: ApiClient = mockk()
-    private val tokenProvider: TokenProvider = mockk(relaxed = true)
-    private val activity: Activity = mockk(relaxed = true)
-    private val credentialManager: CredentialManager = mockk()
+    // ── mocks ─────────────────────────────────────────────────────────────────
+    private val mockApiClient: ApiClient = mockk()
+    private val mockCredentialManager: CredentialManager = mockk()
+    private val mockActivity: Activity = mockk(relaxed = true)
+
+    /** In-memory token holder matching the real [TokenProvider] contract. */
+    private val tokenProvider = object : TokenProvider {
+        override var token: String? = null
+        override fun clear() { token = null }
+    }
+
     private lateinit var service: PasskeyService
 
+    // ── test data ─────────────────────────────────────────────────────────────
+
+    private val fakeChallenge = AuthChallenge(
+        challenge = "ch4ll3ng3==",
+        expiresAt = "2099-01-01T00:00:00Z"
+    )
+    private val fakeToken = AuthToken(
+        token = "jwt.token.value",
+        expiresAt = "2099-01-01T00:00:00Z"
+    )
+
+    /** Minimal valid WebAuthn registration response JSON. */
+    private val fakeRegistrationJson = """
+        {
+          "id": "credential-id-reg",
+          "response": {
+            "attestationObject": "att-obj-base64",
+            "clientDataJSON": "client-data-base64"
+          }
+        }
+    """.trimIndent()
+
+    /** Minimal valid WebAuthn authentication response JSON. */
+    private val fakeAuthJson = """
+        {
+          "id": "credential-id-auth",
+          "response": {
+            "clientDataJSON": "client-data-base64",
+            "signature": "sig-base64"
+          }
+        }
+    """.trimIndent()
+
     @Before
-    fun setup() {
-        mockkObject(CredentialManager.Companion)
-        every { CredentialManager.create(any()) } returns credentialManager
-        coEvery { apiClient.getChallenge() } returns
-            ApiResult.Success(AuthChallenge("challenge", "2026-01-01T00:00:00Z"))
-        service = PasskeyService(apiClient, tokenProvider)
+    fun setUp() {
+        val factory = CredentialManagerFactory { mockCredentialManager }
+        service = PasskeyService(mockApiClient, tokenProvider, factory)
     }
 
-    @After
-    fun teardown() {
-        unmockkObject(CredentialManager.Companion)
+    // ── register ─────────────────────────────────────────────────────────────
+
+    @Test
+    fun register_success_callsRegisterPasskeyWithCorrectFields() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Success(Unit)
+
+        val result = service.register(mockActivity, "alice")
+
+        assertTrue("Expected success", result.isSuccess)
+
+        val slot = slot<PasskeyRegisterRequest>()
+        coVerify { mockApiClient.registerPasskey(capture(slot)) }
+        assertEquals("credential-id-reg",  slot.captured.credentialId)
+        assertEquals("att-obj-base64",     slot.captured.publicKey)
+        assertEquals("client-data-base64", slot.captured.clientDataJson)
     }
 
     @Test
-    fun `register maps user cancellation to an actionable message`() = runTest {
-        coEvery { credentialManager.createCredential(any(), any()) } throws
-            CreateCredentialCancellationException("cancelled by user")
+    fun register_getChallengeNetworkError_returnsFailure_credentialManagerNotCalled() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.NetworkUnavailable
 
-        val result = service.register(activity, "alice")
+        val result = service.register(mockActivity, "alice")
 
-        assertTrue(result.isFailure)
-        assertEquals("Sign-up canceled.", result.exceptionOrNull()?.message)
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("No network connection", result.exceptionOrNull()?.message)
+        coVerify(exactly = 0) { mockCredentialManager.createCredential(any(), any()) }
+        coVerify(exactly = 0) { mockApiClient.registerPasskey(any()) }
     }
 
     @Test
-    fun `authenticate maps no credentials available to an actionable message`() = runTest {
-        coEvery { credentialManager.getCredential(any<Activity>(), any<GetCredentialRequest>()) } throws
-            NoCredentialException("no credentials on this device")
+    fun register_credentialManagerThrows_returnsFailure_registerPasskeyNotCalled() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } throws
+            RuntimeException("biometric cancelled")
 
-        val result = service.authenticate(activity)
+        val result = service.register(mockActivity, "alice")
 
-        assertTrue(result.isFailure)
-        assertEquals(
-            "No passkey found for this account on this device. Create an account or use the device you registered with.",
-            result.exceptionOrNull()?.message
-        )
+        assertTrue("Expected failure", result.isFailure)
+        coVerify(exactly = 0) { mockApiClient.registerPasskey(any()) }
     }
 
     @Test
-    fun `authenticate maps user cancellation to an actionable message`() = runTest {
-        coEvery { credentialManager.getCredential(any<Activity>(), any<GetCredentialRequest>()) } throws
-            GetCredentialCancellationException("cancelled by user")
+    fun register_registerPasskeyApiError_returnsFailure() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Error("Forbidden", 403)
 
-        val result = service.authenticate(activity)
+        val result = service.register(mockActivity, "alice")
 
-        assertTrue(result.isFailure)
-        assertEquals("Sign-in canceled.", result.exceptionOrNull()?.message)
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("Forbidden", result.exceptionOrNull()?.message)
+    }
+
+    // ── authenticate ─────────────────────────────────────────────────────────
+
+    @Test
+    fun authenticate_success_setsTokenOnTokenProvider() = runTest {
+        val fakeCredential = mockk<PublicKeyCredential> {
+            every { authenticationResponseJson } returns fakeAuthJson
+        }
+        val fakeGetResp = mockk<GetCredentialResponse> {
+            every { credential } returns fakeCredential
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.Success(fakeToken)
+
+        val result = service.authenticate(mockActivity)
+
+        assertTrue("Expected success", result.isSuccess)
+        assertEquals("jwt.token.value", tokenProvider.token)
+
+        val slot = slot<PasskeyVerifyRequest>()
+        coVerify { mockApiClient.verifyPasskey(capture(slot)) }
+        assertEquals("credential-id-auth",  slot.captured.credentialId)
+        assertEquals("client-data-base64",  slot.captured.clientDataJson)
+        assertEquals("sig-base64",          slot.captured.signature)
+    }
+
+    @Test
+    fun authenticate_getChallengeNetworkError_returnsFailure_tokenUnchanged() = runTest {
+        tokenProvider.token = "old-token"
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.NetworkUnavailable
+
+        val result = service.authenticate(mockActivity)
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("No network connection", result.exceptionOrNull()?.message)
+        assertEquals("old-token", tokenProvider.token)
+        coVerify(exactly = 0) { mockCredentialManager.getCredential(any(), any()) }
+    }
+
+    @Test
+    fun authenticate_credentialManagerThrows_returnsFailure_tokenUnchanged() = runTest {
+        tokenProvider.token = "old-token"
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } throws
+            RuntimeException("no credentials available")
+
+        val result = service.authenticate(mockActivity)
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("old-token", tokenProvider.token)
+        coVerify(exactly = 0) { mockApiClient.verifyPasskey(any()) }
+    }
+
+    @Test
+    fun authenticate_verifyPasskeyApiError_returnsFailure_tokenUnchanged() = runTest {
+        tokenProvider.token = "old-token"
+        val fakeCredential = mockk<PublicKeyCredential> {
+            every { authenticationResponseJson } returns fakeAuthJson
+        }
+        val fakeGetResp = mockk<GetCredentialResponse> {
+            every { credential } returns fakeCredential
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.Error("Invalid signature", 401)
+
+        val result = service.authenticate(mockActivity)
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("Invalid signature", result.exceptionOrNull()?.message)
+        assertEquals("old-token", tokenProvider.token)
+    }
+
+    @Test
+    fun authenticate_verifyPasskeyNetworkError_returnsFailure_tokenUnchanged() = runTest {
+        tokenProvider.token = "old-token"
+        val fakeCredential = mockk<PublicKeyCredential> {
+            every { authenticationResponseJson } returns fakeAuthJson
+        }
+        val fakeGetResp = mockk<GetCredentialResponse> {
+            every { credential } returns fakeCredential
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.NetworkUnavailable
+
+        val result = service.authenticate(mockActivity)
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("old-token", tokenProvider.token)
+    }
+
+    // ── requireSuccess error mapping ──────────────────────────────────────────
+
+    @Test
+    fun requireSuccess_success_returnsData() {
+        assertEquals("hello", service.requireSuccess(ApiResult.Success("hello")))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun requireSuccess_apiError_throwsWithMessage() {
+        service.requireSuccess(ApiResult.Error("Something went wrong", 500))
+    }
+
+    @Test
+    fun requireSuccess_apiError_exceptionHasCorrectMessage() {
+        val ex = runCatching {
+            service.requireSuccess(ApiResult.Error("Bad request", 400))
+        }.exceptionOrNull()
+        assertEquals("Bad request", ex?.message)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun requireSuccess_networkUnavailable_throws() {
+        service.requireSuccess(ApiResult.NetworkUnavailable)
+    }
+
+    @Test
+    fun requireSuccess_networkUnavailable_exceptionMessage() {
+        val ex = runCatching {
+            service.requireSuccess(ApiResult.NetworkUnavailable)
+        }.exceptionOrNull()
+        assertEquals("No network connection", ex?.message)
     }
 }
