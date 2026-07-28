@@ -24,7 +24,8 @@ enum class VaultStatus { active, expired, released, paused }
 @Serializable
 data class AuthChallenge(
     val challenge: String,
-    @SerialName("expires_at") val expiresAt: String
+    @SerialName("expires_at") val expiresAt: String,
+    @SerialName("existing_credential_ids") val existingCredentialIds: List<String> = emptyList()
 )
 
 @Serializable
@@ -57,6 +58,32 @@ data class PasskeyVerifyRequest(
 
 @Serializable
 data class PasskeyRegisterRequest(
+    @SerialName("credential_id") val credentialId: String,
+    // Field name is `attestation_object` per shared/api-contract.md — the backend
+    // extracts the COSE-encoded public key from this object. The legacy `public_key`
+    // field is not accepted by the server. (#108)
+    @SerialName("attestation_object") val attestationObject: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
+
+// MARK: - Account Recovery ("lost your device?")
+//
+// Shared contract with iOS's #5: initiate() sends a recovery code to the account's
+// verified email, complete() links a newly-created passkey to that existing account once
+// the recovery token proves the requester received that code.
+
+@Serializable
+data class RecoveryInitiateRequest(val username: String)
+
+@Serializable
+data class RecoveryInitiateResponse(
+    @SerialName("recovery_token") val recoveryToken: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+@Serializable
+data class RecoveryCompleteRequest(
+    @SerialName("recovery_token") val recoveryToken: String,
     @SerialName("credential_id") val credentialId: String,
     @SerialName("public_key") val publicKey: String,
     @SerialName("client_data_json") val clientDataJson: String
@@ -94,3 +121,21 @@ data class Enable2FAResponse(
 
 @Serializable
 data class Verify2FARequest(val otp: String)
+
+// #109: Beneficiary acceptance request body.
+// The token is parsed from the accept deep-link URL query parameter and is
+// required by the server to authorise acceptance. See api-contract.md §POST /vaults/{id}/accept.
+@Serializable
+data class BeneficiaryAcceptRequest(
+    @SerialName("vault_id") val vaultId: String,
+    val token: String
+)
+
+// #112: Paginated vault list response. See api-contract.md §Pagination.
+@Serializable
+data class VaultPage(
+    val vaults: List<Vault>,
+    /** Opaque cursor for the next page, or null when this is the last page. */
+    @SerialName("next_cursor") val nextCursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean
+)

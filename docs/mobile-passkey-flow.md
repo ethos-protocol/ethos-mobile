@@ -32,12 +32,14 @@ The registration process establishes a new passkey credential for vault owner au
     └────────────┬─────────────────────┘
                  │
     ┌────────────▼──────────────────────┐
-    │ Send attestation + public key     │
-    │ to Ethos-Protocol backend             │
+    │ Send attestation_object           │
+    │ + credential_id + client_data_json│
+    │ to Ethos-Protocol backend         │
     └────────────┬─────────────────────┘
                  │
     ┌────────────▼──────────────────────┐
-    │ Backend stores public key         │
+    │ Backend extracts public key from  │
+    │ attestation_object and stores it  │
     │ for vault owner                   │
     └────────────▼──────────────────────┘
                  │
@@ -144,20 +146,18 @@ func authorizationController(
     didCompleteWithAuthorization authorization: ASAuthorization
 ) {
     if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
-        // 1. Extract public key from credential
-        let publicKeyDer = credential.credentialPublicKey  // DER-encoded public key
-        
-        // 2. Extract attestation object (proof of credential creation)
-        let attestationObject = credential.attestationObject
-        
-        // 3. Extract client data (challenge proof)
+        // 1. Extract the raw WebAuthn attestation object (CBOR-encoded COSE key + proof).
+        //    The backend parses the public key out of this object — do NOT try to extract
+        //    the public key client-side and send it separately.
+        let attestationObject = credential.rawAttestationObject  // base64url-encode before sending
+
+        // 2. Extract client data (challenge proof)
         let clientDataJSON = credential.rawClientDataJSON
-        
-        // 4. Send to backend for verification and storage
+
+        // 3. Send to backend. Field name MUST be `attestation_object` (not `public_key`).
         try await registerCredentialWithBackend(
             vaultId: vaultId,
-            publicKey: publicKeyDer,
-            attestation: attestationObject,
+            attestationObject: attestationObject,
             clientData: clientDataJSON
         )
     }
@@ -264,12 +264,17 @@ suspend fun registerPasskey(vaultId: String) {
             activity = this
         )
         
-        // 5. Extract registration response
+        // 5. Extract registration response and build request
         val credentialResponse = result.credential as PublicKeyCredential
-        val registrationResponse = credentialResponse.registrationResponseJson
-        
-        // 6. Send to backend
-        registerCredentialWithBackend(vaultId, registrationResponse)
+        val json = JSONObject(credentialResponse.registrationResponseJson)
+        // Send `attestation_object` (not `public_key`) — the backend extracts the
+        // COSE public key from the attestation object server-side. (#108)
+        val attestationObject = json.getJSONObject("response").getString("attestationObject")
+        val clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        val credentialId = json.getString("id")
+
+        // 6. Send to backend with correct field names
+        registerCredentialWithBackend(vaultId, credentialId, attestationObject, clientDataJson)
     } catch (e: CreateCredentialException) {
         handleError(e)
     }
@@ -385,22 +390,21 @@ pub async fn verify_registration(
 ) -> Result<PublicKey, Error> {
     // 1. Verify attestation challenge matches what was sent
     verify_challenge(&registration_response.client_data_json)?;
-    
+
     // 2. Verify origin matches expected domain
     verify_origin(&registration_response.client_data_json, "ethos-protocol.app")?;
-    
-    // 3. For optional attestation verification:
-    // Verify the credential is from a trusted authenticator (e.g., Apple/Google)
-    if let Some(attestation_object) = registration_response.attestation_object {
-        verify_attestation(&attestation_object)?;
-    }
-    
-    // 4. Extract and validate public key
-    let public_key = extract_public_key(&registration_response)?;
-    
+
+    // 3. Parse and verify the attestation object (always required — both clients
+    //    send it as `attestation_object`; the legacy `public_key` field is gone).
+    //    The COSE-encoded public key is extracted from inside the attestation object.
+    let public_key = extract_public_key_from_attestation(&registration_response.attestation_object)?;
+
+    // 4. Optionally verify authenticator provenance (Apple/Google hardware)
+    verify_attestation(&registration_response.attestation_object)?;
+
     // 5. Store public key associated with vault owner
     store_passkey(vault_id, public_key.clone()).await?;
-    
+
     Ok(public_key)
 }
 ```
