@@ -23,6 +23,7 @@ import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
@@ -740,14 +741,28 @@ fun VaultDeepLinkScreenContent(
 private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> Unit) {
     var beneficiary by remember { mutableStateOf("") }
     var days by remember { mutableStateOf(30f) }
+
+    // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
+    val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Vault") },
         text = {
             Column {
-                OutlinedTextField(value = beneficiary, onValueChange = { beneficiary = it },
-                    label = { Text("Beneficiary address") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = beneficiary,
+                    onValueChange = { beneficiary = it },
+                    label = { Text("Beneficiary Stellar address") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
+                    supportingText = {
+                        if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
+                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                        }
+                    }
+                )
                 Spacer(Modifier.height(12.dp))
                 Text("Check-in interval: ${days.toInt()} days",
                     style = MaterialTheme.typography.bodySmall)
@@ -756,7 +771,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         },
         confirmButton = {
             TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
-                enabled = beneficiary.isNotBlank()) { Text("Create") }
+                enabled = isBeneficiaryValid) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
@@ -882,25 +897,49 @@ private fun TwoFactorVerifyScreen(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(16.dp))
-        Text("Verify Setup", style = MaterialTheme.typography.headlineSmall)
+        // Title distinguishes initial setup from a subsequent re-verification so
+        // the user is not confused about why they are not receiving a "sent" code.
+        val titleText = when {
+            method == TwoFactorMethod.totp && isInitialSetup -> "Verify Setup"
+            method == TwoFactorMethod.totp -> "Re-verify Authenticator"
+            else -> "Verify Setup"
+        }
+        Text(titleText, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
-        when (method) {
-            TwoFactorMethod.totp -> {
-                Text("Scan the URI in your authenticator app:",
+        when {
+            method == TwoFactorMethod.totp && isInitialSetup -> {
+                // Initial TOTP setup: the server returned a provisioning URI — show it.
+                Text(
+                    "Scan this URI in your authenticator app:",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (provisioningUri != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(provisioningUri, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    provisioningUri ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            TwoFactorMethod.sms -> Text("A verification code has been sent to your phone.",
+            method == TwoFactorMethod.totp -> {
+                // Re-verification: no provisioning data — the user must open their
+                // authenticator app and enter the current code. Never say "sent".
+                Text(
+                    "Enter the 6-digit code from your authenticator app.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            method == TwoFactorMethod.sms -> Text(
+                "A verification code has been sent to your phone.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TwoFactorMethod.email -> Text("A verification code has been sent to your email.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            else -> Text(
+                "A verification code has been sent to your email.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
