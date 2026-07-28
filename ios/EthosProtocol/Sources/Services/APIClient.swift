@@ -76,9 +76,12 @@ public final class APIClient {
         return try await post(path: "/auth/verify", body: body)
     }
 
-    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws {
+    func registerPasskey(credentialID: String, attestationObject: String, clientDataJSON: String) async throws {
+        // Field name is `attestation_object` per shared/api-contract.md — the backend
+        // parses the COSE public key out of the attestation object itself.
+        // (Legacy field name `public_key` is not accepted by the server.)
         let body = ["credential_id": credentialID,
-                    "public_key": publicKey,
+                    "attestation_object": attestationObject,
                     "client_data_json": clientDataJSON]
         let _: EmptyBody = try await post(path: "/auth/register", body: body)
     }

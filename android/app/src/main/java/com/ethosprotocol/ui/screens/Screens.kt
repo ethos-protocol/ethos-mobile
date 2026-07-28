@@ -474,6 +474,115 @@ fun BeneficiaryAcceptanceScreenContent(
     }
 }
 
+// MARK: - Manage Beneficiary Screen
+
+@Composable
+fun ManageBeneficiaryScreen(
+    vault: com.ethosprotocol.models.Vault,
+    onDone: () -> Unit,
+    vm: VaultViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var newBeneficiary by remember { mutableStateOf("") }
+    var showConfirmation by remember { mutableStateOf(false) }
+
+    // The server rejects an address that is empty or unchanged. Mirror the same
+    // validation used by iOS BeneficiaryUpdate.isValidNewBeneficiary().
+    val isAddressValid = newBeneficiary.trim().isNotEmpty() && newBeneficiary.trim() != vault.beneficiary
+
+    LaunchedEffect(state.beneficiaryUpdated) {
+        if (state.beneficiaryUpdated) {
+            vm.clearBeneficiaryUpdated()
+            onDone()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.Person, contentDescription = null,
+            modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(16.dp))
+        Text("Manage Beneficiary", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text("Current beneficiary:", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(vault.beneficiary,
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace)
+        Spacer(Modifier.height(16.dp))
+
+        if (showConfirmation) {
+            // Confirmation step — mirrors iOS ManageBeneficiaryView.confirmationContent
+            Text("Confirm Change", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text("From:", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(vault.beneficiary,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(4.dp))
+            Text("To:", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(newBeneficiary.trim(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace)
+            state.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = { vm.updateBeneficiary(vault.id, newBeneficiary.trim()) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading
+            ) {
+                if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Confirm Change")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { showConfirmation = false },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading
+            ) { Text("Back") }
+        } else {
+            // Input step
+            OutlinedTextField(
+                value = newBeneficiary,
+                onValueChange = { newBeneficiary = it },
+                label = { Text("New Beneficiary (Stellar address)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                isError = newBeneficiary.isNotEmpty() && !isAddressValid,
+                supportingText = if (newBeneficiary.isNotEmpty() && !isAddressValid) {
+                    { Text("Enter a non-empty address that differs from the current beneficiary.") }
+                } else null
+            )
+            state.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = { showConfirmation = true },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isAddressValid
+            ) { Text("Continue") }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onDone,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Cancel") }
+        }
+    }
+}
+
 // MARK: - Vault Deep Link Screen
 
 @Composable

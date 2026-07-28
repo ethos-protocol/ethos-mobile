@@ -250,7 +250,8 @@ data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null,
-    val isOffline: Boolean = false
+    val isOffline: Boolean = false,
+    val beneficiaryUpdated: Boolean = false
 )
 
 @HiltViewModel

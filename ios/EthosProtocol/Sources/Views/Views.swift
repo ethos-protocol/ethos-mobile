@@ -1036,7 +1036,8 @@ struct VaultActionDeepLinkView: View {
                         systemImage: "person.2.fill",
                         description: "Update the beneficiary for vault \(vaultID.prefix(16))…"
                     ) {
-                        error = "Beneficiary management is not yet available in the mobile app."
+                        guard vault != nil else { error = "Vault not found"; return }
+                        showManageBeneficiary = true
                     }
                 }
             }
