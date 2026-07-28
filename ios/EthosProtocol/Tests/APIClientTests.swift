@@ -58,15 +58,11 @@ final class MockURLProtocol: URLProtocol {
 // MARK: - APIClient Extension for Testing
 
 extension APIClient {
-    /// Creates a test instance of APIClient with a mocked URLSession
+    /// Creates a test instance of APIClient with a mocked URLSession, via the
+    /// `init(baseURL:session:retryPolicy:)` designated initializer APIClient.swift exposes
+    /// as `internal` specifically for this purpose (see the comment on that initializer).
     static func makeTestInstance(session: URLSession) -> APIClient {
-        let instance = APIClient()
-        // Use reflection to set the private session property for testing
-        let sessionKey = "session"
-        if instance.responds(to: NSSelectorFromString("setValue:forKey:")) {
-            instance.setValue(session, forKey: sessionKey)
-        }
-        return instance
+        APIClient(baseURL: URL(string: "https://api.ethos-protocol.app/v1")!, session: session)
     }
 }
 
@@ -105,20 +101,25 @@ final class APIClientOfflineCacheTests: XCTestCase {
     // MARK: - GET Request Cache Tests
 
     func test_successfulGET_populatesCache() async throws {
+        // listVaults() is paginated (#21) and always sends a `limit` query param,
+        // so the request URL — and therefore the cache key — includes it.
+        let paginatedURL = "\(testURL)?limit=\(APIClient.defaultVaultPageSize)"
+
         // Arrange: Set up successful response
         let response = HTTPURLResponse(
-            url: URL(string: testURL)!,
+            url: URL(string: paginatedURL)!,
             statusCode: 200,
             httpVersion: "HTTP/1.1",
             headerFields: nil
         )!
-        MockURLProtocol.mockResponses[testURL] = (data: testVaultsData, response: response)
+        MockURLProtocol.mockResponses[paginatedURL] = (data: testVaultsData, response: response)
 
         // Act: Make the GET request while online
-        let _: [Vault] = try await client.listVaults()
+        let page = try await client.listVaults()
+        XCTAssertEqual(page.vaults.count, 1)
 
         // Assert: Cache should be populated
-        let cachedData = OfflineCache.shared.load(for: testURL)
+        let cachedData = OfflineCache.shared.load(for: paginatedURL)
         XCTAssertNotNil(cachedData, "Successful GET should populate cache")
         XCTAssertEqual(cachedData, testVaultsData, "Cached data should match response")
     }
