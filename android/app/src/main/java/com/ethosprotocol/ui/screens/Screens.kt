@@ -7,11 +7,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -23,6 +26,7 @@ import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
+import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
@@ -34,6 +38,7 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current as android.app.Activity
     var showRegister by remember { mutableStateOf(false) }
+    var showRecovery by remember { mutableStateOf(false) }
 
     if (showRegister) {
         RegisterSheet(
@@ -42,12 +47,31 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         )
     }
 
+    AuthScreenContent(
+        isLoading = state.isLoading,
+        error = state.error,
+        onSignIn = { vm.signIn(activity) },
+        onRegister = { showRegister = true }
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without an Activity context or Hilt DI graph.
+ */
+@Composable
+fun AuthScreenContent(
+    isLoading: Boolean,
+    error: String?,
+    onSignIn: () -> Unit,
+    onRegister: () -> Unit
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(Icons.Default.Lock, contentDescription = null,
+        Icon(Icons.Default.Lock, contentDescription = "Secure sign-in",
             modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
         Text("Ethos-Protocol", style = MaterialTheme.typography.headlineLarge)
@@ -55,21 +79,21 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(32.dp))
 
-        state.error?.let {
+        error?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
 
         Button(
-            onClick = { vm.signIn(activity) },
+            onClick = onSignIn,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = { showRegister = true }) { Text("Create account") }
+        TextButton(onClick = onRegister) { Text("Create account") }
     }
 }
 
@@ -90,6 +114,60 @@ private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+@Composable
+private fun RecoverySheet(
+    state: AuthUiState,
+    onSendCode: (String) -> Unit,
+    onFinish: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var username by remember { mutableStateOf("") }
+    val codeSent = state.recoveryToken != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Recover Your Account") },
+        text = {
+            Column {
+                if (!codeSent) {
+                    Text(
+                        "Enter your username and we'll send a recovery code to your account's " +
+                        "verified email.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(value = username, onValueChange = { username = it },
+                        label = { Text("Username") }, singleLine = true,
+                        enabled = !state.isLoading, modifier = Modifier.fillMaxWidth())
+                } else {
+                    Text(
+                        "Check your email for a confirmation, then tap Continue to link a new " +
+                        "passkey on this device to your account.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                state.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            if (!codeSent) {
+                TextButton(
+                    onClick = { onSendCode(username) },
+                    enabled = username.isNotBlank() && !state.isLoading
+                ) { Text("Send Code") }
+            } else {
+                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text("Continue") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
 // MARK: - Vault List Screen
 
 @Composable
@@ -103,7 +181,32 @@ fun VaultListScreen(
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
+    // #118: Non-blocking root warning. Shown once per session; does not block access.
+    var showRootWarning by remember {
+        mutableStateOf(
+            com.ethosprotocol.services.IntegrityChecker(context).isRooted
+        )
+    }
+
     LaunchedEffect(Unit) { vm.load() }
+
+    // #118: Non-blocking root warning dialog.
+    if (showRootWarning) {
+        AlertDialog(
+            onDismissRequest = { showRootWarning = false },
+            title = { Text("Security Warning") },
+            text = {
+                Text(
+                    "This device appears to be rooted. Your vault data, passkeys, and " +
+                    "2FA secrets may be at greater risk. Consider using a non-rooted " +
+                    "device for maximum security."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showRootWarning = false }) { Text("I Understand") }
+            }
+        )
+    }
 
     if (showCreate) {
         CreateVaultDialog(
@@ -144,23 +247,31 @@ fun VaultListScreen(
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    LazyColumn {
-                        if (state.isOffline) item {
-                            OfflineBanner()
-                        }
-                        val errorMsg = biometricError ?: state.error
-                        errorMsg?.let { err ->
-                            item {
-                                Text(err, color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.padding(16.dp))
+                    // Ties the pull gesture to the same VaultViewModel.load() used for the initial
+                    // fetch, so state.isLoading naturally drives the pull indicator too.
+                    PullToRefreshBox(
+                        isRefreshing = state.isLoading,
+                        onRefresh = { vm.load() },
+                        modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
+                    ) {
+                        LazyColumn {
+                            if (state.isOffline) item {
+                                OfflineBanner()
                             }
-                        }
-                        items(state.vaults, key = { it.id }) { vault ->
-                            VaultCard(
-                                vault = vault,
-                                onClick = { onVaultClick(vault.id) },
-                                onCheckIn = { pendingCheckIn = vault },
-                            )
+                            val errorMsg = biometricError ?: state.error
+                            errorMsg?.let { err ->
+                                item {
+                                    Text(err, color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(16.dp))
+                                }
+                            }
+                            items(state.vaults, key = { it.id }) { vault ->
+                                VaultCard(
+                                    vault = vault,
+                                    onClick = { onVaultClick(vault.id) },
+                                    onCheckIn = { pendingCheckIn = vault },
+                                )
+                            }
                         }
                     }
                 }
@@ -203,8 +314,14 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
 @Composable
 private fun OfflineBanner() {
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.WifiOff, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+        // mergeDescendants groups the icon + label into a single TalkBack stop instead of two,
+        // so giving the icon a description adds context without a duplicate announcement.
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp).semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.WifiOff, contentDescription = "Offline",
+                tint = MaterialTheme.colorScheme.onTertiaryContainer)
             Spacer(Modifier.width(8.dp))
             Text("Offline — showing cached data", color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
@@ -216,8 +333,11 @@ private fun OfflineBanner() {
 private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
+            // At the largest font scale a full-length id + chip in one row will clip rather than
+            // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
                 StatusChip(vault.status)
             }
@@ -226,12 +346,17 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (vault.isExpiringSoon) {
                 Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error,
+                // mergeDescendants groups the icon + label into a single TalkBack stop instead of two.
+                Row(
+                    Modifier.semantics(mergeDescendants = true) {},
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = "Warning", tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.labelSmall)
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {
@@ -252,8 +377,11 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
         com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
         com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
     }
-    SuggestionChip(onClick = {}, label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color))
+    SuggestionChip(
+        onClick = {},
+        label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+    )
 }
 
 // MARK: - Beneficiary Acceptance Screen
@@ -261,6 +389,8 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
 @Composable
 fun BeneficiaryAcceptanceScreen(
     vaultId: String,
+    // token: parsed from the /accept deep-link URL; required by the server (#109).
+    token: String,
     onAccepted: () -> Unit,
     onDecline: () -> Unit,
     vm: AcceptanceViewModel = hiltViewModel()
@@ -271,6 +401,27 @@ fun BeneficiaryAcceptanceScreen(
         if (state.isAccepted) onAccepted()
     }
 
+    BeneficiaryAcceptanceScreenContent(
+        vaultId = vaultId,
+        isLoading = state.isLoading,
+        error = state.error,
+        onAccept = { vm.accept(vaultId) },
+        onDecline = onDecline
+    )
+}
+
+/**
+ * Stateless content layer extracted so Paparazzi screenshot tests can render it
+ * on the JVM without a Hilt DI graph.
+ */
+@Composable
+fun BeneficiaryAcceptanceScreenContent(
+    vaultId: String,
+    isLoading: Boolean,
+    error: String?,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -279,7 +430,7 @@ fun BeneficiaryAcceptanceScreen(
     ) {
         Icon(
             Icons.Default.Lock,
-            contentDescription = null,
+            contentDescription = "Secure beneficiary acceptance",
             modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
@@ -299,24 +450,24 @@ fun BeneficiaryAcceptanceScreen(
             readOnly = true,
             modifier = Modifier.fillMaxWidth()
         )
-        state.error?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
         Button(
-            onClick = { vm.accept(vaultId) },
+            onClick = onAccept,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Accept")
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
             onClick = onDecline,
             modifier = Modifier.fillMaxWidth(),
-            enabled = !state.isLoading
+            enabled = !isLoading
         ) {
             Text("Decline")
         }
@@ -439,6 +590,8 @@ fun VaultDeepLinkScreen(
     vaultId: String,
     actionPath: String,
     onDone: () -> Unit,
+    onDeposit: (vaultId: String) -> Unit = {},
+    onWithdraw: (vaultId: String) -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val action = VaultDeepLinkAction.fromPathSegment(actionPath)
@@ -458,6 +611,7 @@ fun VaultDeepLinkScreen(
         null -> "Vault Link" to "Unrecognised vault action."
     }
 
+    // VIEW_DETAILS early-exit case with full vault card
     if (action == VaultDeepLinkAction.VIEW_DETAILS && vault != null) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             Text(title, style = MaterialTheme.typography.headlineSmall)
@@ -469,72 +623,113 @@ fun VaultDeepLinkScreen(
         return
     }
 
-    val displayError = error ?: if (action == VaultDeepLinkAction.VIEW_DETAILS && vault == null) {
+    // Determine display error:
+    // - Show "Vault not found" ONLY if loading has completed and vault is still null
+    // - Do NOT show "not found" while still loading (prevents false flash)
+    val displayError = error ?: if (!state.isLoading && vault == null && action == VaultDeepLinkAction.VIEW_DETAILS) {
         "Vault not found"
     } else {
         null
     }
 
+    val actionLabel = when (action) {
+        VaultDeepLinkAction.CHECK_IN -> "Check In"
+        VaultDeepLinkAction.WITHDRAW -> "Withdraw"
+        VaultDeepLinkAction.MANAGE_BENEFICIARY -> "Manage Beneficiary"
+        else -> title
+    }
+
+    VaultDeepLinkScreenContent(
+        title = title,
+        description = description,
+        error = displayError,
+        actionLabel = actionLabel,
+        isProcessing = isProcessing,
+        actionEnabled = !isProcessing && (action != VaultDeepLinkAction.CHECK_IN || vault != null),
+        onAction = {
+            when (action) {
+                VaultDeepLinkAction.CHECK_IN -> {
+                    if (vault == null) {
+                        error = "Vault not found"
+                        return@VaultDeepLinkScreenContent
+                    }
+                    isProcessing = true
+                    error = null
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Confirm Check-In",
+                        subtitle = "Vault ${vault.id.take(12)}…",
+                        onSuccess = {
+                            vm.checkIn(vault.id)
+                            isProcessing = false
+                            onDone()
+                        },
+                        onError = { err ->
+                            error = err
+                            isProcessing = false
+                        }
+                    )
+                }
+                VaultDeepLinkAction.WITHDRAW -> {
+                    if (vault == null) error = "Vault not found"
+                    else onWithdraw(vault.id)
+                }
+                VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
+                    error = "Beneficiary management is not yet available in the mobile app."
+                }
+                else -> Unit
+            }
+        },
+        onDone = onDone
+    )
+}
+
+/**
+ * Stateless content layer for [VaultDeepLinkScreen].
+ * Extracted so Paparazzi snapshot tests can render deep-link action screens
+ * on the JVM without a ViewModel, BiometricHelper, or Activity context.
+ */
+@Composable
+fun VaultDeepLinkScreenContent(
+    title: String,
+    description: String,
+    error: String?,
+    actionLabel: String,
+    isProcessing: Boolean,
+    actionEnabled: Boolean,
+    onAction: () -> Unit,
+    onDone: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(32.dp),
         verticalArrangement = Arrangement.Center
     ) {
+        if (state.isLoading && vault == null) {
+            // Show explicit loading indicator while vault list is being fetched
+            CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+            Spacer(Modifier.height(16.dp))
+            Text("Loading vault details…", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.CenterHorizontally))
+            return@Column
+        }
+
         Text(title, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        displayError?.let {
+        error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(24.dp))
-        when (action) {
-            VaultDeepLinkAction.CHECK_IN -> {
-                Button(
-                    onClick = {
-                        if (vault == null) {
-                            error = "Vault not found"
-                            return@Button
-                        }
-                        isProcessing = true
-                        error = null
-                        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                            title = "Confirm Check-In",
-                            subtitle = "Vault ${vault.id.take(12)}…",
-                            onSuccess = {
-                                vm.checkIn(vault.id)
-                                isProcessing = false
-                                onDone()
-                            },
-                            onError = { err ->
-                                error = err
-                                isProcessing = false
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isProcessing && vault != null
-                ) { Text(if (isProcessing) "Processing…" else "Check In") }
-            }
-            VaultDeepLinkAction.WITHDRAW -> {
-                Button(
-                    onClick = { error = "Withdrawal is not yet available in the mobile app." },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Withdraw") }
-            }
-            VaultDeepLinkAction.MANAGE_BENEFICIARY -> {
-                if (vault != null) {
-                    ManageBeneficiaryScreen(vault = vault, onDone = onDone, vm = vm)
-                    return
-                }
-                Button(
-                    onClick = { error = "Vault not found" },
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Manage Beneficiary") }
-            }
-            VaultDeepLinkAction.VIEW_DETAILS, null -> Unit
+        Button(
+            onClick = onAction,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = actionEnabled
+        ) {
+            Text(if (isProcessing) "Processing…" else actionLabel)
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
@@ -675,6 +870,8 @@ private fun TwoFactorVerifyScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        // Decorative: the method-specific instructions below ("Scan the URI…", "A verification
+        // code has been sent to your phone/email") already convey which method is active.
         Icon(
             when (method) {
                 TwoFactorMethod.totp -> Icons.Default.Lock
@@ -710,8 +907,36 @@ private fun TwoFactorVerifyScreen(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
             modifier = Modifier.width(200.dp),
-            textStyle = MaterialTheme.typography.headlineSmall
+            textStyle = MaterialTheme.typography.headlineSmall,
+            enabled = !state.isOtpBlocked
         )
+
+        // #119: Surface cooldown / failure count in the UI.
+        Spacer(Modifier.height(8.dp))
+        when {
+            state.isOtpBlocked -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Timer, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Too many attempts — wait ${state.otpCooldownSeconds}s",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            state.otpFailureCount > 0 -> {
+                Text(
+                    "${state.otpFailureCount} failed attempt${if (state.otpFailureCount == 1) "" else "s"}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            else -> Unit
+        }
+
         state.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -720,10 +945,124 @@ private fun TwoFactorVerifyScreen(
         Button(
             onClick = { vm.verify2FA(vaultId, otp) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = otp.length == 6 && !state.isLoading
+            enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
             if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
+        }
+    }
+}
+
+// MARK: - Vault Detail Screen
+
+/**
+ * #120: Disable 2FA is guarded by BiometricHelper before calling
+ * [TwoFactorViewModel.disable2FAAfterBiometric]. This mirrors the same
+ * pattern used for check-in in [VaultListScreen] — the biometric prompt
+ * requires a [FragmentActivity] and therefore lives in the screen layer,
+ * while the network call is delegated to the ViewModel.
+ */
+@Composable
+fun VaultDetailScreen(
+    vaultId: String,
+    onBack: () -> Unit,
+    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+) {
+    val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var showSetup by remember { mutableStateOf(false) }
+    var showVerify by remember { mutableStateOf(false) }
+    var biometricError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+
+    if (showSetup) {
+        TwoFactorSetupScreen(
+            vaultId = vaultId,
+            onComplete = { showSetup = false; twoFactorVm.loadStatus(vaultId) },
+            onDismiss = { showSetup = false }
+        )
+        return
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Vault ${vaultId.take(12)}…") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .padding(16.dp)
+                .fillMaxSize()
+        ) {
+            Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            when {
+                state.isLoading -> CircularProgressIndicator()
+                state.error != null && state.status == null -> {
+                    Text(state.error!!, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { twoFactorVm.loadStatus(vaultId) }) { Text("Retry") }
+                }
+                state.status != null -> {
+                    val twoFaStatus = state.status!!
+                    if (twoFaStatus.enabled) {
+                        Text("Status: Enabled (${twoFaStatus.method?.name?.uppercase() ?: "—"})")
+                        Text("Verified: ${if (twoFaStatus.verified) "Yes" else "No"}")
+                        Spacer(Modifier.height(12.dp))
+                        if (!twoFaStatus.verified) {
+                            OutlinedButton(onClick = { showVerify = true },
+                                modifier = Modifier.fillMaxWidth()) {
+                                Text("Verify Now")
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        biometricError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        // #120: Biometric gate — prompt before the destructive disable call.
+                        Button(
+                            onClick = {
+                                biometricError = null
+                                BiometricHelper(context as androidx.fragment.app.FragmentActivity)
+                                    .authenticate(
+                                        title = "Confirm Disable 2FA",
+                                        subtitle = "Biometric or PIN required to disable two-factor authentication",
+                                        onSuccess = {
+                                            twoFactorVm.disable2FAAfterBiometric(vaultId)
+                                        },
+                                        onError = { err -> biometricError = err }
+                                    )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.isLoading
+                        ) { Text("Disable 2FA") }
+                    } else {
+                        Text("Status: Disabled")
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = { showSetup = true },
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text("Enable 2FA")
+                        }
+                    }
+                }
+                else -> {
+                    Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
