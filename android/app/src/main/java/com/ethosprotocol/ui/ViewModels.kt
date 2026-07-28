@@ -26,6 +26,8 @@ import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -83,6 +85,7 @@ class AuthViewModel @Inject constructor(
     }
 
     fun signIn(activity: Activity) = viewModelScope.launch {
+        if (_state.value.cooldownRemainingSeconds > 0) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
             .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }

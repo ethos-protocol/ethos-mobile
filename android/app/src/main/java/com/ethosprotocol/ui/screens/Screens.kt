@@ -25,6 +25,7 @@ import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
+import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
@@ -84,6 +85,14 @@ fun AuthScreenContent(
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
+        if (state.cooldownRemainingSeconds > 0) {
+            Text(
+                "Too many failed attempts. Try again in ${state.cooldownRemainingSeconds}s.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         Button(
             onClick = onSignIn,
@@ -101,15 +110,28 @@ fun AuthScreenContent(
 @Composable
 private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
     var username by remember { mutableStateOf("") }
+    val trimmedUsername = username.trim()
+    val isValid = UsernameValidator.isValid(trimmedUsername)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create Account") },
         text = {
-            OutlinedTextField(value = username, onValueChange = { username = it },
-                label = { Text("Username") }, singleLine = true)
+            Column {
+                OutlinedTextField(value = username, onValueChange = { username = it },
+                    label = { Text("Username") }, singleLine = true)
+                if (username.isNotBlank() && !isValid) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${UsernameValidator.MIN_LENGTH}-${UsernameValidator.MAX_LENGTH} characters: " +
+                            "letters, numbers, '.', '_', '-' (must start/end with a letter or number)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onRegister(username) }, enabled = username.isNotBlank()) { Text("Register") }
+            TextButton(onClick = { onRegister(trimmedUsername) }, enabled = isValid) { Text("Register") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

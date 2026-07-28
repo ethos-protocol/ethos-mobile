@@ -12,7 +12,6 @@ import com.ethosprotocol.models.PasskeyVerifyRequest
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,19 +33,10 @@ class PasskeyService @Inject constructor(
     private val credentialManagerFactory: CredentialManagerFactory
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        val normalizedUsername = UsernameValidator.sanitize(username)
+        require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = JSONObject().apply {
-            put("challenge", challenge)
-            put("rp", JSONObject().put("id", "ethos-protocol.app").put("name", "Ethos-Protocol"))
-            put("user", JSONObject()
-                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
-                .put("name", username).put("displayName", username))
-            put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
-            put("authenticatorSelection", JSONObject()
-                .put("authenticatorAttachment", "platform")
-                .put("requireResidentKey", true)
-                .put("userVerification", "required"))
-        }.toString()
+        val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
 
         val credManager = credentialManagerFactory.create(activity)
         val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
