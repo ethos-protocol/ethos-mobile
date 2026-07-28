@@ -252,6 +252,7 @@ class TwoFactorViewModel @Inject constructor(
 data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
     val beneficiaryUpdated: Boolean = false
@@ -268,11 +269,23 @@ class VaultViewModel @Inject constructor(
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
 
+    private var nextOffset = 0
+    private val eventJobs = mutableMapOf<String, Job>()
+
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.listVaults()) {
+        when (val result = apiClient.listVaults(offset = 0, limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
-                _state.update { it.copy(vaults = result.data, isLoading = false, isOffline = false) }
+                nextOffset = result.data.nextOffset ?: result.data.vaults.size
+                _state.update {
+                    it.copy(
+                        vaults = result.data.vaults,
+                        isLoading = false,
+                        isOffline = false,
+                        hasMore = result.data.hasMore
+                    )
+                }
+                subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoading = false, isOffline = true) }

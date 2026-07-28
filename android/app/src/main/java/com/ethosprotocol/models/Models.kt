@@ -18,6 +18,25 @@ data class Vault(
     val formattedBalance: String get() = "%.7f XLM".format(balance / 10_000_000.0)
 }
 
+// A single real-time event delivered over the `wss://.../ws?vault_id={id}` socket
+// (see shared/api-contract.md). `vault` carries the full updated Vault so consumers
+// can update state in place without an extra round trip.
+@Serializable
+data class VaultEvent(
+    val type: String,
+    val vault: Vault? = null
+)
+
+// A single page of GET /vaults, requested via `offset`/`limit` query params (see
+// shared/api-contract.md). `nextOffset` is the offset to pass for the following
+// page; null once `hasMore` is false.
+@Serializable
+data class VaultPage(
+    val vaults: List<Vault>,
+    @SerialName("next_offset") val nextOffset: Int? = null,
+    @SerialName("has_more") val hasMore: Boolean = false
+)
+
 @Serializable
 enum class VaultStatus { active, expired, released, paused }
 

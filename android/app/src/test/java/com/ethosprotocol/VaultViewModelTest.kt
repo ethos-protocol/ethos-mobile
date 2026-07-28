@@ -2,6 +2,8 @@ package com.ethosprotocol
 
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.VaultEvent
+import com.ethosprotocol.models.VaultPage
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
@@ -16,6 +18,8 @@ import io.mockk.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -49,18 +53,20 @@ class VaultViewModelTest {
     @Test
     fun `load success updates vaults`() = runTest {
         val vaults = listOf(makeVault("v1"), makeVault("v2"))
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
 
         vm.load()
 
         assertEquals(vaults, vm.state.value.vaults)
         assertFalse(vm.state.value.isLoading)
+        assertFalse(vm.state.value.hasMore)
         assertNull(vm.state.value.error)
     }
 
     @Test
     fun `load network unavailable sets offline flag`() = runTest {
-        coEvery { apiClient.listVaults() } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.NetworkUnavailable
 
         vm.load()
 
@@ -83,7 +89,7 @@ class VaultViewModelTest {
 
     @Test
     fun `load error sets error message`() = runTest {
-        coEvery { apiClient.listVaults() } returns ApiResult.Error("Server error", 500)
+        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.Error("Server error", 500)
 
         vm.load()
 

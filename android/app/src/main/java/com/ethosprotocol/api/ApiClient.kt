@@ -11,9 +11,11 @@ import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.android.*
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -33,7 +35,7 @@ sealed class ApiResult<out T> {
 }
 
 @Singleton
-class ApiClient @Inject constructor(
+class ApiClient(
     private val tokenProvider: TokenProvider,
     private val networkMonitor: NetworkMonitor,
     private val offlineCache: OfflineCache,
@@ -152,7 +154,9 @@ class ApiClient @Inject constructor(
             else ApiResult.NetworkUnavailable
         }
         return runCatching {
-            val response = client.get("$baseUrl$path") { bearerAuth() }
+            val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
+                client.get("$baseUrl$path") { bearerAuth() }
+            }
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
@@ -219,6 +223,15 @@ class ApiClient @Inject constructor(
         val result = refreshToken()
         if (result is ApiResult.Success) tokenProvider.setSession(result.data)
     }
+
+    // GET is the only idempotent verb this client issues — retrying POST/DELETE
+    // automatically could double-submit a mutation (check-in, withdrawal, 2FA
+    // disable, ...), so only get() calls withRetry with this predicate.
+    // HttpRequestTimeoutException is checked explicitly because it subclasses
+    // CancellationException (so HttpTimeout can cooperate with coroutine
+    // cancellation) rather than IOException.
+    private fun isRetryableNetworkError(e: Throwable): Boolean =
+        e is HttpRequestTimeoutException || e is IOException
 
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
