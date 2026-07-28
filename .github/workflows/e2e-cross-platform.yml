@@ -1,0 +1,207 @@
+name: Cross-Platform E2E
+
+# Runs on a schedule (not every PR) because these tests:
+#   - require a shared staging API environment
+#   - take longer and are more flake-prone than unit tests
+#   - cover cross-platform interoperability (e.g. register on iOS, accept
+#     beneficiary invitation on Android) that per-PR CI cannot cheaply cover
+#
+# The workflow can also be triggered manually (workflow_dispatch) to gate a
+# release or debug a specific failure without waiting for the schedule.
+
+on:
+  schedule:
+    # 04:00 UTC daily — off-peak, avoids clashing with business-hours CI runs.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      staging_api_url:
+        description: "Override the staging API base URL (leave blank to use the default)"
+        required: false
+        default: ""
+
+# Prevent concurrent runs from racing on the same staging database.
+concurrency:
+  group: e2e-cross-platform
+  cancel-in-progress: false
+
+env:
+  # Default staging endpoint. Override via the workflow_dispatch input or by
+  # setting the E2E_API_BASE_URL repository secret.
+  E2E_API_BASE_URL: ${{ inputs.staging_api_url || secrets.E2E_API_BASE_URL || 'https://staging.ethos-protocol.app' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Verify the staging API is reachable before spending simulator time.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Staging API preflight
+    runs-on: ubuntu-latest
+    outputs:
+      api_url: ${{ steps.resolve.outputs.api_url }}
+    steps:
+      - name: Resolve API URL
+        id: resolve
+        run: echo "api_url=$E2E_API_BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Check staging API health
+        run: |
+          echo "Checking $E2E_API_BASE_URL/health …"
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$E2E_API_BASE_URL/health")
+          if [ "$HTTP" != "200" ]; then
+            echo "❌ Staging API returned HTTP $HTTP — aborting E2E run."
+            exit 1
+          fi
+          echo "✅ Staging API is healthy (HTTP 200)."
+
+  # ---------------------------------------------------------------------------
+  # 2. iOS E2E — build the app and run the cross-platform test suite against
+  #    the shared staging API via XCUITest / XCTest.
+  # ---------------------------------------------------------------------------
+  ios-e2e:
+    name: iOS E2E
+    runs-on: macos-latest
+    needs: preflight
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    env:
+      API_BASE_URL: ${{ needs.preflight.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve package dependencies
+        run: xcodebuild -resolvePackageDependencies
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
+
+      # Inject the staging API URL as an Info.plist override so the app under
+      # test talks to staging, not whatever URL was baked into the build.
+      - name: Build E2E app for iOS Simulator
+        run: |
+          xcodebuild build-for-testing \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -skipMacroValidation \
+            API_BASE_URL="$API_BASE_URL"
+
+      - name: Run cross-platform E2E tests (iOS side)
+        run: |
+          xcodebuild test-without-building \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -only-testing:EthosProtocolE2ETests \
+            -skipMacroValidation \
+            E2E_API_BASE_URL="$API_BASE_URL" \
+            TEST_RUNNER_E2E_API_BASE_URL="$API_BASE_URL"
+
+      - name: Upload iOS E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-results
+          path: ios/EthosProtocol/DerivedData/Logs/Test/*.xcresult
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 3. Android E2E — build the debug APK + test APK and run them on the
+  #    Android Emulator via Instrumented tests (Espresso / UI Automator).
+  # ---------------------------------------------------------------------------
+  android-e2e:
+    name: Android E2E
+    runs-on: ubuntu-latest
+    needs: preflight
+    defaults:
+      run:
+        working-directory: android
+    env:
+      API_BASE_URL: ${{ needs.preflight.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Build the app APK and the androidTest APK with the staging URL injected
+      # via a Gradle property so Instrumentation tests hit staging, not prod.
+      - name: Build debug APK + test APK
+        run: |
+          ./gradlew assembleDebug assembleDebugAndroidTest \
+            -Pe2eApiBaseUrl="$API_BASE_URL"
+
+      - name: Enable KVM for hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android E2E tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          script: |
+            cd android
+            ./gradlew connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.ethosprotocol.e2e.CrossPlatformE2ETest \
+              -Pe2eApiBaseUrl="$E2E_API_BASE_URL"
+
+      - name: Upload Android E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-e2e-results
+          path: android/app/build/reports/androidTests/connected/
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # 4. Summary — single job reviewers can watch for pass/fail.
+  # ---------------------------------------------------------------------------
+  e2e-summary:
+    name: E2E summary
+    runs-on: ubuntu-latest
+    needs: [ios-e2e, android-e2e]
+    if: always()
+    steps:
+      - name: Report result
+        run: |
+          IOS="${{ needs.ios-e2e.result }}"
+          ANDROID="${{ needs.android-e2e.result }}"
+          echo "iOS E2E:     $IOS"
+          echo "Android E2E: $ANDROID"
+          if [ "$IOS" != "success" ] || [ "$ANDROID" != "success" ]; then
+            echo "❌ One or more E2E suites failed."
+            exit 1
+          fi
+          echo "✅ All E2E suites passed."

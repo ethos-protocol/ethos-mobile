@@ -44,6 +44,14 @@ final class ICloudSyncService {
         return loadLocalAssociations()[vaultID]?.credentialID
     }
 
+    /// Clears this device's local vault-to-credential associations (used on sign-out).
+    /// Deliberately leaves the iCloud key-value store itself untouched — wiping that would
+    /// also erase the association for any other device still signed in; restoreFromICloud()
+    /// repopulates local storage from iCloud on the next sign-in if sync is re-enabled.
+    func clearLocalAssociations() {
+        UserDefaults.standard.removeObject(forKey: associationsKey)
+    }
+
     /// Pull associations from iCloud and merge into local storage using last-write-wins strategy.
     func restoreFromICloud() {
         guard isSyncEnabled else { return }

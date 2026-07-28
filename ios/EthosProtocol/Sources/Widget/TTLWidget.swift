@@ -36,7 +36,7 @@ struct TTLTimelineProvider: TimelineProvider {
         Task {
             let entry: VaultEntry
             do {
-                let vaults = try await APIClient.shared.listVaults()
+                let vaults = try await APIClient.shared.listAllVaults()
                 // Show the vault with the lowest TTL remaining (most urgent)
                 let critical = vaults
                     .filter { $0.status == .active }

@@ -1,5 +1,6 @@
 package com.ethosprotocol.api
 
+import android.util.Log
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.TwoFactorStatus
@@ -8,16 +9,24 @@ import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
 import io.ktor.client.*
 import io.ktor.client.call.*
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.android.*
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
     // cachedAt is non-null only when data was served from OfflineCache rather than fetched
@@ -28,19 +37,30 @@ sealed class ApiResult<out T> {
 }
 
 @Singleton
-class ApiClient @Inject constructor(
+class ApiClient(
     private val tokenProvider: TokenProvider,
     private val networkMonitor: NetworkMonitor,
     private val offlineCache: OfflineCache,
-    private val baseUrl: String
+    private val baseUrl: String,
+    // Overridable so tests can substitute a MockEngine instead of hitting real Android
+    // networking; production callers (AppModule) get the real Android engine for free.
+    engine: HttpClientEngine = Android.create()
 ) {
-    private val client = HttpClient(Android) {
+    companion object {
+        private const val TAG = "ApiClient"
+    }
+
+    private val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
         install(Logging) {
-            // Full request/response bodies (bearer token, 2FA secrets, vault balances) must
-            // never be written to logcat in release builds.
+            // Logging Redaction Policy (#111) — see shared/api-contract.md §Logging Redaction Policy.
+            // Full request/response bodies (bearer token, 2FA secrets, vault balances, beneficiary
+            // addresses, acceptance tokens) must never be written to logcat in any build.
+            // LogLevel.INFO logs only HTTP method + URL + status — no body, no sensitive headers.
+            // LogLevel.NONE in release ensures zero leakage even if a future log level change
+            // is accidentally introduced in debug code that ships to release.
             level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
         }
         // No timeouts were configured previously, so a stalled connection (e.g. dead wifi
@@ -50,15 +70,51 @@ class ApiClient @Inject constructor(
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
         }
+        // #117: Certificate / public-key pinning for api.ethos-protocol.app.
+        // PinningTrustManager wraps the system TrustManager and additionally
+        // verifies that at least one certificate in the chain matches a pinned
+        // SPKI SHA-256 hash. See CertificatePinning.kt for the rotation strategy.
+        engine {
+            sslManager = { httpsURLConnection ->
+                val systemTm = getSystemTrustManager()
+                if (systemTm != null) {
+                    val pinner = CertificatePinner()
+                    val pinningTm = PinningTrustManager(pinner, systemTm)
+                    val sslContext = SSLContext.getInstance("TLS")
+                    sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
+                    httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+                }
+            }
+        }
     }
 
     // Auth
     suspend fun getChallenge(): ApiResult<AuthChallenge> = get("/auth/challenge")
     suspend fun verifyPasskey(req: PasskeyVerifyRequest): ApiResult<AuthToken> = post("/auth/verify", req)
-    suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<Unit> = post("/auth/register", req)
+    suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<AuthToken> = post("/auth/register", req)
+    suspend fun refreshToken(): ApiResult<AuthToken> = post("/auth/refresh", Unit, skipTokenRefresh = true)
+
+    // Account recovery ("lost your device?") — shared contract with iOS's #5.
+    suspend fun initiateRecovery(req: RecoveryInitiateRequest): ApiResult<RecoveryInitiateResponse> =
+        post("/auth/recovery/initiate", req)
+    suspend fun completeRecovery(req: RecoveryCompleteRequest): ApiResult<Unit> =
+        post("/auth/recovery/complete", req)
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
+
+    /**
+     * Paginated variant of listVaults (#112).
+     * Pass [after] = page.nextCursor to fetch subsequent pages.
+     * Continue while [VaultPage.hasMore] == true.
+     */
+    suspend fun listVaults(limit: Int = 20, after: String? = null): ApiResult<VaultPage> {
+        val path = buildString {
+            append("/vaults?limit=$limit")
+            if (after != null) append("&after=$after")
+        }
+        return get(path)
+    }
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")
     suspend fun createVault(req: CreateVaultRequest): ApiResult<Vault> = post("/vaults", req)
     suspend fun checkIn(vaultId: String): ApiResult<Unit> = post("/vaults/$vaultId/checkin", Unit)
@@ -68,8 +124,11 @@ class ApiClient @Inject constructor(
         post("/vaults/$vaultId/withdraw", mapOf("amount" to amount))
 
     // Beneficiary
-    suspend fun acceptBeneficiary(vaultId: String): ApiResult<Unit> =
-        post("/vaults/$vaultId/accept", Unit)
+    // token: the acceptance token parsed from the /accept deep-link URL
+    // (e.g. https://ethos-protocol.app/vaults/{id}/accept?token=<token>).
+    // Required by the server — see shared/api-contract.md §POST /vaults/{id}/accept.
+    suspend fun acceptBeneficiary(vaultId: String, token: String): ApiResult<Unit> =
+        post("/vaults/$vaultId/accept", BeneficiaryAcceptRequest(vaultId = vaultId, token = token))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
@@ -90,47 +149,60 @@ class ApiClient @Inject constructor(
 
     // Internals
     private suspend inline fun <reified T> get(path: String): ApiResult<T> {
+        ensureFreshToken()
         if (!networkMonitor.isConnected) {
             val cached = offlineCache.load(path)
             return if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
             else ApiResult.NetworkUnavailable
         }
         return runCatching {
-            val response = client.get("$baseUrl$path") { bearerAuth() }
+            val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
+                client.get("$baseUrl$path") { bearerAuth() }
+            }
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
                     offlineCache.save(path, Json.encodeToString(kotlinx.serialization.serializer(), body))
                     ApiResult.Success(body)
                 }
-                401 -> ApiResult.Error("Unauthorized", 401)
+                // The token the server rejected is no longer valid — clear it locally so it
+                // isn't kept being sent, and so the UI correctly routes back to AuthScreen.
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
-    private suspend inline fun <reified B, reified T> post(path: String, body: B): ApiResult<T> {
+    private suspend inline fun <reified B, reified T> post(
+        path: String,
+        body: B,
+        skipTokenRefresh: Boolean = false
+    ): ApiResult<T> {
+        if (!skipTokenRefresh) ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> ApiResult.Error("Unauthorized", 401)
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
+        ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         return runCatching {
             val response = client.delete("$baseUrl$path") {
                 bearerAuth()
+                antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -139,13 +211,64 @@ class ApiClient @Inject constructor(
             // deletion (401/500/etc.) is silently reported back to callers as success.
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> ApiResult.Error("Unauthorized", 401)
+                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
+
+    // Best-effort: refreshes the stored token when it's near its expiry so the request
+    // about to be made uses a live token instead of one about to be rejected with a 401.
+    // A refresh failure just falls through and lets the actual request surface the error.
+    private suspend fun ensureFreshToken() {
+        if (tokenProvider.token == null || !tokenProvider.isNearExpiry()) return
+        val result = refreshToken()
+        if (result is ApiResult.Success) tokenProvider.setSession(result.data)
+    }
+
+    // GET is the only idempotent verb this client issues — retrying POST/DELETE
+    // automatically could double-submit a mutation (check-in, withdrawal, 2FA
+    // disable, ...), so only get() calls withRetry with this predicate.
+    // HttpRequestTimeoutException is checked explicitly because it subclasses
+    // CancellationException (so HttpTimeout can cooperate with coroutine
+    // cancellation) rather than IOException.
+    private fun isRetryableNetworkError(e: Throwable): Boolean =
+        e is HttpRequestTimeoutException || e is IOException
 
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
     }
+
+    // Anti-replay headers (task #121, see shared/api-contract.md).
+    // Applied to every mutating request (POST / DELETE). GET requests are
+    // idempotent and do not require replay protection.
+    //
+    // X-Nonce : 32 cryptographically-random bytes, hex-encoded. The server
+    //           stores seen nonces and rejects any duplicate within the token's
+    //           validity window, preventing a captured request from being
+    //           replayed later.
+    // X-Timestamp : current Unix epoch in seconds. The server rejects requests
+    //               where |server_time − timestamp| > 300 s (5-minute window),
+    //               limiting the replay window to that duration even if the
+    //               nonce store is unavailable.
+    private fun HttpRequestBuilder.antiReplayHeaders() {
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        val timestamp = System.currentTimeMillis() / 1_000L
+        header("X-Nonce", nonce)
+        header("X-Timestamp", timestamp.toString())
+    }
+}
+
+// ── #117 helper ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the first [X509TrustManager] from the default [TrustManagerFactory],
+ * or `null` if none is available. Used by [ApiClient] to provide a delegate for
+ * [PinningTrustManager] so standard chain validation still runs before the pin check.
+ */
+internal fun getSystemTrustManager(): X509TrustManager? {
+    val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+    factory.init(null as java.security.KeyStore?)
+    return factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
 }

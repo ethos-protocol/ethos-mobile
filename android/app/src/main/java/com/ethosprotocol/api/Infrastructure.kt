@@ -5,13 +5,14 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.ethosprotocol.models.AuthToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.security.MessageDigest
-import java.util.Collections
-import java.util.LinkedHashMap
+import java.time.Duration
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -110,6 +111,38 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
 
 @Singleton
 class TokenProvider @Inject constructor(@ApplicationContext private val context: Context) {
+    // ---------------------------------------------------------------------------
+    // Android token-storage accessibility review (task #122) — mirrors the
+    // documented rationale in iOS KeychainService.swift (saveToken).
+    //
+    // Which components need token access and under what conditions?
+    //
+    //   1. ApiClient (foreground)       — always running while the UI is visible;
+    //                                     device is unlocked. Any protection level works.
+    //   2. PendingActionSyncWorker (background) — WorkManager task that can run while the
+    //                                     device screen is off but the device is NOT
+    //                                     locked (WorkManager constraints use CONNECTED
+    //                                     only). The device must be unlocked for
+    //                                     EncryptedSharedPreferences backed by
+    //                                     AES256_GCM (hardware-backed key) to succeed.
+    //   3. VaultStatusWidget (AppWidget) — AppWidget update callbacks run on the main
+    //                                     process, always while the device is unlocked
+    //                                     (AppWidgets are not invoked on a locked screen
+    //                                     on Android). The token is only needed here for
+    //                                     optional authenticated refresh calls.
+    //
+    // Conclusion: unlike iOS (where BackgroundRefreshService and TTLWidget can run
+    // while the device is still locked, requiring AfterFirstUnlock), no Android
+    // component in this app needs token access while the device is locked.
+    // EncryptedSharedPreferences with AES256_GCM uses a hardware-backed key that
+    // is only available after the user has unlocked the device (equivalent to
+    // kSecAttrAccessibleWhenUnlockedThisDeviceOnly on iOS). This IS the least-
+    // privileged option that still satisfies all access requirements above — no
+    // relaxation (analogous to AfterFirstUnlock) is needed on Android.
+    //
+    // If a future component (e.g. a background sync that must run while locked)
+    // is added, revisit this decision and document the new requirement here.
+    // ---------------------------------------------------------------------------
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
@@ -128,5 +161,39 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
             if (value != null) putString("token", value) else remove("token")
         }.apply()
 
-    fun clear() { token = null }
+    // The last FCM token this device registered with the backend, so it can be
+    // unregistered on sign-out even if Firebase doesn't hand out a fresh token then.
+    var pushToken: String?
+        get() = prefs.getString("push_token", null)
+        set(value) = prefs.edit().apply {
+            if (value != null) putString("push_token", value) else remove("push_token")
+        }.apply()
+
+    private var expiresAtEpochMillis: Long?
+        get() = prefs.getLong(KEY_EXPIRES_AT, -1L).takeIf { it >= 0 }
+        set(value) = prefs.edit().apply {
+            if (value != null) putLong(KEY_EXPIRES_AT, value) else remove(KEY_EXPIRES_AT)
+        }.apply()
+
+    // Stores both the bearer token and its expiry from an auth response, so ApiClient can
+    // proactively refresh before the backend would reject the token with a 401 — previously
+    // AuthToken.expiresAt was parsed off the wire and then never read anywhere.
+    fun setSession(authToken: AuthToken) {
+        token = authToken.token
+        expiresAtEpochMillis = runCatching { Instant.parse(authToken.expiresAt).toEpochMilli() }.getOrNull()
+    }
+
+    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean {
+        val expiry = expiresAtEpochMillis ?: return false
+        return Instant.now().plus(threshold).toEpochMilli() >= expiry
+    }
+
+    fun clear() {
+        token = null
+        expiresAtEpochMillis = null
+    }
+
+    private companion object {
+        const val KEY_EXPIRES_AT = "expires_at_epoch_millis"
+    }
 }
