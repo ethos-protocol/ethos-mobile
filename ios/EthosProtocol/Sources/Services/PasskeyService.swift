@@ -112,22 +112,32 @@ final class PasskeyService: NSObject {
     private func performRequest(_ request: ASAuthorizationRequest) async throws -> ASAuthorizationCredential {
         try await withCheckedThrowingContinuation { continuation in
             let controller = ASAuthorizationController(authorizationRequests: [request])
-            let delegate = PasskeyDelegate(continuation: continuation)
+            let delegate = makeRetainedDelegate(for: controller, continuation: continuation)
             controller.delegate = delegate
             controller.performRequests()
-            objc_setAssociatedObject(controller, "delegate", delegate, .OBJC_ASSOCIATION_RETAIN)
         }
     }
 }
 
-private class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate {
+// `internal` (not `private`): tests construct/inspect this via `@testable import` to
+// verify the delegate-retention behavior above without invoking real system UI.
+class PasskeyDelegate: NSObject, ASAuthorizationControllerDelegate {
     let continuation: CheckedContinuation<ASAuthorizationCredential, Error>
-    init(continuation: CheckedContinuation<ASAuthorizationCredential, Error>) { self.continuation = continuation }
+    private let onComplete: () -> Void
+
+    init(continuation: CheckedContinuation<ASAuthorizationCredential, Error>, onComplete: @escaping () -> Void) {
+        self.continuation = continuation
+        self.onComplete = onComplete
+    }
+
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         continuation.resume(returning: authorization.credential)
+        onComplete()
     }
+
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         continuation.resume(throwing: error)
+        onComplete()
     }
 }
 

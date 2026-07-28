@@ -1,4 +1,6 @@
 import XCTest
+import AuthenticationServices
+import SwiftUI
 @testable import EthosProtocol
 @testable import TTLWidget
 
@@ -72,6 +74,12 @@ final class KeychainServiceTests: XCTestCase {
         KeychainService.shared.deleteToken()
         XCTAssertNil(KeychainService.shared.loadToken())
     }
+
+    func test_deleteCredentialID_returnsNil() {
+        KeychainService.shared.saveCredentialID("cred-to-delete")
+        KeychainService.shared.deleteCredentialID()
+        XCTAssertNil(KeychainService.shared.loadCredentialID())
+    }
 }
 
 final class OfflineCacheTests: XCTestCase {
@@ -85,6 +93,23 @@ final class OfflineCacheTests: XCTestCase {
     func test_load_missingKey_returnsNil() {
         XCTAssertNil(OfflineCache.shared.load(for: "nonexistent-key-\(UUID())"))
     }
+
+    func test_clearAll_removesPreviouslyCachedData() {
+        let data = Data("residual-vault-data".utf8)
+        OfflineCache.shared.save(data, for: "clear-all-test-key")
+        XCTAssertNotNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+
+        OfflineCache.shared.clearAll()
+
+        XCTAssertNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+    }
+
+    func test_clearAll_allowsSavingAgainAfterwards() {
+        OfflineCache.shared.clearAll()
+        let data = Data("post-clear-data".utf8)
+        OfflineCache.shared.save(data, for: "post-clear-key")
+        XCTAssertEqual(OfflineCache.shared.load(for: "post-clear-key"), data)
+    }
 }
 
 final class Base64URLTests: XCTestCase {
@@ -97,6 +122,64 @@ final class Base64URLTests: XCTestCase {
         XCTAssertFalse(encoded.contains("="))
         let decoded = Data(base64URLEncoded: encoded)
         XCTAssertEqual(decoded, original)
+    }
+}
+
+// MARK: - #9 Passkey Delegate Retention Tests
+
+final class PasskeyDelegateRetentionTests: XCTestCase {
+
+    private enum DummyError: Error { case simulatedFailure }
+
+    private func makeAssertionController(challengeByte: UInt8) -> ASAuthorizationController {
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
+        let request = provider.createCredentialAssertionRequest(challenge: Data([challengeByte]))
+        return ASAuthorizationController(authorizationRequests: [request])
+    }
+
+    // Regression test for the objc_setAssociatedObject retention hack: two requests in
+    // flight at once must each keep their own delegate alive and release only their own
+    // entry when they complete, never the other's.
+    func test_concurrentPerformRequests_dontClobberEachOthersDelegate() async throws {
+        let service = PasskeyService.shared
+        let controllerA = makeAssertionController(challengeByte: 0x01)
+        let controllerB = makeAssertionController(challengeByte: 0x02)
+
+        let taskA = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerA, continuation: continuation)
+                controllerA.delegate = delegate
+            }
+        }
+        let taskB = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerB, continuation: continuation)
+                controllerB.delegate = delegate
+            }
+        }
+
+        // Give both tasks a chance to register their delegate before either completes.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(service.activeDelegateCount, 2, "Both concurrent requests should retain their own delegate")
+
+        // Simulate the system callback for A only — B's delegate/continuation must survive.
+        (controllerA.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerA, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskA.value
+            XCTFail("Expected taskA to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 1, "Completing A's request must release only A's delegate")
+
+        (controllerB.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerB, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskB.value
+            XCTFail("Expected taskB to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 0, "Completing B's request should release its delegate")
     }
 }
 
@@ -613,6 +696,13 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         let a = BackgroundRefreshService.shared
         let b = BackgroundRefreshService.shared
         XCTAssertTrue(a === b)
+    }
+
+    // MARK: - #10 Clear Local State on Sign-Out
+
+    func test_cancelScheduledRefresh_doesNotThrow() {
+        BackgroundRefreshService.shared.scheduleAppRefresh()
+        XCTAssertNoThrow(BackgroundRefreshService.shared.cancelScheduledRefresh())
     }
 
     func test_scheduleTTLWarning_doesNotThrow_forActiveVault() throws {

@@ -101,4 +101,70 @@ final class NotificationServiceHostedTests: XCTestCase {
             XCTAssertFalse(trigger.repeats, "TTL warning should not repeat")
         }
     }
+
+    func test_removeAllPendingNotifications_clearsScheduledRequests() async {
+        NotificationService.shared.scheduleTTLWarning(vaultID: "vault-to-clear-\(UUID().uuidString)", ttlRemaining: 3_600)
+
+        NotificationService.shared.removeAllPendingNotifications()
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        XCTAssertTrue(pendingRequests.isEmpty, "No notifications should remain pending after removeAllPendingNotifications()")
+    }
+}
+
+// MARK: - #10 Sign-Out Local State Clearing Tests (Hosted)
+//
+// AuthStore.signOut() touches Keychain and UNUserNotificationCenter, both of which need a
+// real app host process (see the notes above) — so these run here rather than in the bare
+// SPM bundle in Tests/EthosProtocolTests.swift.
+
+@MainActor
+final class SignOutClearsLocalStateTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        ICloudSyncService.shared.isSyncEnabled = false
+    }
+
+    func test_signOut_clearsCredentialID() {
+        KeychainService.shared.saveCredentialID("cred-to-clear")
+        AuthStore().signOut()
+        XCTAssertNil(KeychainService.shared.loadCredentialID())
+    }
+
+    func test_signOut_clearsOfflineCache_noResidualVaultDataReadable() {
+        let cacheKey = "https://api.ethos-protocol.app/v1/vaults"
+        OfflineCache.shared.save(Data(#"[{"id":"vault-1","balance":50000000}]"#.utf8), for: cacheKey)
+        XCTAssertNotNil(OfflineCache.shared.load(for: cacheKey), "Precondition: cached vault data should be present before sign-out")
+
+        AuthStore().signOut()
+
+        XCTAssertNil(OfflineCache.shared.load(for: cacheKey), "Vault data cached before sign-out must not be readable afterward")
+    }
+
+    func test_signOut_clearsICloudLocalAssociation() {
+        ICloudSyncService.shared.save(vaultID: "vault-to-forget", credentialID: "cred-to-forget")
+        AuthStore().signOut()
+        XCTAssertNil(ICloudSyncService.shared.credentialID(for: "vault-to-forget"))
+    }
+
+    func test_signOut_clearsPendingNotifications() async {
+        NotificationService.shared.scheduleTTLWarning(vaultID: "vault-signout-\(UUID().uuidString)", ttlRemaining: 3_600)
+
+        AuthStore().signOut()
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        XCTAssertTrue(pendingRequests.isEmpty, "No notifications from the signed-out session should remain pending")
+    }
+
+    func test_signOut_resetsLockState() {
+        let store = AuthStore()
+        store.isAuthenticated = true
+        store.isLocked = true
+
+        store.signOut()
+
+        XCTAssertFalse(store.isLocked)
+        XCTAssertFalse(store.isAuthenticated)
+    }
 }
