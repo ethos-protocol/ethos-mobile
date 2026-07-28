@@ -17,7 +17,7 @@
              WorkerFactory (on-demand WorkManager initialization), so the default
              androidx.startup WorkManagerInitializer must be disabled, otherwise WorkManager
              ends up initialized twice — once automatically without the Hilt factory, and
-             once on-demand — and Hilt-injected Workers (CheckInSyncWorker,
+             once on-demand — and Hilt-injected Workers (PendingActionSyncWorker,
              VaultWidgetUpdateWorker) can fail to be constructed. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
