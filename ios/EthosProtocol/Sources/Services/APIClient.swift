@@ -123,6 +123,18 @@ public final class APIClient {
         let _: EmptyBody = try await post(path: "/auth/register", body: body)
     }
 
+    /// Links a newly created passkey to an existing vault-owning account, for a user who
+    /// lost their original device. `existingAccountProof` is verified server-side before
+    /// the credential is attached, so this cannot be used to add an unauthorized passkey.
+    func linkAdditionalPasskey(existingAccountProof proof: AccountRecoveryProof, credentialID: String, publicKey: String, clientDataJSON: String) async throws {
+        let body = LinkPasskeyRequest(email: proof.email,
+                                       backupCode: proof.backupCode,
+                                       credentialID: credentialID,
+                                       publicKey: publicKey,
+                                       clientDataJSON: clientDataJSON)
+        let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"
@@ -422,5 +434,21 @@ private struct CreateVaultRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case beneficiary
         case checkInInterval = "check_in_interval"
+    }
+}
+
+private struct LinkPasskeyRequest: Encodable {
+    let email: String
+    let backupCode: String
+    let credentialID: String
+    let publicKey: String
+    let clientDataJSON: String
+
+    enum CodingKeys: String, CodingKey {
+        case email
+        case backupCode = "backup_code"
+        case credentialID = "credential_id"
+        case publicKey = "public_key"
+        case clientDataJSON = "client_data_json"
     }
 }

@@ -244,3 +244,93 @@ final class APIClientOfflineCacheTests: XCTestCase {
         XCTAssertFalse(deleteIsCacheable, "DELETE requests should NOT be marked as cacheable")
     }
 }
+
+// MARK: - #6/#8 Auth Challenge & Passkey Recovery Tests
+
+final class APIClientAuthTests: XCTestCase {
+
+    var client: APIClient!
+    let challengeURL = "https://api.ethos-protocol.app/v1/auth/challenge"
+    let linkURL = "https://api.ethos-protocol.app/v1/auth/recover/link"
+
+    override func setUpWithError() throws {
+        super.setUp()
+        MockURLProtocol.reset()
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        client = APIClient.makeTestInstance(session: session)
+    }
+
+    override func tearDownWithError() throws {
+        MockURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private func mockResponse(for url: String, status: Int = 200, body: Data) {
+        let response = HTTPURLResponse(url: URL(string: url)!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+        MockURLProtocol.mockResponses[url] = (data: body, response: response)
+    }
+
+    // MARK: getChallenge existingCredentialIds
+
+    func test_getChallenge_decodesExistingCredentialIds() async throws {
+        let json = """
+        {"challenge": "AAAA", "expires_at": "2026-01-01T00:00:00Z", "existing_credential_ids": ["BBBB", "CCCC"]}
+        """.data(using: .utf8)!
+        mockResponse(for: challengeURL, body: json)
+
+        let challenge = try await client.getChallenge()
+
+        XCTAssertEqual(challenge.existingCredentialIds, ["BBBB", "CCCC"])
+    }
+
+    func test_getChallenge_missingExistingCredentialIds_defaultsToEmptyArray() async throws {
+        let json = """
+        {"challenge": "AAAA", "expires_at": "2026-01-01T00:00:00Z"}
+        """.data(using: .utf8)!
+        mockResponse(for: challengeURL, body: json)
+
+        let challenge = try await client.getChallenge()
+
+        XCTAssertEqual(challenge.existingCredentialIds, [])
+    }
+
+    // MARK: linkAdditionalPasskey (recovery-then-authenticate path)
+
+    func test_linkAdditionalPasskey_postsRecoveryProofAndCredentialToRecoveryEndpoint() async throws {
+        mockResponse(for: linkURL, body: Data("{}".utf8))
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+        try await client.linkAdditionalPasskey(
+            existingAccountProof: proof,
+            credentialID: "cred-1",
+            publicKey: "pubkey-1",
+            clientDataJSON: "client-data-1"
+        )
+
+        XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == linkURL })
+    }
+
+    func test_linkAdditionalPasskey_serverRejection_throwsServerError() async throws {
+        let errorBody = """
+        {"error": "backup code did not match"}
+        """.data(using: .utf8)!
+        mockResponse(for: linkURL, status: 400, body: errorBody)
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "wrong-code")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw for a rejected recovery proof")
+        } catch APIError.serverError(let message) {
+            XCTAssertEqual(message, "backup code did not match")
+        }
+    }
+}
