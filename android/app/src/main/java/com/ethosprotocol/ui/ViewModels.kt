@@ -1,12 +1,15 @@
 package com.ethosprotocol.ui
-package com.ethosprotocol.ui
 
 import android.app.Activity
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.CreateVaultRequest
@@ -16,44 +19,78 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
-import com.ethosprotocol.models.VaultPage
-import com.ethosprotocol.services.CheckInSyncWorker
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
-import com.ethosprotocol.services.PendingCheckIn
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingAction
+import com.ethosprotocol.services.PendingActionDao
+import com.ethosprotocol.services.PendingActionSyncWorker
+import com.ethosprotocol.services.PendingActionType
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 // --- Auth ViewModel ---
 
 data class AuthUiState(
     val isAuthenticated: Boolean = false,
+    val isLocked: Boolean = false,
     val isLoading: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    // Set once initiateRecovery() succeeds — its presence means a recovery code has been
+    // sent and the UI should show the "finish recovery" step.
+    val recoveryToken: String? = null
 )
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
+    private val apiClient: ApiClient,
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
+    private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
-    private val pendingCheckInDao: PendingCheckInDao
+    private val pendingActionDao: PendingActionDao
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
     val state = _state.asStateFlow()
 
+    private var backgroundedAtMillis: Long? = null
+
+    // Default re-lock timeout — kept in sync with iOS's equivalent (#12) so both
+    // platforms re-prompt biometrics after the same amount of backgrounded time.
+    var relockTimeoutMillis: Long = DEFAULT_RELOCK_TIMEOUT_MILLIS
+
+    /** Called from MainActivity.onStop — records when the app left the foreground. */
+    fun onAppBackgrounded(now: Long = System.currentTimeMillis()) {
+        if (_state.value.isAuthenticated) backgroundedAtMillis = now
+    }
+
+    /** Called from MainActivity.onStart — locks the session if it was backgrounded past the timeout. */
+    fun onAppForegrounded(now: Long = System.currentTimeMillis()) {
+        val backgroundedAt = backgroundedAtMillis ?: return
+        backgroundedAtMillis = null
+        if (_state.value.isAuthenticated && now - backgroundedAt >= relockTimeoutMillis) {
+            _state.update { it.copy(isLocked = true) }
+        }
+    }
+
+    fun unlock() {
+        _state.update { it.copy(isLocked = false) }
+    }
+
     fun signIn(activity: Activity) = viewModelScope.launch {
+        if (_state.value.cooldownRemainingSeconds > 0) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
             .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
-            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+            .onFailure { e -> handleAuthFailure(e) }
     }
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
@@ -62,16 +99,30 @@ class AuthViewModel @Inject constructor(
         // backend, so there's no need to run a second sign-in ceremony here.
         passkeyService.register(activity, username)
             .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
-            .onFailure { e -> _state.update { it.copy(isLoading = false, error = e.message) } }
+            .onFailure { e -> handleAuthFailure(e) }
     }
 
     fun signOut() = viewModelScope.launch {
+        // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
+        // tokenProvider.token when building the request, so clearing first would send
+        // the delete unauthenticated. Best-effort: sign-out proceeds locally either way.
+        tokenProvider.pushToken?.let { apiClient.unregisterPushToken(it) }
         tokenProvider.clear()
-        // Clear pending check-ins: queued check-ins are tied to the authenticated session and
+        tokenProvider.pushToken = null
+        // Clear pending actions: queued actions are tied to the authenticated session and
         // should not persist or sync after sign-out (they belong to the previous user's vaults).
-        pendingCheckInDao.deleteAll()
-        notificationHelper.cancelQueuedCheckIn()
+        pendingActionDao.deleteAll()
+        notificationHelper.cancelQueuedActions()
         _state.update { it.copy(isAuthenticated = false) }
+    }
+
+    private fun handleAuthFailure(e: Throwable) {
+        if (BuildConfig.DEBUG) Log.w(TAG, "auth failed", e)
+        _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
+    }
+
+    companion object {
+        private const val TAG = "AuthViewModel"
     }
 }
 
@@ -202,26 +253,40 @@ class TwoFactorViewModel @Inject constructor(
 data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
     val error: String? = null,
-    val isOffline: Boolean = false
+    val isOffline: Boolean = false,
+    val beneficiaryUpdated: Boolean = false
 )
 
 @HiltViewModel
 class VaultViewModel @Inject constructor(
     private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
-    private val pendingCheckInDao: PendingCheckInDao,
+    private val pendingActionDao: PendingActionDao,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
 
+    private var nextOffset = 0
+    private val eventJobs = mutableMapOf<String, Job>()
+
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.listVaults()) {
+        when (val result = apiClient.listVaults(offset = 0, limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
-                _state.update { it.copy(vaults = result.data, isLoading = false, isOffline = false) }
+                nextOffset = result.data.nextOffset ?: result.data.vaults.size
+                _state.update {
+                    it.copy(
+                        vaults = result.data.vaults,
+                        isLoading = false,
+                        isOffline = false,
+                        hasMore = result.data.hasMore
+                    )
+                }
+                subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
                 _state.update { it.copy(isLoading = false, isOffline = true) }
@@ -265,15 +330,25 @@ class VaultViewModel @Inject constructor(
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
         when (val result = apiClient.checkIn(vaultId)) {
-            is ApiResult.Success -> load()
+            is ApiResult.Success -> refreshSingle(vaultId)
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> {
-                pendingCheckInDao.insert(PendingCheckIn(vaultId = vaultId, queuedAt = System.currentTimeMillis()))
-                val queued = pendingCheckInDao.getAll()
-                notificationHelper.showQueuedCheckIn(queued.size)
-                CheckInSyncWorker.schedule(context)
-                _state.update { it.copy(error = "Offline — check-in queued and will retry automatically") }
-            }
+            ApiResult.NetworkUnavailable -> queueAction(
+                PendingAction(
+                    type = PendingActionType.CHECK_IN,
+                    vaultId = vaultId,
+                    queuedAt = System.currentTimeMillis(),
+                    dedupeKey = "check_in:$vaultId"
+                )
+            )
+        }
+    }
+
+    /** Refetches a single vault and patches it into the existing list, instead of reloading all vaults. */
+    fun refreshSingle(vaultId: String) = viewModelScope.launch {
+        when (val result = apiClient.getVault(vaultId)) {
+            is ApiResult.Success -> updateVaultInPlace(result.data)
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
         }
     }
 
@@ -282,8 +357,22 @@ class VaultViewModel @Inject constructor(
         when (val result = apiClient.createVault(req)) {
             is ApiResult.Success -> load()
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+            ApiResult.NetworkUnavailable -> queueAction(
+                PendingAction(
+                    type = PendingActionType.CREATE_VAULT,
+                    payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
+                    queuedAt = System.currentTimeMillis()
+                )
+            )
         }
+    }
+
+    private suspend fun queueAction(action: PendingAction) {
+        pendingActionDao.insert(action)
+        val queued = pendingActionDao.getAll()
+        notificationHelper.showQueuedActions(queued.size)
+        PendingActionSyncWorker.schedule(context)
+        _state.update { it.copy(error = "Offline — request queued and will retry automatically") }
     }
 }
 

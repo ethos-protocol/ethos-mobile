@@ -51,6 +51,7 @@ The server must:
 | POST | `/auth/verify` | Verify passkey assertion, returns `AuthToken` |
 | POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
 | POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
+| POST | `/auth/recover/link` | Link a new passkey to an existing account, once identity is proven via email/backup code ("lost your device" recovery) |
 
 ### Vaults
 | Method | Path | Description |
@@ -65,6 +66,28 @@ The server must:
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
 | POST | `/vaults/{id}/accept` | Beneficiary accepts vault (token required — see §Beneficiary Acceptance) |
 
+#### List Pagination (`GET /vaults`)
+
+Cursor-based. The response body stays a bare JSON array of `Vault` (unchanged,
+backward-compatible with clients that don't send pagination params) — the cursor
+for the next page is returned via a response header instead of wrapping the body.
+
+Request query parameters (both optional):
+
+| Param | Description |
+|-------|-------------|
+| `cursor` | Opaque cursor returned by the previous page's `X-Next-Cursor` response header. Omit to request the first page. |
+| `limit` | Max vaults to return in this page. Server may cap this. Client default: 50. |
+
+Response headers:
+
+| Header | Description |
+|--------|-------------|
+| `X-Next-Cursor` | Opaque cursor for the next page. Absent (or empty) when this is the last page. |
+
+Cursors are opaque — clients must not parse or construct them, only round-trip
+the value returned by `X-Next-Cursor` back as the `cursor` query param.
+
 ### Notifications
 | Method | Path | Description |
 |--------|------|-------------|
@@ -72,7 +95,23 @@ The server must:
 | DELETE | `/notifications/register` | Unregister push token |
 
 ## WebSocket
-`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events
+`wss://api.ethos-protocol.app/v1/ws?vault_id={id}` — real-time vault events for
+a single vault. Requires the same `Authorization: Bearer <jwt>` header as REST
+requests, sent on the handshake request.
+
+Server → client messages are JSON text frames:
+
+```json
+{ "type": "vault_updated", "vault": { /* full Vault object, see below */ } }
+```
+
+`type` is open-ended (clients should ignore unrecognized values instead of
+erroring, to allow adding new event types without breaking older clients).
+
+Clients are expected to reconnect with backoff on an unexpected drop, and to
+fall back to their existing polling mechanism (periodic `GET /vaults/{id}`) if
+the socket can't be established after a few attempts — this stream is a
+latency optimization, not the source of truth.
 
 Authentication: pass the JWT as a query parameter or `Authorization` header on the initial
 handshake request. The server closes the connection with code 4401 if authentication fails.
@@ -270,8 +309,17 @@ GET /vaults?limit={n}&after={cursor}
 
 ### AuthChallenge
 ```json
-{ "challenge": "base64url", "expires_at": "ISO8601" }
+{
+  "challenge": "base64url",
+  "expires_at": "ISO8601",
+  "existing_credential_ids": ["base64url"]
+}
 ```
+`existing_credential_ids` lists the credential IDs already registered to the account this
+challenge is for (empty for a brand-new account). Clients pass these back as
+`excludeCredentials`/`excludedCredentials` on the registration request so the platform
+authenticator refuses to create a second passkey for an account that already has one on
+that device.
 
 ### AuthToken
 ```json
@@ -293,6 +341,22 @@ proactive refresh against `expires_at`, rather than waiting to be rejected with 
 No request body. Requires the current (possibly near-expiry, not-yet-expired) `Authorization:
 Bearer <jwt>` header. Response: `AuthToken`. `401` if the current token is no longer valid — the
 client falls back to its normal delete-and-reauth behavior in that case.
+
+### RecoverAccessLinkRequest
+```json
+{
+  "email": "string",
+  "backup_code": "string",
+  "credential_id": "base64url",
+  "public_key": "base64url",
+  "client_data_json": "base64url"
+}
+```
+`email`/`backup_code` prove ownership of the existing account; the server verifies them
+before attaching the new passkey (`credential_id`/`public_key`/`client_data_json`, from a
+normal WebAuthn registration ceremony against a `/auth/challenge` obtained for this
+account) rather than issuing a session directly. Clients call `POST /auth/verify`
+afterwards to authenticate with the newly linked passkey.
 
 ### BeneficiaryUpdateRequest
 ```json

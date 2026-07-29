@@ -8,6 +8,7 @@ final class KeychainService {
     private let tokenKey = "com.ethosprotocol.auth_token"
     private let tokenExpiryKey = "com.ethosprotocol.auth_token_expiry"
     private let credentialKey = "com.ethosprotocol.passkey_credential"
+    private let pushTokenKey = "com.ethosprotocol.push_token"
 
     /// `expiresAt`, when provided, is persisted alongside the token so AuthStore can
     /// schedule a proactive refresh (#3) against `AuthToken.expiresAt` even across an
@@ -45,6 +46,21 @@ final class KeychainService {
 
     func loadCredentialID() -> String? {
         load(forKey: credentialKey)
+    }
+
+    /// Tracks the device push token last successfully registered with the server,
+    /// so AuthStore.signOut() knows what to unregister without needing a fresh
+    /// UIApplication device-token callback at sign-out time.
+    func savePushToken(_ token: String) {
+        save(token, forKey: pushTokenKey)
+    }
+
+    func loadPushToken() -> String? {
+        load(forKey: pushTokenKey)
+    }
+
+    func deletePushToken() {
+        delete(forKey: pushTokenKey)
     }
 
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {

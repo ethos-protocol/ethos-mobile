@@ -13,6 +13,7 @@ import androidx.work.*
 import com.ethosprotocol.R
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
+import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -103,9 +104,16 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val result = apiClient.listVaults()
+        val result = apiClient.listVaults(limit = 1)
         if (result is ApiResult.Success) {
-            val vault = result.data.firstOrNull() ?: return Result.success()
+            // Pick the active vault with the lowest ttlRemaining — the same
+            // "most urgent vault" selection that iOS TTLTimelineProvider uses
+            // (min(by:) on ttlRemaining). Using firstOrNull() would show a
+            // different vault than iOS for accounts with multiple vaults.
+            val vault = result.data
+                .filter { it.status == VaultStatus.active }
+                .minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
+                ?: return Result.success()
             val ttl = formatTtl(vault.ttlRemaining)
             VaultStatusWidget.saveVaultData(
                 applicationContext,

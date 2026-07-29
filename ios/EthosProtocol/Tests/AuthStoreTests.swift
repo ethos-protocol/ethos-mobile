@@ -28,7 +28,7 @@ final class AuthStoreSingleCeremonyTests: XCTestCase {
         XCTAssertNil(store.error)
         XCTAssertEqual(authenticateCallCount, 0,
                        "register() must not trigger a second, redundant passkey ceremony (#2)")
-        store.signOut()
+        await store.signOut()
     }
 
     func test_register_failure_setsError_neverAuthenticates() async {
@@ -70,7 +70,7 @@ final class AuthStoreTokenRefreshTests: XCTestCase {
         XCTAssertTrue(store.isAuthenticated)
         XCTAssertGreaterThanOrEqual(refreshCallCount, 1,
                                     "A token expiring imminently must trigger a proactive refresh (#3)")
-        store.signOut()
+        await store.signOut()
     }
 
     func test_refreshFails_withUnauthorized_fallsBackToDeleteAndReauth() async {
@@ -97,6 +97,6 @@ final class AuthStoreTokenRefreshTests: XCTestCase {
 
         XCTAssertTrue(store.isAuthenticated,
                       "A transient (non-auth) refresh failure must not sign the user out — only an outright rejection should (#3)")
-        store.signOut()
+        await store.signOut()
     }
 }

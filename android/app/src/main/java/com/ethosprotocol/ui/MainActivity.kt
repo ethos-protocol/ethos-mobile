@@ -5,13 +5,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
@@ -20,6 +25,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
@@ -41,6 +47,8 @@ class MainActivity : FragmentActivity() {
     private val deepLinkViewModel: DeepLinkViewModel by viewModels()
 
     private var showPermissionRationale by mutableStateOf(false)
+
+    private val authVm: AuthViewModel by viewModels()
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -170,6 +178,20 @@ private fun AppNavigation(
     val navController = rememberNavController()
     val authVm: AuthViewModel = hiltViewModel()
     val authState by authVm.state.collectAsStateWithLifecycle()
+    val activity = LocalContext.current as FragmentActivity
+
+    fun promptUnlock() {
+        BiometricHelper(activity).authenticate(
+            title = "Unlock Ethos-Protocol",
+            subtitle = "Confirm it's you to continue",
+            onSuccess = { authVm.unlock() },
+            onError = { /* stays locked — the overlay's button lets the user retry */ }
+        )
+    }
+
+    LaunchedEffect(authState.isLocked) {
+        if (authState.isLocked) promptUnlock()
+    }
 
     LaunchedEffect(authState.isAuthenticated) {
         if (authState.isAuthenticated) navController.navigate("vaults") { popUpTo("auth") { inclusive = true } }
@@ -193,10 +215,29 @@ private fun AppNavigation(
         }
     }
 
-    NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
-        composable("auth") { AuthScreen(vm = authVm) }
-        composable("vaults") {
-            VaultListScreen(onVaultClick = { /* navigate to detail */ })
+    Box(Modifier.fillMaxSize()) {
+        NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
+            composable("auth") { AuthScreen(vm = authVm) }
+            composable("vaults") {
+                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+            }
+            composable("accept/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                BeneficiaryAcceptanceScreen(
+                    vaultId = vaultId,
+                    onAccepted = { navController.popBackStack() },
+                    onDecline = { navController.popBackStack() }
+                )
+            }
+            composable("vault/{vaultId}/{action}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                val action = backStack.arguments?.getString("action") ?: return@composable
+                VaultDeepLinkScreen(
+                    vaultId = vaultId,
+                    actionPath = action,
+                    onDone = { navController.popBackStack() }
+                )
+            }
         }
         composable("accept/{vaultId}/{token}") { backStack ->
             val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

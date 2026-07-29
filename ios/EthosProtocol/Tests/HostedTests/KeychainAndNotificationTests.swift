@@ -27,6 +27,31 @@ final class KeychainServiceHostedTests: XCTestCase {
     }
 }
 
+// MARK: - #24 Sign-Out Push Token Unregistration Tests with Real Host
+
+@MainActor
+final class AuthStoreSignOutHostedTests: XCTestCase {
+
+    func test_signOut_unregistersPersistedPushToken() async {
+        // Runs in the hosted EthosProtocolTests target, which has real Keychain
+        // access — see AuthStoreSignOutTests in the SPM bundle for the same
+        // assertions, skipped there in CI.
+        KeychainService.shared.saveToken("auth-token-abc")
+        KeychainService.shared.savePushToken("push-token-abc")
+
+        let store = AuthStore()
+        var unregisteredToken: String?
+        store.unregisterPushToken = { token in unregisteredToken = token }
+
+        await store.signOut()
+
+        XCTAssertEqual(unregisteredToken, "push-token-abc")
+        XCTAssertNil(KeychainService.shared.loadPushToken())
+        XCTAssertNil(KeychainService.shared.loadToken())
+        XCTAssertFalse(store.isAuthenticated)
+    }
+}
+
 // MARK: - Notification Tests with Real Host
 
 final class NotificationServiceHostedTests: XCTestCase {
@@ -75,5 +100,71 @@ final class NotificationServiceHostedTests: XCTestCase {
             XCTAssertEqual(trigger.timeInterval, 5, "TTL warning should trigger in 5 seconds")
             XCTAssertFalse(trigger.repeats, "TTL warning should not repeat")
         }
+    }
+
+    func test_removeAllPendingNotifications_clearsScheduledRequests() async {
+        NotificationService.shared.scheduleTTLWarning(vaultID: "vault-to-clear-\(UUID().uuidString)", ttlRemaining: 3_600)
+
+        NotificationService.shared.removeAllPendingNotifications()
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        XCTAssertTrue(pendingRequests.isEmpty, "No notifications should remain pending after removeAllPendingNotifications()")
+    }
+}
+
+// MARK: - #10 Sign-Out Local State Clearing Tests (Hosted)
+//
+// AuthStore.signOut() touches Keychain and UNUserNotificationCenter, both of which need a
+// real app host process (see the notes above) — so these run here rather than in the bare
+// SPM bundle in Tests/EthosProtocolTests.swift.
+
+@MainActor
+final class SignOutClearsLocalStateTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        ICloudSyncService.shared.isSyncEnabled = false
+    }
+
+    func test_signOut_clearsCredentialID() async {
+        KeychainService.shared.saveCredentialID("cred-to-clear")
+        await AuthStore().signOut()
+        XCTAssertNil(KeychainService.shared.loadCredentialID())
+    }
+
+    func test_signOut_clearsOfflineCache_noResidualVaultDataReadable() async {
+        let cacheKey = "https://api.ethos-protocol.app/v1/vaults"
+        OfflineCache.shared.save(Data(#"[{"id":"vault-1","balance":50000000}]"#.utf8), for: cacheKey)
+        XCTAssertNotNil(OfflineCache.shared.load(for: cacheKey), "Precondition: cached vault data should be present before sign-out")
+
+        await AuthStore().signOut()
+
+        XCTAssertNil(OfflineCache.shared.load(for: cacheKey), "Vault data cached before sign-out must not be readable afterward")
+    }
+
+    func test_signOut_clearsICloudLocalAssociation() async {
+        ICloudSyncService.shared.save(vaultID: "vault-to-forget", credentialID: "cred-to-forget")
+        await AuthStore().signOut()
+        XCTAssertNil(ICloudSyncService.shared.credentialID(for: "vault-to-forget"))
+    }
+
+    func test_signOut_clearsPendingNotifications() async {
+        NotificationService.shared.scheduleTTLWarning(vaultID: "vault-signout-\(UUID().uuidString)", ttlRemaining: 3_600)
+
+        await AuthStore().signOut()
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        XCTAssertTrue(pendingRequests.isEmpty, "No notifications from the signed-out session should remain pending")
+    }
+
+    func test_signOut_resetsLockState() async {
+        let store = AuthStore()
+        store.isAuthenticated = true
+        store.isLocked = true
+
+        await store.signOut()
+
+        XCTAssertFalse(store.isLocked)
+        XCTAssertFalse(store.isAuthenticated)
     }
 }

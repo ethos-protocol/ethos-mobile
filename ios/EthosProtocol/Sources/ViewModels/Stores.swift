@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SwiftUI
 
 // Runs `mutation` only if the current Task hasn't been cancelled. Guards
 // @Published/@State writes that happen after an `await` — if whatever launched
@@ -16,13 +17,21 @@ func ifNotCancelled(_ mutation: () -> Void) {
 final class AuthStore: ObservableObject {
     @Published var isAuthenticated = false
     @Published var isLoading = false
-    @Published var error: String?
+    @Published var error: ErrorPresentation?
+    @Published var isLocked = false
+
+    // Injected for testing; defaults to the real APIClient call. See
+    // BackgroundRefreshService.vaultListProvider for the same pattern.
+    var unregisterPushToken: (String) async throws -> Void = { token in
+        try await APIClient.shared.unregisterPushToken(token)
+    }
 
     // How long before AuthToken.expiresAt to proactively refresh (#3), and how long to
     // wait before retrying after a transient (non-auth) refresh failure.
     private let refreshLeadTime: TimeInterval = 60
     private let refreshRetryDelay: TimeInterval = 30
     private var refreshTask: Task<Void, Never>?
+    private var backgroundedAt: Date?
 
     // Injectable seams for testing (mirrors BackgroundRefreshService.vaultListProvider):
     // ASAuthorizationController-driven ceremonies can't run in a unit test, so AuthStore's
@@ -49,7 +58,7 @@ final class AuthStore: ObservableObject {
                 scheduleRefresh(before: token.expiresAt)
             }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         // Unlike the writes above, always reset regardless of cancellation: it's
         // a loading-spinner flag, not stale request data, and leaving it true
@@ -71,16 +80,48 @@ final class AuthStore: ObservableObject {
                 scheduleRefresh(before: token.expiresAt)
             }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
 
-    func signOut() {
+    func signOut() async {
         refreshTask?.cancel()
         refreshTask = nil
+        // Unregister before dropping the auth token: the request needs the
+        // still-valid Bearer token to authenticate, or the server rejects it.
+        if let pushToken = KeychainService.shared.loadPushToken() {
+            try? await unregisterPushToken(pushToken)
+            KeychainService.shared.deletePushToken()
+        }
         KeychainService.shared.deleteToken()
+        // Ties into #10: a subsequent user signing in on the same device must never be served
+        // the previous user's cached vault data while offline.
+        OfflineCache.shared.clearAll()
         isAuthenticated = false
+        isLocked = false
+        backgroundedAt = nil
+    }
+
+    /// Called from RootView's `.onChange(of: scenePhase)`. Records when the app leaves the
+    /// foreground and, once it returns, re-locks the vault behind a fresh biometric check if
+    /// it was backgrounded for at least the configured re-lock timeout. `now:` is injectable
+    /// so tests can simulate elapsed time without real waits.
+    func handleScenePhaseChange(_ phase: ScenePhase, now: Date = Date()) {
+        switch phase {
+        case .background:
+            backgroundedAt = now
+        case .active:
+            if let backgroundedAt, isAuthenticated,
+               now.timeIntervalSince(backgroundedAt) >= ReLockTimeoutOption.current.seconds {
+                isLocked = true
+            }
+            backgroundedAt = nil
+        case .inactive:
+            break
+        @unknown default:
+            break
+        }
     }
 
     // MARK: - Token refresh (#3)
@@ -123,25 +164,89 @@ final class AuthStore: ObservableObject {
     }
 }
 
+/// How long the app can sit in the background before `AuthStore` requires biometrics again.
+/// Persisted so the choice survives relaunch; configurable from SettingsView.
+enum ReLockTimeoutOption: Int, CaseIterable, Identifiable {
+    case immediately = 0
+    case thirtySeconds = 30
+    case oneMinute = 60
+    case fiveMinutes = 300
+    case fifteenMinutes = 900
+    case never = -1
+
+    var id: Int { rawValue }
+
+    var seconds: TimeInterval {
+        self == .never ? .infinity : TimeInterval(rawValue)
+    }
+
+    var label: String {
+        switch self {
+        case .immediately:    return "Immediately"
+        case .thirtySeconds:  return "30 Seconds"
+        case .oneMinute:      return "1 Minute"
+        case .fiveMinutes:    return "5 Minutes"
+        case .fifteenMinutes: return "15 Minutes"
+        case .never:          return "Never"
+        }
+    }
+
+    private static let userDefaultsKey = "com.ethosprotocol.relock_timeout"
+
+    static var current: ReLockTimeoutOption {
+        get {
+            guard let stored = UserDefaults.standard.object(forKey: userDefaultsKey) as? Int,
+                  let option = ReLockTimeoutOption(rawValue: stored) else {
+                return .oneMinute
+            }
+            return option
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: userDefaultsKey) }
+    }
+}
+
 @MainActor
 final class VaultStore: ObservableObject {
     @Published var vaults: [Vault] = []
     @Published var isLoading = false
-    @Published var error: String?
+    @Published var isLoadingMore = false
+    @Published var error: ErrorPresentation?
     @Published var pendingDeepLink: UniversalLinkRouter.DeepLink?
+    @Published private(set) var nextCursor: String?
+    /// How long ago the currently-displayed `vaults` were fetched, when served from the
+    /// offline cache (APIClient.vaultsCacheAge()) rather than a fresh network response.
+    @Published var vaultsCacheAge: TimeInterval?
+    /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
+    /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
+    @Published private(set) var queuedCheckInCount = 0
+
+    private var eventSocket: VaultEventSocket?
+
+    /// Whether a further page is available for VaultListView's "Load More".
+    var hasMorePages: Bool { nextCursor != nil }
+
+    private func updateQueuedIndicator() {
+        queuedCheckInCount = PendingCheckInStore.shared.count
+    }
 
     func load() async {
         isLoading = true; error = nil
+        if NetworkMonitor.shared.isConnected {
+            await CheckInSyncService.shared.flush()
+            updateQueuedIndicator()
+        }
         do {
-            let fetched = try await APIClient.shared.listVaults()
+            let page = try await APIClient.shared.listVaults()
             ifNotCancelled {
-                vaults = fetched
+                vaults = page.vaults
+                nextCursor = page.nextCursor
                 scheduleReminders()
             }
         } catch APIError.networkUnavailable {
             // Vaults already populated from offline cache via APIClient
+            ifNotCancelled { vaultsCacheAge = APIClient.shared.vaultsCacheAge() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
@@ -165,7 +270,7 @@ final class VaultStore: ObservableObject {
         } catch APIError.networkUnavailable {
             // Served from offline cache — keep whatever is already in `vaults`.
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
@@ -174,8 +279,21 @@ final class VaultStore: ObservableObject {
         do {
             try await APIClient.shared.checkIn(vaultID: vault.id)
             if !Task.isCancelled { await load() }
+        } catch APIError.networkUnavailable {
+            // Offline: queue the check-in durably so it is retried when connectivity
+            // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
+            // + CheckInSyncWorker pattern.
+            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
+            PendingCheckInStore.shared.insert(item)
+            let count = PendingCheckInStore.shared.count
+            NotificationService.shared.showQueuedCheckIn(count: count)
+            CheckInSyncTask.shared.scheduleSync()
+            ifNotCancelled {
+                queuedCheckInCount = count
+                self.error = ErrorPresentation(message: "Offline — check-in queued and will retry automatically")
+            }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -186,7 +304,7 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.deposit(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -198,7 +316,7 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.withdraw(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -210,18 +328,41 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.updateBeneficiary(vaultID: vault.id, newBeneficiary: newBeneficiary)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
-    private func scheduleReminders() {
-        for vault in vaults { scheduleReminder(for: vault) }
+    /// Subscribes to real-time vault events (#20) and applies incoming updates to
+    /// `vaults` in place, so balance/status changes made from another device show up
+    /// without waiting for the next poll.
+    func subscribeToEvents(vaultID: String, socket: VaultEventSocket) {
+        eventSocket = socket
+        socket.onEvent = { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .vaultUpdated(let updated):
+                if let index = self.vaults.firstIndex(where: { $0.id == updated.id }) {
+                    self.vaults[index] = updated
+                }
+            case .unknown:
+                break
+            }
+        }
+        socket.connect(vaultID: vaultID)
     }
 
-    private func scheduleReminder(for vault: Vault) {
-        guard vault.status == .active, let ttl = vault.ttlRemaining else { return }
-        NotificationService.shared.scheduleCheckInReminder(
-            vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl)
+    func unsubscribeFromEvents() {
+        eventSocket?.stop()
+        eventSocket = nil
+    }
+
+    private func scheduleReminders() {
+        for vault in vaults {
+            guard vault.status == .active, let ttl = vault.ttlRemaining else { continue }
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: vault.id, vaultName: vault.id, ttlRemaining: ttl,
+                checkInInterval: vault.checkInInterval)
+        }
     }
 }
 

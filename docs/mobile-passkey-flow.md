@@ -32,12 +32,14 @@ The registration process establishes a new passkey credential for vault owner au
     └────────────┬─────────────────────┘
                  │
     ┌────────────▼──────────────────────┐
-    │ Send attestation + public key     │
-    │ to Ethos-Protocol backend             │
+    │ Send attestation_object           │
+    │ + credential_id + client_data_json│
+    │ to Ethos-Protocol backend         │
     └────────────┬─────────────────────┘
                  │
     ┌────────────▼──────────────────────┐
-    │ Backend stores public key         │
+    │ Backend extracts public key from  │
+    │ attestation_object and stores it  │
     │ for vault owner                   │
     └────────────▼──────────────────────┘
                  │
@@ -280,12 +282,17 @@ suspend fun registerPasskey(vaultId: String) {
             activity = this
         )
         
-        // 5. Extract registration response
+        // 5. Extract registration response and build request
         val credentialResponse = result.credential as PublicKeyCredential
-        val registrationResponse = credentialResponse.registrationResponseJson
-        
-        // 6. Send to backend
-        registerCredentialWithBackend(vaultId, registrationResponse)
+        val json = JSONObject(credentialResponse.registrationResponseJson)
+        // Send `attestation_object` (not `public_key`) — the backend extracts the
+        // COSE public key from the attestation object server-side. (#108)
+        val attestationObject = json.getJSONObject("response").getString("attestationObject")
+        val clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        val credentialId = json.getString("id")
+
+        // 6. Send to backend with correct field names
+        registerCredentialWithBackend(vaultId, credentialId, attestationObject, clientDataJson)
     } catch (e: CreateCredentialException) {
         handleError(e)
     }
@@ -401,22 +408,24 @@ pub async fn verify_registration(
 ) -> Result<PublicKey, Error> {
     // 1. Verify attestation challenge matches what was sent
     verify_challenge(&registration_response.client_data_json)?;
-    
+
     // 2. Verify origin matches expected domain
     verify_origin(&registration_response.client_data_json, "ethos-protocol.app")?;
-    
-    // 3. For optional attestation verification:
-    // Verify the credential is from a trusted authenticator (e.g., Apple/Google)
-    if let Some(attestation_object) = registration_response.attestation_object {
-        verify_attestation(&attestation_object)?;
-    }
-    
-    // 4. Extract and validate public key
-    let public_key = extract_public_key(&registration_response)?;
-    
+
+    // 3. The COSE_Key (RFC 9052) public key was already extracted from the attestation
+    //    object's authData client-side (both platforms — see PasskeyService's
+    //    extractCOSEPublicKey/extractCosePublicKey) and sent under `public_key`, not the
+    //    raw attestation object itself (#1). Decode it directly — no further extraction
+    //    needed here.
+    let public_key = decode_cose_key(&registration_response.public_key)?;
+
+    // 4. Optionally verify authenticator provenance (Apple/Google hardware), if the
+    //    client also submitted the raw attestation object for this purpose.
+    verify_attestation(&registration_response.attestation_object)?;
+
     // 5. Store public key associated with vault owner
     store_passkey(vault_id, public_key.clone()).await?;
-    
+
     Ok(public_key)
 }
 ```

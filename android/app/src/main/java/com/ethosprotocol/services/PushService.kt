@@ -3,6 +3,7 @@ package com.ethosprotocol.services
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.TokenProvider
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -14,8 +15,10 @@ class TTLFirebaseMessagingService : FirebaseMessagingService() {
 
     @Inject lateinit var apiClient: ApiClient
     @Inject lateinit var notificationHelper: NotificationHelper
+    @Inject lateinit var tokenProvider: TokenProvider
 
     override fun onNewToken(token: String) {
+        tokenProvider.pushToken = token
         CoroutineScope(Dispatchers.IO).launch {
             apiClient.registerPushToken(token)
         }

@@ -1,7 +1,7 @@
 import Foundation
 
 // `public` here (and on the members below): TTLWidget.swift's WidgetKit
-// timeline provider reads Vault fields from APIClient.listVaults() across
+// timeline provider reads Vault fields from APIClient.listAllVaults() across
 // a real module boundary in the SPM build (Package.swift declares TTLWidget
 // as a separate target depending on the EthosProtocol target) — internal
 // (the Swift default) is invisible outside the defining module.
@@ -50,6 +50,37 @@ enum VaultAmount {
     }
 }
 
+/// Structured, user-facing presentation of an error — derived from APIError when
+/// possible so decode/server failures surface a concrete next step ("Try Again" /
+/// "Contact Support") instead of a bare message with no available action.
+struct ErrorPresentation: Equatable {
+    let message: String
+    let recoverySuggestion: String?
+    let showsRetry: Bool
+    let showsContactSupport: Bool
+
+    init(_ error: Error) {
+        if let apiError = error as? APIError {
+            message = apiError.errorDescription ?? "Something went wrong"
+            recoverySuggestion = apiError.recoverySuggestion
+            showsRetry = apiError.isRetryable
+            showsContactSupport = apiError.suggestsContactSupport
+        } else {
+            message = error.localizedDescription
+            recoverySuggestion = nil
+            showsRetry = false
+            showsContactSupport = false
+        }
+    }
+
+    init(message: String, recoverySuggestion: String? = nil, showsRetry: Bool = false, showsContactSupport: Bool = false) {
+        self.message = message
+        self.recoverySuggestion = recoverySuggestion
+        self.showsRetry = showsRetry
+        self.showsContactSupport = showsContactSupport
+    }
+}
+
 enum BeneficiaryUpdate {
     /// A new beneficiary address is only valid if it's non-empty (after trimming)
     /// and actually differs from the vault's current beneficiary.
@@ -62,11 +93,36 @@ enum BeneficiaryUpdate {
 struct AuthChallenge: Codable {
     let challenge: String
     let expiresAt: Date
+    // Credential IDs already registered to the account this challenge is for. Empty
+    // when there are none yet (e.g. a brand-new account) or when the server predates
+    // this field — decoded defensively so older/partial responses still parse.
+    let existingCredentialIds: [String]
+
+    init(challenge: String, expiresAt: Date, existingCredentialIds: [String] = []) {
+        self.challenge = challenge
+        self.expiresAt = expiresAt
+        self.existingCredentialIds = existingCredentialIds
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        challenge = try container.decode(String.self, forKey: .challenge)
+        expiresAt = try container.decode(Date.self, forKey: .expiresAt)
+        existingCredentialIds = try container.decodeIfPresent([String].self, forKey: .existingCredentialIds) ?? []
+    }
 }
 
 struct AuthToken: Codable {
     let token: String
     let expiresAt: Date
+}
+
+/// Proof of identity for an existing vault-owning account that lost its original
+/// passkey-holding device, gathered by RecoverAccessView before a new passkey may
+/// be linked to that account (see PasskeyService.linkAdditionalPasskey).
+struct AccountRecoveryProof: Codable {
+    let email: String
+    let backupCode: String
 }
 
 struct PushRegistration: Codable {

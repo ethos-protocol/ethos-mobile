@@ -18,13 +18,39 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         const val CHANNEL_ID = "ttl_reminders"
         const val CHANNEL_NAME = "Check-in Reminders"
         const val QUEUED_CHANNEL_ID = "ttl_queued"
-        const val QUEUED_CHANNEL_NAME = "Queued Check-ins"
+        const val QUEUED_CHANNEL_NAME = "Queued Requests"
         const val QUEUED_NOTIFICATION_ID = 9_001
+
+        // Reserved range for per-vault notification IDs, kept clear of QUEUED_NOTIFICATION_ID
+        // and NO_VAULT_NOTIFICATION_ID below.
+        const val VAULT_NOTIFICATION_ID_RANGE_START = 10_000
+        // Fallback ID for the (practically unused) case where show() is called without a
+        // vaultId — sits below the reserved vault range so it can never collide with it.
+        const val NO_VAULT_NOTIFICATION_ID = 1
+
+        private const val VAULT_NOTIFICATION_IDS_PREFS = "vault_notification_ids"
     }
+
+    // String.hashCode() collides between distinct vault IDs within the 32-bit hash space, which
+    // would make one vault's notification silently replace another's. Instead, persist a stable
+    // assignment of each vault ID to the next free slot in a reserved ID range — two distinct
+    // vault IDs are then guaranteed distinct notification IDs for as long as the mapping lives,
+    // rather than merely "unlikely" to collide.
+    private val vaultNotificationIdPrefs =
+        context.getSharedPreferences(VAULT_NOTIFICATION_IDS_PREFS, Context.MODE_PRIVATE)
 
     init {
         createChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
         createChannel(QUEUED_CHANNEL_ID, QUEUED_CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT)
+    }
+
+    @Synchronized
+    fun notificationIdFor(vaultId: String?): Int {
+        if (vaultId == null) return NO_VAULT_NOTIFICATION_ID
+        vaultNotificationIdPrefs.getInt(vaultId, -1).takeIf { it != -1 }?.let { return it }
+        val id = VAULT_NOTIFICATION_ID_RANGE_START + vaultNotificationIdPrefs.all.size
+        vaultNotificationIdPrefs.edit().putInt(vaultId, id).apply()
+        return id
     }
 
     fun show(title: String, body: String, vaultId: String?) {
@@ -42,25 +68,29 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            // Groups all of a vault's notifications together so they visually cluster even if
+            // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
+            // for replace-vs-append behavior.
+            .setGroup(vaultId ?: "general")
             .build()
 
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.notify(vaultId.hashCode(), notification)
+        nm.notify(notificationIdFor(vaultId), notification)
     }
 
-    fun showQueuedCheckIn(count: Int) {
+    fun showQueuedActions(count: Int) {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pi = PendingIntent.getActivity(context, QUEUED_NOTIFICATION_ID, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val body = if (count == 1) "1 check-in will be submitted when back online"
-                   else "$count check-ins will be submitted when back online"
+        val body = if (count == 1) "1 request will be submitted when back online"
+                   else "$count requests will be submitted when back online"
 
         val notification = NotificationCompat.Builder(context, QUEUED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("Check-in queued")
+            .setContentTitle("Request queued")
             .setContentText(body)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -72,7 +102,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             .notify(QUEUED_NOTIFICATION_ID, notification)
     }
 
-    fun cancelQueuedCheckIn() {
+    fun cancelQueuedActions() {
         context.getSystemService(NotificationManager::class.java).cancel(QUEUED_NOTIFICATION_ID)
     }
 

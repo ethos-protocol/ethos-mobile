@@ -8,19 +8,21 @@ import androidx.work.*
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.NetworkMonitor
+import com.ethosprotocol.models.CreateVaultRequest
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 @HiltWorker
-class CheckInSyncWorker @AssistedInject constructor(
+class PendingActionSyncWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
     private val apiClient: ApiClient,
-    private val dao: PendingCheckInDao,
+    private val dao: PendingActionDao,
     private val notificationHelper: NotificationHelper,
     private val networkMonitor: NetworkMonitor
 ) : CoroutineWorker(context, params) {
@@ -35,6 +37,9 @@ class CheckInSyncWorker @AssistedInject constructor(
         // before burning a retry cycle on requests that are certain to fail.
         if (!networkMonitor.isConnected) return Result.retry()
 
+        val startMs = System.currentTimeMillis()
+        val runAtIso = isoTimestamp(startMs)
+
         val pending = dao.getAll()
         if (pending.isEmpty()) {
             recordOutcome(runAtIso, succeeded = 0, failed = 0, retrying = false)
@@ -47,36 +52,41 @@ class CheckInSyncWorker @AssistedInject constructor(
         var permanentlyFailed = 0
 
         for (item in pending) {
-            when (val result = apiClient.checkIn(item.vaultId)) {
+            val result = when (item.type) {
+                PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!)
+                PendingActionType.CREATE_VAULT ->
+                    apiClient.createVault(Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!))
+            }
+            when (result) {
                 is ApiResult.Success -> {
                     dao.delete(item)
                     succeeded++
-                    Log.i(TAG, "check-in synced vaultId=${item.vaultId}")
+                    Log.i(TAG, "action synced type=${item.type} vaultId=${item.vaultId}")
                 }
                 ApiResult.NetworkUnavailable -> {
                     hasRetryableFailure = true
-                    Log.w(TAG, "check-in deferred (no network) vaultId=${item.vaultId}")
+                    Log.w(TAG, "action deferred (no network) type=${item.type} vaultId=${item.vaultId}")
                 }
                 is ApiResult.Error -> {
-                    // A check-in is a dead-man's-switch signal: silently dropping it on a
-                    // transient failure (server error, timeout, expired auth) risks a vault
-                    // being released even though the user did check in. Only drop the queued
-                    // item when the server has definitively rejected the request as invalid
-                    // (e.g. the vault no longer exists) — everything else is retried.
+                    // A queued action represents user intent (a check-in, a vault the user
+                    // filled out a form for): silently dropping it on a transient failure
+                    // (server error, timeout, expired auth) would lose that intent. Only drop
+                    // the item when the server has definitively rejected it as invalid (e.g.
+                    // the vault no longer exists) — everything else is retried.
                     if (result.code in NON_RETRYABLE_ERROR_CODES) {
                         dao.delete(item)
                         permanentlyFailed++
-                        Log.e(TAG, "check-in dropped (non-retryable) vaultId=${item.vaultId} code=${result.code} msg=${result.message}")
+                        Log.e(TAG, "action dropped (non-retryable) type=${item.type} vaultId=${item.vaultId} code=${result.code} msg=${result.message}")
                     } else {
                         hasRetryableFailure = true
-                        Log.w(TAG, "check-in deferred (retryable error) vaultId=${item.vaultId} code=${result.code} msg=${result.message}")
+                        Log.w(TAG, "action deferred (retryable error) type=${item.type} vaultId=${item.vaultId} code=${result.code} msg=${result.message}")
                     }
                 }
             }
         }
 
         if (dao.getAll().isEmpty()) {
-            notificationHelper.cancelQueuedCheckIn()
+            notificationHelper.cancelQueuedActions()
         }
 
         val willRetry = hasRetryableFailure
@@ -107,21 +117,21 @@ class CheckInSyncWorker @AssistedInject constructor(
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).format(Date(epochMs))
 
     companion object {
-        const val WORK_NAME = "checkin_sync"
-        const val PREFS_NAME = "checkin_sync_diagnostics"
+        const val WORK_NAME = "pending_action_sync"
+        const val PREFS_NAME = "pending_action_sync_diagnostics"
         const val PREF_LAST_SYNC_AT = "last_sync_at"
         const val PREF_LAST_SYNC_SUCCEEDED = "last_sync_succeeded"
         const val PREF_LAST_SYNC_FAILED = "last_sync_failed"
         const val PREF_LAST_SYNC_RETRYING = "last_sync_retrying"
-        private const val TAG = "CheckInSyncWorker"
+        private const val TAG = "PendingActionSyncWorker"
 
-        // Error codes where the server has told us unambiguously that this check-in can
+        // Error codes where the server has told us unambiguously that this action can
         // never succeed (bad request / vault no longer exists), so retrying is pointless.
         // Everything else (5xx, 401, 0/exception) is treated as transient and retried.
         private val NON_RETRYABLE_ERROR_CODES = setOf(400, 404, 410)
 
         fun schedule(context: Context) {
-            val request = OneTimeWorkRequestBuilder<CheckInSyncWorker>()
+            val request = OneTimeWorkRequestBuilder<PendingActionSyncWorker>()
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -153,7 +163,7 @@ class CheckInSyncWorker @AssistedInject constructor(
     }
 }
 
-/** Snapshot of the last CheckInSyncWorker run, surfaced for support and debug use. */
+/** Snapshot of the last PendingActionSyncWorker run, surfaced for support and debug use. */
 data class SyncDiagnostics(
     val lastSyncAt: String,
     val succeeded: Int,

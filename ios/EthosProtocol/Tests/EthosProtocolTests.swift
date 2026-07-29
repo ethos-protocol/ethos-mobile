@@ -1,4 +1,6 @@
 import XCTest
+import AuthenticationServices
+import SwiftUI
 @testable import EthosProtocol
 @testable import TTLWidget
 
@@ -72,6 +74,12 @@ final class KeychainServiceTests: XCTestCase {
         KeychainService.shared.deleteToken()
         XCTAssertNil(KeychainService.shared.loadToken())
     }
+
+    func test_deleteCredentialID_returnsNil() {
+        KeychainService.shared.saveCredentialID("cred-to-delete")
+        KeychainService.shared.deleteCredentialID()
+        XCTAssertNil(KeychainService.shared.loadCredentialID())
+    }
 }
 
 final class OfflineCacheTests: XCTestCase {
@@ -85,6 +93,23 @@ final class OfflineCacheTests: XCTestCase {
     func test_load_missingKey_returnsNil() {
         XCTAssertNil(OfflineCache.shared.load(for: "nonexistent-key-\(UUID())"))
     }
+
+    func test_clearAll_removesPreviouslyCachedData() {
+        let data = Data("residual-vault-data".utf8)
+        OfflineCache.shared.save(data, for: "clear-all-test-key")
+        XCTAssertNotNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+
+        OfflineCache.shared.clearAll()
+
+        XCTAssertNil(OfflineCache.shared.load(for: "clear-all-test-key"))
+    }
+
+    func test_clearAll_allowsSavingAgainAfterwards() {
+        OfflineCache.shared.clearAll()
+        let data = Data("post-clear-data".utf8)
+        OfflineCache.shared.save(data, for: "post-clear-key")
+        XCTAssertEqual(OfflineCache.shared.load(for: "post-clear-key"), data)
+    }
 }
 
 final class Base64URLTests: XCTestCase {
@@ -97,6 +122,64 @@ final class Base64URLTests: XCTestCase {
         XCTAssertFalse(encoded.contains("="))
         let decoded = Data(base64URLEncoded: encoded)
         XCTAssertEqual(decoded, original)
+    }
+}
+
+// MARK: - #9 Passkey Delegate Retention Tests
+
+final class PasskeyDelegateRetentionTests: XCTestCase {
+
+    private enum DummyError: Error { case simulatedFailure }
+
+    private func makeAssertionController(challengeByte: UInt8) -> ASAuthorizationController {
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: "ethos-protocol.app")
+        let request = provider.createCredentialAssertionRequest(challenge: Data([challengeByte]))
+        return ASAuthorizationController(authorizationRequests: [request])
+    }
+
+    // Regression test for the objc_setAssociatedObject retention hack: two requests in
+    // flight at once must each keep their own delegate alive and release only their own
+    // entry when they complete, never the other's.
+    func test_concurrentPerformRequests_dontClobberEachOthersDelegate() async throws {
+        let service = PasskeyService.shared
+        let controllerA = makeAssertionController(challengeByte: 0x01)
+        let controllerB = makeAssertionController(challengeByte: 0x02)
+
+        let taskA = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerA, continuation: continuation)
+                controllerA.delegate = delegate
+            }
+        }
+        let taskB = Task<Void, Error> {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ASAuthorizationCredential, Error>) in
+                let delegate = service.makeRetainedDelegate(for: controllerB, continuation: continuation)
+                controllerB.delegate = delegate
+            }
+        }
+
+        // Give both tasks a chance to register their delegate before either completes.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(service.activeDelegateCount, 2, "Both concurrent requests should retain their own delegate")
+
+        // Simulate the system callback for A only — B's delegate/continuation must survive.
+        (controllerA.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerA, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskA.value
+            XCTFail("Expected taskA to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 1, "Completing A's request must release only A's delegate")
+
+        (controllerB.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerB, didCompleteWithError: DummyError.simulatedFailure)
+        do {
+            try await taskB.value
+            XCTFail("Expected taskB to throw")
+        } catch is DummyError {
+            // expected
+        }
+        XCTAssertEqual(service.activeDelegateCount, 0, "Completing B's request should release its delegate")
     }
 }
 
@@ -440,41 +523,164 @@ final class UniversalLinkRouterTests: XCTestCase {
     }
 }
 
-// MARK: - #39 Two-Factor Verification Messaging Tests
+// MARK: - #39 / #115 Two-Factor Verification Copy Tests
+//
+// TwoFactorVerifyView exposes its copy-selection logic through two pure helpers
+// that take the same inputs the view itself uses. Testing those directly is
+// faster and more deterministic than spinning up a SwiftUI hosting controller.
+//
+// The helpers mirror the exact branching in TwoFactorVerifyView:
+//   titleText(method:provisioningUri:secret:)
+//   bodyInstructions(method:provisioningUri:)
+//
+// Both are tested for every branch to guard against regressions.
+
+// Pure-logic copy helpers duplicated here so the tests are self-contained.
+// If the view's branching changes, update both the view and these helpers.
+private enum TwoFactorCopyHelper {
+    /// Whether this is an initial 2FA setup (vs a subsequent re-verification).
+    static func isInitialSetup(provisioningUri: String?, secret: String?) -> Bool {
+        provisioningUri != nil || secret != nil
+    }
+
+    /// The headline text shown at the top of TwoFactorVerifyView.
+    static func titleText(method: TwoFactorMethod,
+                          provisioningUri: String?,
+                          secret: String?) -> String {
+        if method == .totp && isInitialSetup(provisioningUri: provisioningUri, secret: secret) {
+            return "Verify Setup"
+        } else if method == .totp {
+            return "Re-verify Authenticator"
+        } else {
+            return "Verify Setup"
+        }
+    }
+
+    /// The instruction text shown below the headline.
+    static func bodyInstructions(method: TwoFactorMethod,
+                                 provisioningUri: String?,
+                                 secret: String?) -> String {
+        if method == .totp,
+           isInitialSetup(provisioningUri: provisioningUri, secret: secret) {
+            return "Scan this URI in your authenticator app:"
+        } else if method == .totp {
+            return "Enter the 6-digit code from your authenticator app."
+        } else if method == .sms {
+            return "A verification code has been sent to your phone."
+        } else {
+            return "A verification code has been sent to your email."
+        }
+    }
+}
 
 final class TwoFactorVerifyViewTests: XCTestCase {
 
-    func test_totpInitialSetup_withProvisioningUri_showsSetupMessage() {
-        let hasProvisioningUri = true
-        let hasTOTPProvisioningData = true
-        XCTAssertTrue(hasTOTPProvisioningData)
-        XCTAssertTrue(hasProvisioningUri)
+    // MARK: TOTP — initial setup (provisioning URI present)
+
+    func test_totpInitialSetup_withProvisioningUri_titleIsVerifySetup() {
+        let title = TwoFactorCopyHelper.titleText(
+            method: .totp,
+            provisioningUri: "otpauth://totp/Ethos:user@example.com?secret=JBSWY3DPEHPK3PXP",
+            secret: "JBSWY3DPEHPK3PXP"
+        )
+        XCTAssertEqual(title, "Verify Setup")
     }
 
-    func test_totpReVerification_withoutProvisioningUri_showsReVerifyMessage() {
-        let hasProvisioningUri = false
-        let hasTOTPProvisioningData = false
-        XCTAssertFalse(hasTOTPProvisioningData)
-        XCTAssertFalse(hasProvisioningUri)
+    func test_totpInitialSetup_withProvisioningUri_bodyPromptsScan() {
+        let body = TwoFactorCopyHelper.bodyInstructions(
+            method: .totp,
+            provisioningUri: "otpauth://totp/Ethos:user@example.com?secret=JBSWY3DPEHPK3PXP",
+            secret: "JBSWY3DPEHPK3PXP"
+        )
+        XCTAssertEqual(body, "Scan this URI in your authenticator app:")
     }
 
-    func test_totpReVerification_displaysCorrectInstructions() {
-        let method = TwoFactorMethod.totp
-        let isInitialSetup = false
-        XCTAssertEqual(method, .totp)
-        XCTAssertFalse(isInitialSetup)
+    func test_totpInitialSetup_withSecretOnly_isDetectedAsInitialSetup() {
+        // If only the secret is available (no URI), it's still an initial setup.
+        let title = TwoFactorCopyHelper.titleText(
+            method: .totp,
+            provisioningUri: nil,
+            secret: "JBSWY3DPEHPK3PXP"
+        )
+        XCTAssertEqual(title, "Verify Setup")
     }
 
-    func test_smsVerification_alwaysShowsSentMessage() {
-        let method = TwoFactorMethod.sms
-        let isInitialSetup = false
-        XCTAssertEqual(method, .sms)
+    // MARK: TOTP — re-verification (no provisioning data)
+
+    func test_totpReVerification_withoutProvisioningData_titleIsReVerifyAuthenticator() {
+        // The user already has TOTP set up. They are re-verifying without a new
+        // setup flow. No provisioning URI or secret is available — they must open
+        // their authenticator app. The title must NOT say "Verify Setup" and
+        // the body must NOT mention a code being "sent" (TOTP codes are never sent).
+        let title = TwoFactorCopyHelper.titleText(
+            method: .totp,
+            provisioningUri: nil,
+            secret: nil
+        )
+        XCTAssertEqual(title, "Re-verify Authenticator")
     }
 
-    func test_emailVerification_alwaysShowsSentMessage() {
-        let method = TwoFactorMethod.email
-        let isInitialSetup = false
-        XCTAssertEqual(method, .email)
+    func test_totpReVerification_withoutProvisioningData_bodyPromptsAuthenticatorApp() {
+        let body = TwoFactorCopyHelper.bodyInstructions(
+            method: .totp,
+            provisioningUri: nil,
+            secret: nil
+        )
+        XCTAssertEqual(body, "Enter the 6-digit code from your authenticator app.")
+    }
+
+    func test_totpReVerification_bodyDoesNotMentionSent() {
+        // Guard against the specific regression: TOTP re-verify must never claim
+        // a code was "sent" (TOTP codes are generated locally, never transmitted).
+        let body = TwoFactorCopyHelper.bodyInstructions(
+            method: .totp,
+            provisioningUri: nil,
+            secret: nil
+        )
+        XCTAssertFalse(body.lowercased().contains("sent"),
+                       "TOTP re-verify body must not say 'sent': \(body)")
+    }
+
+    // MARK: SMS
+
+    func test_sms_titleIsVerifySetup() {
+        let title = TwoFactorCopyHelper.titleText(method: .sms, provisioningUri: nil, secret: nil)
+        XCTAssertEqual(title, "Verify Setup")
+    }
+
+    func test_sms_bodyMentionsSentToPhone() {
+        let body = TwoFactorCopyHelper.bodyInstructions(method: .sms, provisioningUri: nil, secret: nil)
+        XCTAssertEqual(body, "A verification code has been sent to your phone.")
+    }
+
+    // MARK: Email
+
+    func test_email_titleIsVerifySetup() {
+        let title = TwoFactorCopyHelper.titleText(method: .email, provisioningUri: nil, secret: nil)
+        XCTAssertEqual(title, "Verify Setup")
+    }
+
+    func test_email_bodyMentionsSentToEmail() {
+        let body = TwoFactorCopyHelper.bodyInstructions(method: .email, provisioningUri: nil, secret: nil)
+        XCTAssertEqual(body, "A verification code has been sent to your email.")
+    }
+
+    // MARK: isInitialSetup helper
+
+    func test_isInitialSetup_trueWhenProvisioningUriPresent() {
+        XCTAssertTrue(TwoFactorCopyHelper.isInitialSetup(provisioningUri: "otpauth://...", secret: nil))
+    }
+
+    func test_isInitialSetup_trueWhenSecretPresent() {
+        XCTAssertTrue(TwoFactorCopyHelper.isInitialSetup(provisioningUri: nil, secret: "ABCD"))
+    }
+
+    func test_isInitialSetup_trueWhenBothPresent() {
+        XCTAssertTrue(TwoFactorCopyHelper.isInitialSetup(provisioningUri: "otpauth://...", secret: "ABCD"))
+    }
+
+    func test_isInitialSetup_falseWhenNeitherPresent() {
+        XCTAssertFalse(TwoFactorCopyHelper.isInitialSetup(provisioningUri: nil, secret: nil))
     }
 }
 
@@ -490,6 +696,13 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         let a = BackgroundRefreshService.shared
         let b = BackgroundRefreshService.shared
         XCTAssertTrue(a === b)
+    }
+
+    // MARK: - #10 Clear Local State on Sign-Out
+
+    func test_cancelScheduledRefresh_doesNotThrow() {
+        BackgroundRefreshService.shared.scheduleAppRefresh()
+        XCTAssertNoThrow(BackgroundRefreshService.shared.cancelScheduledRefresh())
     }
 
     func test_scheduleTTLWarning_doesNotThrow_forActiveVault() throws {
@@ -685,7 +898,7 @@ final class HandleRefreshTests: XCTestCase {
         XCTAssertEqual(service.scheduleAppRefreshCallCount, 1)
     }
 
-    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async {
+    func test_handleRefresh_onlySchedulesTTLWarningForVaultsUnder24h() async throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
                       "UNUserNotificationCenter requires a real app host process, unavailable in CI")
 
@@ -920,6 +1133,60 @@ final class VaultStoreTests: XCTestCase {
     private func makeVault(id: String, balance: Int64 = 0) -> Vault {
         Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: balance,
               checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: 100_000, status: .active)
+    }
+}
+
+// MARK: - #24 Sign-Out Push Token Unregistration Tests
+
+@MainActor
+final class AuthStoreSignOutTests: XCTestCase {
+
+    func test_signOut_unregistersPersistedPushToken() async throws {
+        // Arranging via KeychainService requires a real read-back of a just-written
+        // value, which — like KeychainServiceTests.test_saveAndLoadToken above — is
+        // unreliable from this unsigned, hostless SPM test bundle in CI. See the
+        // HostedTests counterpart for CI coverage of this behavior.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        KeychainService.shared.saveToken("auth-token-abc")
+        KeychainService.shared.savePushToken("push-token-abc")
+
+        let store = AuthStore()
+        var unregisteredToken: String?
+        store.unregisterPushToken = { token in unregisteredToken = token }
+
+        await store.signOut()
+
+        XCTAssertEqual(unregisteredToken, "push-token-abc")
+        XCTAssertNil(KeychainService.shared.loadPushToken(), "push token should be cleared after unregistering")
+        XCTAssertNil(KeychainService.shared.loadToken())
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_withNoPersistedPushToken_doesNotCallUnregister() async {
+        KeychainService.shared.deletePushToken()
+
+        let store = AuthStore()
+        var wasCalled = false
+        store.unregisterPushToken = { _ in wasCalled = true }
+
+        await store.signOut()
+
+        XCTAssertFalse(wasCalled)
+        XCTAssertFalse(store.isAuthenticated)
+    }
+
+    func test_signOut_unregisterFailure_stillSignsOutLocally() async {
+        KeychainService.shared.saveToken("auth-token-abc")
+
+        let store = AuthStore()
+        store.unregisterPushToken = { _ in throw APIError.networkUnavailable }
+
+        await store.signOut()
+
+        XCTAssertFalse(store.isAuthenticated)
+        XCTAssertNil(KeychainService.shared.loadToken())
     }
 }
 

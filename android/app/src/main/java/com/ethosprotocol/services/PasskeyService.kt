@@ -2,15 +2,16 @@ package com.ethosprotocol.services
 
 import android.app.Activity
 import androidx.credentials.*
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.AuthChallenge
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
+import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,19 +33,10 @@ class PasskeyService @Inject constructor(
     private val credentialManagerFactory: CredentialManagerFactory
 ) {
     suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        val normalizedUsername = UsernameValidator.sanitize(username)
+        require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
         val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = JSONObject().apply {
-            put("challenge", challenge)
-            put("rp", JSONObject().put("id", "ethos-protocol.app").put("name", "Ethos-Protocol"))
-            put("user", JSONObject()
-                .put("id", Base64.getUrlEncoder().withoutPadding().encodeToString(username.toByteArray()))
-                .put("name", username).put("displayName", username))
-            put("pubKeyCredParams", JSONArray().put(JSONObject().put("type", "public-key").put("alg", -7)))
-            put("authenticatorSelection", JSONObject()
-                .put("authenticatorAttachment", "platform")
-                .put("requireResidentKey", true)
-                .put("userVerification", "required"))
-        }.toString()
+        val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
 
         val credManager = credentialManagerFactory.create(activity)
         val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
@@ -60,6 +52,33 @@ class PasskeyService @Inject constructor(
         // biometric prompt) just to sign in with the passkey we just created.
         val authToken = requireSuccess(apiClient.registerPasskey(regReq))
         tokenProvider.setSession(authToken)
+    }.onFailure { if (it is CancellationException) throw it }
+
+    // Links a freshly-created passkey to an existing account for a user who lost their
+    // original device — the recovery token proves they completed initiateRecovery() first.
+    suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val completeReq = RecoveryCompleteRequest(
+            recoveryToken = recoveryToken,
+            credentialId = json.getString("id"),
+            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.completeRecovery(completeReq))
+    }
+
+    private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {
+        val challenge = requireSuccess(apiClient.getChallenge()).challenge
+        val requestJson = buildCreateCredentialRequestJson(challenge, username)
+
+        val credManager = CredentialManager.create(activity)
+        val resp = try {
+            credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
+                    as CreatePublicKeyCredentialResponse
+        } catch (e: CreateCredentialException) {
+            throw PasskeyException(mapCreateCredentialError(e))
+        }
+        return JSONObject(resp.registrationResponseJson)
     }
 
     suspend fun authenticate(activity: Activity): Result<Unit> = runCatching {
@@ -70,7 +89,11 @@ class PasskeyService @Inject constructor(
 
         val credManager = credentialManagerFactory.create(activity)
         val request = GetCredentialRequest(listOf(GetPublicKeyCredentialOption(requestJson)))
-        val credential = credentialManager.getCredential(activity, request).credential as PublicKeyCredential
+        val credential = try {
+            credManager.getCredential(activity, request).credential as PublicKeyCredential
+        } catch (e: GetCredentialException) {
+            throw PasskeyException(mapGetCredentialError(e))
+        }
         val json = JSONObject(credential.authenticationResponseJson)
         val verifyReq = PasskeyVerifyRequest(
             credentialId = json.getString("id"),
@@ -78,13 +101,13 @@ class PasskeyService @Inject constructor(
             signature = json.getJSONObject("response").getString("signature")
         )
         tokenProvider.setSession(requireSuccess(apiClient.verifyPasskey(verifyReq)))
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> error(result.message)
-            ApiResult.NetworkUnavailable -> error("No network connection")
+            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }
 }

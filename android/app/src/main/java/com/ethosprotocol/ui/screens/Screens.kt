@@ -23,9 +23,12 @@ import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
+import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
+import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
@@ -37,6 +40,7 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current as android.app.Activity
     var showRegister by remember { mutableStateOf(false) }
+    var showRecovery by remember { mutableStateOf(false) }
 
     if (showRegister) {
         RegisterSheet(
@@ -81,6 +85,14 @@ fun AuthScreenContent(
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
+        if (state.cooldownRemainingSeconds > 0) {
+            Text(
+                "Too many failed attempts. Try again in ${state.cooldownRemainingSeconds}s.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         Button(
             onClick = onSignIn,
@@ -98,15 +110,82 @@ fun AuthScreenContent(
 @Composable
 private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
     var username by remember { mutableStateOf("") }
+    val trimmedUsername = username.trim()
+    val isValid = UsernameValidator.isValid(trimmedUsername)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create Account") },
         text = {
-            OutlinedTextField(value = username, onValueChange = { username = it },
-                label = { Text("Username") }, singleLine = true)
+            Column {
+                OutlinedTextField(value = username, onValueChange = { username = it },
+                    label = { Text("Username") }, singleLine = true)
+                if (username.isNotBlank() && !isValid) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${UsernameValidator.MIN_LENGTH}-${UsernameValidator.MAX_LENGTH} characters: " +
+                            "letters, numbers, '.', '_', '-' (must start/end with a letter or number)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { onRegister(username) }, enabled = username.isNotBlank()) { Text("Register") }
+            TextButton(onClick = { onRegister(trimmedUsername) }, enabled = isValid) { Text("Register") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun RecoverySheet(
+    state: AuthUiState,
+    onSendCode: (String) -> Unit,
+    onFinish: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var username by remember { mutableStateOf("") }
+    val codeSent = state.recoveryToken != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Recover Your Account") },
+        text = {
+            Column {
+                if (!codeSent) {
+                    Text(
+                        "Enter your username and we'll send a recovery code to your account's " +
+                        "verified email.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(value = username, onValueChange = { username = it },
+                        label = { Text("Username") }, singleLine = true,
+                        enabled = !state.isLoading, modifier = Modifier.fillMaxWidth())
+                } else {
+                    Text(
+                        "Check your email for a confirmation, then tap Continue to link a new " +
+                        "passkey on this device to your account.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                state.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            if (!codeSent) {
+                TextButton(
+                    onClick = { onSendCode(username) },
+                    enabled = username.isNotBlank() && !state.isLoading
+                ) { Text("Send Code") }
+            } else {
+                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text("Continue") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
@@ -123,6 +202,8 @@ fun VaultListScreen(
     val context = LocalContext.current
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
+    var withdrawVault by remember { mutableStateOf<Vault?>(null) }
+    var depositVault by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     // #118: Non-blocking root warning. Shown once per session; does not block access.
@@ -175,6 +256,32 @@ fun VaultListScreen(
         )
     }
 
+    withdrawVault?.let { vault ->
+        WithdrawDialog(
+            vault = vault,
+            onSubmit = { amount ->
+                withdrawVault = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Withdrawal",
+                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
+                    onSuccess = { vm.withdraw(vault.id, amount) },
+                    onError = { err -> biometricError = err },
+                )
+            },
+            onDismiss = { withdrawVault = null },
+        )
+    }
+
+    depositVault?.let { vault ->
+        DepositDialog(
+            onSubmit = { amount ->
+                depositVault = null
+                vm.deposit(vault.id, amount)
+            },
+            onDismiss = { depositVault = null },
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
@@ -217,6 +324,15 @@ fun VaultListScreen(
                                 )
                             }
                         }
+                        if (state.hasMore) item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (state.isLoadingMore) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                } else {
+                                    OutlinedButton(onClick = { vm.loadMore() }) { Text("Load more") }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -256,7 +372,12 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
 }
 
 @Composable
-private fun OfflineBanner() {
+private fun OfflineBanner(cachedAt: Long? = null) {
+    val message = if (cachedAt != null) {
+        "Offline — showing cached data (as of ${formatCacheAge(cachedAt)} ago)"
+    } else {
+        "Offline — showing cached data"
+    }
     Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
         // mergeDescendants groups the icon + label into a single TalkBack stop instead of two,
         // so giving the icon a description adds context without a duplicate announcement.
@@ -267,14 +388,33 @@ private fun OfflineBanner() {
             Icon(Icons.Default.WifiOff, contentDescription = "Offline",
                 tint = MaterialTheme.colorScheme.onTertiaryContainer)
             Spacer(Modifier.width(8.dp))
-            Text("Offline — showing cached data", color = MaterialTheme.colorScheme.onTertiaryContainer,
+            Text(message, color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
+private fun formatCacheAge(cachedAt: Long): String {
+    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
+    val minutes = elapsedSeconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+    return when {
+        days > 0 -> "${days}d"
+        hours > 0 -> "${hours}h"
+        minutes > 0 -> "${minutes}m"
+        else -> "a few seconds"
+    }
+}
+
 @Composable
-private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) {
+private fun VaultCard(
+    vault: Vault,
+    onClick: () -> Unit,
+    onCheckIn: () -> Unit,
+    onDeposit: () -> Unit = {},
+    onWithdraw: () -> Unit = {}
+) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
             // At the largest font scale a full-length id + chip in one row will clip rather than
@@ -308,9 +448,54 @@ private fun VaultCard(vault: Vault, onClick: () -> Unit, onCheckIn: () -> Unit) 
                 OutlinedButton(onClick = onCheckIn, modifier = Modifier.fillMaxWidth()) {
                     Text("Check In")
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onDeposit, modifier = Modifier.weight(1f)) {
+                        Text("Deposit")
+                    }
+                    OutlinedButton(onClick = onWithdraw, modifier = Modifier.weight(1f)) {
+                        Text("Withdraw")
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun WithdrawDialog(vault: Vault, onSubmit: (Long) -> Unit, onDismiss: () -> Unit) {
+    var amountText by remember { mutableStateOf("") }
+    val amountStroops = amountText.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 10_000_000).toLong() }
+    val isSufficient = amountStroops != null && amountStroops <= vault.balance
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Withdraw") },
+        text = {
+            Column {
+                Text("Available balance: ${vault.formattedBalance}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = amountText, onValueChange = { amountText = it },
+                    label = { Text("Amount (XLM)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (amountStroops != null && !isSufficient) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Amount exceeds available balance.", color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(amountStroops!!) },
+                enabled = amountStroops != null && isSufficient
+            ) { Text("Withdraw") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -418,6 +603,115 @@ fun BeneficiaryAcceptanceScreenContent(
     }
 }
 
+// MARK: - Manage Beneficiary Screen
+
+@Composable
+fun ManageBeneficiaryScreen(
+    vault: com.ethosprotocol.models.Vault,
+    onDone: () -> Unit,
+    vm: VaultViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    var newBeneficiary by remember { mutableStateOf("") }
+    var showConfirmation by remember { mutableStateOf(false) }
+
+    // The server rejects an address that is empty or unchanged. Mirror the same
+    // validation used by iOS BeneficiaryUpdate.isValidNewBeneficiary().
+    val isAddressValid = newBeneficiary.trim().isNotEmpty() && newBeneficiary.trim() != vault.beneficiary
+
+    LaunchedEffect(state.beneficiaryUpdated) {
+        if (state.beneficiaryUpdated) {
+            vm.clearBeneficiaryUpdated()
+            onDone()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.Person, contentDescription = null,
+            modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(16.dp))
+        Text("Manage Beneficiary", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text("Current beneficiary:", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(vault.beneficiary,
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = FontFamily.Monospace)
+        Spacer(Modifier.height(16.dp))
+
+        if (showConfirmation) {
+            // Confirmation step — mirrors iOS ManageBeneficiaryView.confirmationContent
+            Text("Confirm Change", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text("From:", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(vault.beneficiary,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(4.dp))
+            Text("To:", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(newBeneficiary.trim(),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace)
+            state.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = { vm.updateBeneficiary(vault.id, newBeneficiary.trim()) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading
+            ) {
+                if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Confirm Change")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { showConfirmation = false },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !state.isLoading
+            ) { Text("Back") }
+        } else {
+            // Input step
+            OutlinedTextField(
+                value = newBeneficiary,
+                onValueChange = { newBeneficiary = it },
+                label = { Text("New Beneficiary (Stellar address)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                isError = newBeneficiary.isNotEmpty() && !isAddressValid,
+                supportingText = if (newBeneficiary.isNotEmpty() && !isAddressValid) {
+                    { Text("Enter a non-empty address that differs from the current beneficiary.") }
+                } else null
+            )
+            state.error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = { showConfirmation = true },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = isAddressValid
+            ) { Text("Continue") }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onDone,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Cancel") }
+        }
+    }
+}
+
 // MARK: - Vault Deep Link Screen
 
 @Composable
@@ -434,6 +728,8 @@ fun VaultDeepLinkScreen(
     val context = LocalContext.current
     var isProcessing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showBeneficiaryDialog by remember { mutableStateOf(false) }
+    var showWithdrawDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { vm.load() }
 
@@ -569,20 +865,119 @@ fun VaultDeepLinkScreenContent(
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
     }
+
+    if (showBeneficiaryDialog && vault != null) {
+        ManageBeneficiaryDialog(
+            currentBeneficiary = vault.beneficiary,
+            onSubmit = { newBeneficiary ->
+                showBeneficiaryDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Beneficiary Change",
+                    subtitle = "Vault ${vault.id.take(12)}… beneficiary will change to ${newBeneficiary.take(12)}…",
+                    onSuccess = {
+                        vm.updateBeneficiary(vault.id, newBeneficiary)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showBeneficiaryDialog = false }
+        )
+    }
+
+    if (showWithdrawDialog && vault != null) {
+        WithdrawDialog(
+            vault = vault,
+            onSubmit = { amount ->
+                showWithdrawDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Withdrawal",
+                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
+                    onSuccess = {
+                        vm.withdraw(vault.id, amount)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showWithdrawDialog = false }
+        )
+    }
+}
+
+@Composable
+private fun ManageBeneficiaryDialog(
+    currentBeneficiary: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var beneficiary by remember { mutableStateOf(currentBeneficiary) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Manage Beneficiary") },
+        text = {
+            Column {
+                Text(
+                    "This vault's funds are released to this address if it is never checked into again.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = beneficiary, onValueChange = { beneficiary = it },
+                    label = { Text("Beneficiary address") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(beneficiary) },
+                enabled = beneficiary.isNotBlank() && beneficiary != currentBeneficiary
+            ) { Text("Continue") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
 private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> Unit) {
     var beneficiary by remember { mutableStateOf("") }
     var days by remember { mutableStateOf(30f) }
+
+    // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
+    val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Vault") },
         text = {
             Column {
-                OutlinedTextField(value = beneficiary, onValueChange = { beneficiary = it },
-                    label = { Text("Beneficiary address") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    value = beneficiary,
+                    onValueChange = { beneficiary = it },
+                    label = { Text("Beneficiary Stellar address") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
+                    supportingText = {
+                        if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
+                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                        }
+                    }
+                )
                 Spacer(Modifier.height(12.dp))
                 Text("Check-in interval: ${days.toInt()} days",
                     style = MaterialTheme.typography.bodySmall)
@@ -591,7 +986,28 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
         },
         confirmButton = {
             TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
-                enabled = beneficiary.isNotBlank()) { Text("Create") }
+                enabled = isBeneficiaryValid) { Text("Create") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun DepositDialog(onSubmit: (Long) -> Unit, onDismiss: () -> Unit) {
+    var amountText by remember { mutableStateOf("") }
+    val amountStroops = amountText.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 10_000_000).toLong() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Deposit") },
+        text = {
+            OutlinedTextField(
+                value = amountText, onValueChange = { amountText = it },
+                label = { Text("Amount (XLM)") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSubmit(amountStroops!!) }, enabled = amountStroops != null) { Text("Deposit") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
@@ -717,25 +1133,49 @@ private fun TwoFactorVerifyScreen(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(16.dp))
-        Text("Verify Setup", style = MaterialTheme.typography.headlineSmall)
+        // Title distinguishes initial setup from a subsequent re-verification so
+        // the user is not confused about why they are not receiving a "sent" code.
+        val titleText = when {
+            method == TwoFactorMethod.totp && isInitialSetup -> "Verify Setup"
+            method == TwoFactorMethod.totp -> "Re-verify Authenticator"
+            else -> "Verify Setup"
+        }
+        Text(titleText, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
-        when (method) {
-            TwoFactorMethod.totp -> {
-                Text("Scan the URI in your authenticator app:",
+        when {
+            method == TwoFactorMethod.totp && isInitialSetup -> {
+                // Initial TOTP setup: the server returned a provisioning URI — show it.
+                Text(
+                    "Scan this URI in your authenticator app:",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (provisioningUri != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(provisioningUri, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    provisioningUri ?: "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            TwoFactorMethod.sms -> Text("A verification code has been sent to your phone.",
+            method == TwoFactorMethod.totp -> {
+                // Re-verification: no provisioning data — the user must open their
+                // authenticator app and enter the current code. Never say "sent".
+                Text(
+                    "Enter the 6-digit code from your authenticator app.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            method == TwoFactorMethod.sms -> Text(
+                "A verification code has been sent to your phone.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TwoFactorMethod.email -> Text("A verification code has been sent to your email.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            else -> Text(
+                "A verification code has been sent to your email.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(

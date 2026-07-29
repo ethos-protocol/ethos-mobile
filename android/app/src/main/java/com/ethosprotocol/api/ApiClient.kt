@@ -1,5 +1,6 @@
 package com.ethosprotocol.api
 
+import android.util.Log
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.models.*
 import com.ethosprotocol.models.TwoFactorStatus
@@ -10,9 +11,11 @@ import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.android.*
+import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -26,13 +29,15 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 
 sealed class ApiResult<out T> {
-    data class Success<T>(val data: T) : ApiResult<T>()
+    // cachedAt is non-null only when data was served from OfflineCache rather than fetched
+    // live, so callers can surface how stale it is (e.g. VaultViewModel/OfflineBanner).
+    data class Success<T>(val data: T, val cachedAt: Long? = null) : ApiResult<T>()
     data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
     object NetworkUnavailable : ApiResult<Nothing>()
 }
 
 @Singleton
-class ApiClient @Inject constructor(
+class ApiClient(
     private val tokenProvider: TokenProvider,
     private val networkMonitor: NetworkMonitor,
     private val offlineCache: OfflineCache,
@@ -41,6 +46,10 @@ class ApiClient @Inject constructor(
     // networking; production callers (AppModule) get the real Android engine for free.
     engine: HttpClientEngine = Android.create()
 ) {
+    companion object {
+        private const val TAG = "ApiClient"
+    }
+
     private val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
@@ -84,6 +93,12 @@ class ApiClient @Inject constructor(
     suspend fun verifyPasskey(req: PasskeyVerifyRequest): ApiResult<AuthToken> = post("/auth/verify", req)
     suspend fun registerPasskey(req: PasskeyRegisterRequest): ApiResult<AuthToken> = post("/auth/register", req)
     suspend fun refreshToken(): ApiResult<AuthToken> = post("/auth/refresh", Unit, skipTokenRefresh = true)
+
+    // Account recovery ("lost your device?") — shared contract with iOS's #5.
+    suspend fun initiateRecovery(req: RecoveryInitiateRequest): ApiResult<RecoveryInitiateResponse> =
+        post("/auth/recovery/initiate", req)
+    suspend fun completeRecovery(req: RecoveryCompleteRequest): ApiResult<Unit> =
+        post("/auth/recovery/complete", req)
 
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
@@ -137,11 +152,13 @@ class ApiClient @Inject constructor(
         ensureFreshToken()
         if (!networkMonitor.isConnected) {
             val cached = offlineCache.load(path)
-            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached))
+            return if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
             else ApiResult.NetworkUnavailable
         }
         return runCatching {
-            val response = client.get("$baseUrl$path") { bearerAuth() }
+            val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
+                client.get("$baseUrl$path") { bearerAuth() }
+            }
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
@@ -154,7 +171,7 @@ class ApiClient @Inject constructor(
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> post(
@@ -176,7 +193,7 @@ class ApiClient @Inject constructor(
                 401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
@@ -197,7 +214,7 @@ class ApiClient @Inject constructor(
                 401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { ApiResult.Error(it.message ?: "Unknown error") }
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     // Best-effort: refreshes the stored token when it's near its expiry so the request
@@ -208,6 +225,15 @@ class ApiClient @Inject constructor(
         val result = refreshToken()
         if (result is ApiResult.Success) tokenProvider.setSession(result.data)
     }
+
+    // GET is the only idempotent verb this client issues — retrying POST/DELETE
+    // automatically could double-submit a mutation (check-in, withdrawal, 2FA
+    // disable, ...), so only get() calls withRetry with this predicate.
+    // HttpRequestTimeoutException is checked explicitly because it subclasses
+    // CancellationException (so HttpTimeout can cooperate with coroutine
+    // cancellation) rather than IOException.
+    private fun isRetryableNetworkError(e: Throwable): Boolean =
+        e is HttpRequestTimeoutException || e is IOException
 
     private fun HttpRequestBuilder.bearerAuth() {
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
