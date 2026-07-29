@@ -76,11 +76,24 @@ public final class APIClient {
         return try await post(path: "/auth/verify", body: body)
     }
 
-    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws {
+    // `public_key` carries the WebAuthn COSE_Key (RFC 9052) extracted from the
+    // attestation object's authData, base64url-encoded — not the attestation object
+    // itself (#1, see docs/mobile-passkey-flow.md). The backend returns a session
+    // token directly so registration only needs a single passkey ceremony (#2) — no
+    // separate /auth/verify round trip.
+    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws -> AuthToken {
         let body = ["credential_id": credentialID,
                     "public_key": publicKey,
                     "client_data_json": clientDataJSON]
-        let _: EmptyBody = try await post(path: "/auth/register", body: body)
+        return try await post(path: "/auth/register", body: body)
+    }
+
+    // Proactive refresh (#3): called by AuthStore shortly before AuthToken.expiresAt so
+    // an in-progress action isn't interrupted by a reactive 401 delete-and-reauth. Goes
+    // through the normal post()/execute() path — including the existing 401 handling
+    // below — so a rejected refresh still falls back to deleting the stored token.
+    func refreshToken() async throws -> AuthToken {
+        try await post(path: "/auth/refresh", body: EmptyBody())
     }
 
     // MARK: - Vaults

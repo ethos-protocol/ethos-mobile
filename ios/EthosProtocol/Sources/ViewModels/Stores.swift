@@ -18,16 +18,36 @@ final class AuthStore: ObservableObject {
     @Published var isLoading = false
     @Published var error: String?
 
+    // How long before AuthToken.expiresAt to proactively refresh (#3), and how long to
+    // wait before retrying after a transient (non-auth) refresh failure.
+    private let refreshLeadTime: TimeInterval = 60
+    private let refreshRetryDelay: TimeInterval = 30
+    private var refreshTask: Task<Void, Never>?
+
+    // Injectable seams for testing (mirrors BackgroundRefreshService.vaultListProvider):
+    // ASAuthorizationController-driven ceremonies can't run in a unit test, so AuthStore's
+    // own orchestration (single ceremony on register, proactive refresh scheduling,
+    // delete-and-reauth fallback) is exercised against these instead.
+    var passkeyRegister: (String) async throws -> AuthToken = { try await PasskeyService.shared.register(username: $0) }
+    var passkeyAuthenticate: () async throws -> AuthToken = { try await PasskeyService.shared.authenticate() }
+    var refreshToken: () async throws -> AuthToken = { try await APIClient.shared.refreshToken() }
+
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
+        if isAuthenticated, let expiresAt = KeychainService.shared.loadTokenExpiry() {
+            scheduleRefresh(before: expiresAt)
+        }
     }
 
     func signIn() async {
         isLoading = true; error = nil
         do {
-            let token = try await PasskeyService.shared.authenticate()
-            KeychainService.shared.saveToken(token.token)
-            ifNotCancelled { isAuthenticated = true }
+            let token = try await passkeyAuthenticate()
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled {
+                isAuthenticated = true
+                scheduleRefresh(before: token.expiresAt)
+            }
         } catch {
             ifNotCancelled { self.error = error.localizedDescription }
         }
@@ -37,12 +57,19 @@ final class AuthStore: ObservableObject {
         isLoading = false
     }
 
+    // A single passkey ceremony: PasskeyService.register() already registers with the
+    // backend (which returns a session token directly) and persists the credential ID
+    // atomically with that call (#4) — there is no second, redundant authenticate()
+    // ceremony / biometric prompt here (#2).
     func register(username: String) async {
         isLoading = true; error = nil
         do {
-            let credID = try await PasskeyService.shared.register(username: username)
-            KeychainService.shared.saveCredentialID(credID)
-            if !Task.isCancelled { await signIn() }
+            let token = try await passkeyRegister(username)
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled {
+                isAuthenticated = true
+                scheduleRefresh(before: token.expiresAt)
+            }
         } catch {
             ifNotCancelled { self.error = error.localizedDescription }
         }
@@ -50,8 +77,49 @@ final class AuthStore: ObservableObject {
     }
 
     func signOut() {
+        refreshTask?.cancel()
+        refreshTask = nil
         KeychainService.shared.deleteToken()
         isAuthenticated = false
+    }
+
+    // MARK: - Token refresh (#3)
+    //
+    // AuthToken.expiresAt was decoded but never read; a 401 was handled purely
+    // reactively by deleting the token and forcing a full passkey re-authentication,
+    // which can interrupt the user mid-task (e.g. mid check-in). This schedules a
+    // proactive refresh shortly before expiry instead. The reactive delete-and-reauth
+    // behavior in APIClient.execute() remains as-is and is the fallback used here
+    // whenever the refresh call itself is rejected by the server.
+
+    private func scheduleRefresh(before expiresAt: Date) {
+        scheduleRefresh(at: expiresAt.addingTimeInterval(-refreshLeadTime))
+    }
+
+    private func scheduleRefresh(at fireDate: Date) {
+        refreshTask?.cancel()
+        let delay = max(0, fireDate.timeIntervalSinceNow)
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.performRefresh()
+        }
+    }
+
+    private func performRefresh() async {
+        do {
+            let token = try await refreshToken()
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled { scheduleRefresh(before: token.expiresAt) }
+        } catch APIError.unauthorized {
+            // The server rejected the token outright — APIClient.execute() already
+            // deleted it locally. Fall back to forcing a full re-authentication.
+            ifNotCancelled { isAuthenticated = false }
+        } catch {
+            // Transient failure (e.g. offline) — retry later rather than signing the
+            // user out over a network hiccup.
+            ifNotCancelled { scheduleRefresh(at: Date().addingTimeInterval(refreshRetryDelay)) }
+        }
     }
 }
 

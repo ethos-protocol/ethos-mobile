@@ -6,23 +6,37 @@ final class KeychainService {
     private init() {}
 
     private let tokenKey = "com.ethosprotocol.auth_token"
+    private let tokenExpiryKey = "com.ethosprotocol.auth_token_expiry"
     private let credentialKey = "com.ethosprotocol.passkey_credential"
 
-    func saveToken(_ token: String) {
+    /// `expiresAt`, when provided, is persisted alongside the token so AuthStore can
+    /// schedule a proactive refresh (#3) against `AuthToken.expiresAt` even across an
+    /// app relaunch, not just for the lifetime of the in-memory session that fetched it.
+    func saveToken(_ token: String, expiresAt: Date? = nil) {
         // The auth token must be readable by BackgroundRefreshService's BGAppRefreshTask and by
         // the TTLWidget extension's timeline provider, both of which can run while the device is
         // still locked. `.WhenUnlockedThisDeviceOnly` would make `loadToken()` silently return nil
         // in that case (the request goes out with no Authorization header, and the background
         // TTL check / widget just fail quietly) — so this needs the AfterFirstUnlock variant.
         save(token, forKey: tokenKey, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+        if let expiresAt {
+            save(String(expiresAt.timeIntervalSince1970), forKey: tokenExpiryKey,
+                 accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+        }
     }
 
     func loadToken() -> String? {
         load(forKey: tokenKey)
     }
 
+    func loadTokenExpiry() -> Date? {
+        guard let raw = load(forKey: tokenExpiryKey), let interval = TimeInterval(raw) else { return nil }
+        return Date(timeIntervalSince1970: interval)
+    }
+
     func deleteToken() {
         delete(forKey: tokenKey)
+        delete(forKey: tokenExpiryKey)
     }
 
     func saveCredentialID(_ id: String) {

@@ -48,8 +48,9 @@ The server must:
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/auth/challenge` | Get WebAuthn challenge |
-| POST | `/auth/verify` | Verify passkey assertion, returns JWT |
-| POST | `/auth/register` | Register new passkey credential |
+| POST | `/auth/verify` | Verify passkey assertion, returns `AuthToken` |
+| POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
+| POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
 
 ### Vaults
 | Method | Path | Description |
@@ -276,6 +277,22 @@ GET /vaults?limit={n}&after={cursor}
 ```json
 { "token": "string", "expires_at": "ISO8601" }
 ```
+Returned by `/auth/verify`, `/auth/register` (#2), and `/auth/refresh` (#3). Clients schedule a
+proactive refresh against `expires_at`, rather than waiting to be rejected with a 401.
+
+### PasskeyRegisterRequest (#1)
+```json
+{ "credential_id": "base64url", "public_key": "base64url", "client_data_json": "base64url" }
+```
+`public_key` is the WebAuthn COSE_Key (RFC 9052) extracted from the attestation object's
+`authData`, base64url-encoded — **not** the raw CBOR attestation object. Both iOS
+(`PasskeyService.extractCOSEPublicKey`) and Android (`PasskeyService.kt`'s
+`extractCosePublicKey`/`cosePublicKeyBytes`) extract and send byte-identical COSE_Key data.
+
+### AuthRefreshRequest (#3)
+No request body. Requires the current (possibly near-expiry, not-yet-expired) `Authorization:
+Bearer <jwt>` header. Response: `AuthToken`. `401` if the current token is no longer valid — the
+client falls back to its normal delete-and-reauth behavior in that case.
 
 ### BeneficiaryUpdateRequest
 ```json
