@@ -115,6 +115,16 @@ jobs:
       - name: Resolve package dependencies
         run: xcodebuild -resolvePackageDependencies
 
+      - name: Show SwiftPM dependency graph
+        run: swift package show-dependencies
+
+      - name: Review dependency changes for high severity vulnerabilities
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          license-check: false
+
       # Runs the existing EthosProtocolTests XCTest target against the SPM
       # package (Package.swift) — deliberately BEFORE the Xcode project is
       # generated below (see below for why order matters).

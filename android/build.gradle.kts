@@ -5,4 +5,10 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.hilt) apply false
     alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.dependency.check)
+}
+
+dependencyCheck {
+    failBuildOnCVSS = 7.0F
+    formats = listOf("HTML", "JSON")
 }

@@ -35,6 +35,9 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Scan dependencies for high severity vulnerabilities
+        run: ./gradlew dependencyCheckAggregate
+
       - name: Assemble debug APK
         run: ./gradlew assembleDebug
 
