@@ -126,43 +126,43 @@ final class SignOutClearsLocalStateTests: XCTestCase {
         ICloudSyncService.shared.isSyncEnabled = false
     }
 
-    func test_signOut_clearsCredentialID() {
+    func test_signOut_clearsCredentialID() async {
         KeychainService.shared.saveCredentialID("cred-to-clear")
-        AuthStore().signOut()
+        await AuthStore().signOut()
         XCTAssertNil(KeychainService.shared.loadCredentialID())
     }
 
-    func test_signOut_clearsOfflineCache_noResidualVaultDataReadable() {
+    func test_signOut_clearsOfflineCache_noResidualVaultDataReadable() async {
         let cacheKey = "https://api.ethos-protocol.app/v1/vaults"
         OfflineCache.shared.save(Data(#"[{"id":"vault-1","balance":50000000}]"#.utf8), for: cacheKey)
         XCTAssertNotNil(OfflineCache.shared.load(for: cacheKey), "Precondition: cached vault data should be present before sign-out")
 
-        AuthStore().signOut()
+        await AuthStore().signOut()
 
         XCTAssertNil(OfflineCache.shared.load(for: cacheKey), "Vault data cached before sign-out must not be readable afterward")
     }
 
-    func test_signOut_clearsICloudLocalAssociation() {
+    func test_signOut_clearsICloudLocalAssociation() async {
         ICloudSyncService.shared.save(vaultID: "vault-to-forget", credentialID: "cred-to-forget")
-        AuthStore().signOut()
+        await AuthStore().signOut()
         XCTAssertNil(ICloudSyncService.shared.credentialID(for: "vault-to-forget"))
     }
 
     func test_signOut_clearsPendingNotifications() async {
         NotificationService.shared.scheduleTTLWarning(vaultID: "vault-signout-\(UUID().uuidString)", ttlRemaining: 3_600)
 
-        AuthStore().signOut()
+        await AuthStore().signOut()
 
         let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
         XCTAssertTrue(pendingRequests.isEmpty, "No notifications from the signed-out session should remain pending")
     }
 
-    func test_signOut_resetsLockState() {
+    func test_signOut_resetsLockState() async {
         let store = AuthStore()
         store.isAuthenticated = true
         store.isLocked = true
 
-        store.signOut()
+        await store.signOut()
 
         XCTAssertFalse(store.isLocked)
         XCTAssertFalse(store.isAuthenticated)

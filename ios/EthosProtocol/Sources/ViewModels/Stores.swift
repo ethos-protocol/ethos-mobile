@@ -18,6 +18,7 @@ final class AuthStore: ObservableObject {
     @Published var isAuthenticated = false
     @Published var isLoading = false
     @Published var error: ErrorPresentation?
+    @Published var isLocked = false
 
     // Injected for testing; defaults to the real APIClient call. See
     // BackgroundRefreshService.vaultListProvider for the same pattern.
@@ -25,16 +26,37 @@ final class AuthStore: ObservableObject {
         try await APIClient.shared.unregisterPushToken(token)
     }
 
+    // How long before AuthToken.expiresAt to proactively refresh (#3), and how long to
+    // wait before retrying after a transient (non-auth) refresh failure.
+    private let refreshLeadTime: TimeInterval = 60
+    private let refreshRetryDelay: TimeInterval = 30
+    private var refreshTask: Task<Void, Never>?
+    private var backgroundedAt: Date?
+
+    // Injectable seams for testing (mirrors BackgroundRefreshService.vaultListProvider):
+    // ASAuthorizationController-driven ceremonies can't run in a unit test, so AuthStore's
+    // own orchestration (single ceremony on register, proactive refresh scheduling,
+    // delete-and-reauth fallback) is exercised against these instead.
+    var passkeyRegister: (String) async throws -> AuthToken = { try await PasskeyService.shared.register(username: $0) }
+    var passkeyAuthenticate: () async throws -> AuthToken = { try await PasskeyService.shared.authenticate() }
+    var refreshToken: () async throws -> AuthToken = { try await APIClient.shared.refreshToken() }
+
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
+        if isAuthenticated, let expiresAt = KeychainService.shared.loadTokenExpiry() {
+            scheduleRefresh(before: expiresAt)
+        }
     }
 
     func signIn() async {
         isLoading = true; error = nil
         do {
-            let token = try await PasskeyService.shared.authenticate()
-            KeychainService.shared.saveToken(token.token)
-            ifNotCancelled { isAuthenticated = true }
+            let token = try await passkeyAuthenticate()
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled {
+                isAuthenticated = true
+                scheduleRefresh(before: token.expiresAt)
+            }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
@@ -44,12 +66,19 @@ final class AuthStore: ObservableObject {
         isLoading = false
     }
 
+    // A single passkey ceremony: PasskeyService.register() already registers with the
+    // backend (which returns a session token directly) and persists the credential ID
+    // atomically with that call (#4) — there is no second, redundant authenticate()
+    // ceremony / biometric prompt here (#2).
     func register(username: String) async {
         isLoading = true; error = nil
         do {
-            let credID = try await PasskeyService.shared.register(username: username)
-            KeychainService.shared.saveCredentialID(credID)
-            if !Task.isCancelled { await signIn() }
+            let token = try await passkeyRegister(username)
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled {
+                isAuthenticated = true
+                scheduleRefresh(before: token.expiresAt)
+            }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
@@ -57,6 +86,8 @@ final class AuthStore: ObservableObject {
     }
 
     func signOut() async {
+        refreshTask?.cancel()
+        refreshTask = nil
         // Unregister before dropping the auth token: the request needs the
         // still-valid Bearer token to authenticate, or the server rejects it.
         if let pushToken = KeychainService.shared.loadPushToken() {
@@ -90,6 +121,45 @@ final class AuthStore: ObservableObject {
             break
         @unknown default:
             break
+        }
+    }
+
+    // MARK: - Token refresh (#3)
+    //
+    // AuthToken.expiresAt was decoded but never read; a 401 was handled purely
+    // reactively by deleting the token and forcing a full passkey re-authentication,
+    // which can interrupt the user mid-task (e.g. mid check-in). This schedules a
+    // proactive refresh shortly before expiry instead. The reactive delete-and-reauth
+    // behavior in APIClient.execute() remains as-is and is the fallback used here
+    // whenever the refresh call itself is rejected by the server.
+
+    private func scheduleRefresh(before expiresAt: Date) {
+        scheduleRefresh(at: expiresAt.addingTimeInterval(-refreshLeadTime))
+    }
+
+    private func scheduleRefresh(at fireDate: Date) {
+        refreshTask?.cancel()
+        let delay = max(0, fireDate.timeIntervalSinceNow)
+        refreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.performRefresh()
+        }
+    }
+
+    private func performRefresh() async {
+        do {
+            let token = try await refreshToken()
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled { scheduleRefresh(before: token.expiresAt) }
+        } catch APIError.unauthorized {
+            // The server rejected the token outright — APIClient.execute() already
+            // deleted it locally. Fall back to forcing a full re-authentication.
+            ifNotCancelled { isAuthenticated = false }
+        } catch {
+            // Transient failure (e.g. offline) — retry later rather than signing the
+            // user out over a network hiccup.
+            ifNotCancelled { scheduleRefresh(at: Date().addingTimeInterval(refreshRetryDelay)) }
         }
     }
 }
@@ -143,9 +213,21 @@ final class VaultStore: ObservableObject {
     @Published var error: ErrorPresentation?
     @Published var pendingDeepLink: UniversalLinkRouter.DeepLink?
     @Published private(set) var nextCursor: String?
+    /// How long ago the currently-displayed `vaults` were fetched, when served from the
+    /// offline cache (APIClient.vaultsCacheAge()) rather than a fresh network response.
+    @Published var vaultsCacheAge: TimeInterval?
+    /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
+    /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
+    @Published private(set) var queuedCheckInCount = 0
+
+    private var eventSocket: VaultEventSocket?
 
     /// Whether a further page is available for VaultListView's "Load More".
     var hasMorePages: Bool { nextCursor != nil }
+
+    private func updateQueuedIndicator() {
+        queuedCheckInCount = PendingCheckInStore.shared.count
+    }
 
     func load() async {
         isLoading = true; error = nil
@@ -188,7 +270,7 @@ final class VaultStore: ObservableObject {
         } catch APIError.networkUnavailable {
             // Served from offline cache — keep whatever is already in `vaults`.
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
     }
@@ -206,7 +288,10 @@ final class VaultStore: ObservableObject {
             let count = PendingCheckInStore.shared.count
             NotificationService.shared.showQueuedCheckIn(count: count)
             CheckInSyncTask.shared.scheduleSync()
-            ifNotCancelled { self.error = "Offline — check-in queued and will retry automatically" }
+            ifNotCancelled {
+                queuedCheckInCount = count
+                self.error = ErrorPresentation(message: "Offline — check-in queued and will retry automatically")
+            }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
@@ -219,7 +304,7 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.deposit(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -231,7 +316,7 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.withdraw(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
     }
 
@@ -243,9 +328,26 @@ final class VaultStore: ObservableObject {
             _ = try await APIClient.shared.updateBeneficiary(vaultID: vault.id, newBeneficiary: newBeneficiary)
             if !Task.isCancelled { await load() }
         } catch {
-            ifNotCancelled { self.error = error.localizedDescription }
+            ifNotCancelled { self.error = ErrorPresentation(error) }
         }
+    }
+
+    /// Subscribes to real-time vault events (#20) and applies incoming updates to
+    /// `vaults` in place, so balance/status changes made from another device show up
+    /// without waiting for the next poll.
+    func subscribeToEvents(vaultID: String, socket: VaultEventSocket) {
         eventSocket = socket
+        socket.onEvent = { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .vaultUpdated(let updated):
+                if let index = self.vaults.firstIndex(where: { $0.id == updated.id }) {
+                    self.vaults[index] = updated
+                }
+            case .unknown:
+                break
+            }
+        }
         socket.connect(vaultID: vaultID)
     }
 

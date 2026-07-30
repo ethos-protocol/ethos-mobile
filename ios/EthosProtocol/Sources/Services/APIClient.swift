@@ -113,14 +113,26 @@ public final class APIClient {
         return try await post(path: "/auth/verify", body: body)
     }
 
-    func registerPasskey(credentialID: String, attestationObject: String, clientDataJSON: String) async throws {
-        // Field name is `attestation_object` per shared/api-contract.md — the backend
-        // parses the COSE public key out of the attestation object itself.
-        // (Legacy field name `public_key` is not accepted by the server.)
+    // `public_key` carries the WebAuthn COSE_Key (RFC 9052) extracted from the
+    // attestation object's authData, base64url-encoded — not the attestation object
+    // itself (#1, see docs/mobile-passkey-flow.md and shared/api-contract.md's
+    // PasskeyRegisterRequest). Matches Android's `PasskeyRegisterRequest.publicKey`
+    // (extractCosePublicKey). The backend returns a session token directly so
+    // registration only needs a single passkey ceremony (#2) — no separate
+    // /auth/verify round trip.
+    func registerPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws -> AuthToken {
         let body = ["credential_id": credentialID,
-                    "attestation_object": attestationObject,
+                    "public_key": publicKey,
                     "client_data_json": clientDataJSON]
-        let _: EmptyBody = try await post(path: "/auth/register", body: body)
+        return try await post(path: "/auth/register", body: body)
+    }
+
+    // Proactive refresh (#3): called by AuthStore shortly before AuthToken.expiresAt so
+    // an in-progress action isn't interrupted by a reactive 401 delete-and-reauth. Goes
+    // through the normal post()/execute() path — including the existing 401 handling
+    // below — so a rejected refresh still falls back to deleting the stored token.
+    func refreshToken() async throws -> AuthToken {
+        try await post(path: "/auth/refresh", body: EmptyBody())
     }
 
     /// Links a newly created passkey to an existing vault-owning account, for a user who
@@ -316,8 +328,8 @@ public final class APIClient {
         for (field, value) in Self.makeAntiReplayHeaders() {
             req.setValue(value, forHTTPHeaderField: field)
         }
-        let data = try await execute(req)
-        return try decode(data)
+        let (data, _) = try await execute(req)
+        return try decode(data, path: path)
     }
 
     private func request(path: String, queryItems: [URLQueryItem]? = nil) -> URLRequest {
@@ -353,7 +365,7 @@ public final class APIClient {
         return ["X-Nonce": nonce, "X-Timestamp": timestamp]
     }
 
-    private func execute(_ request: URLRequest) async throws -> Data {
+    private func execute(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         // Falling back to a cached response for a mutating request (POST/DELETE — e.g.
         // check-in, withdraw, disable2FA) would make the app report success for an action
         // that never actually reached the server, which is unacceptable for this app.

@@ -72,6 +72,13 @@ struct ErrorPresentation: Equatable {
             showsContactSupport = false
         }
     }
+
+    init(message: String, recoverySuggestion: String? = nil, showsRetry: Bool = false, showsContactSupport: Bool = false) {
+        self.message = message
+        self.recoverySuggestion = recoverySuggestion
+        self.showsRetry = showsRetry
+        self.showsContactSupport = showsContactSupport
+    }
 }
 
 enum BeneficiaryUpdate {

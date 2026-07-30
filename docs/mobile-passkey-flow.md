@@ -146,18 +146,26 @@ func authorizationController(
     didCompleteWithAuthorization authorization: ASAuthorization
 ) {
     if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
-        // 1. Extract the raw WebAuthn attestation object (CBOR-encoded COSE key + proof).
-        //    The backend parses the public key out of this object — do NOT try to extract
-        //    the public key client-side and send it separately.
-        let attestationObject = credential.rawAttestationObject  // base64url-encode before sending
+        // ASAuthorizationPlatformPublicKeyCredentialRegistration does NOT expose a
+        // `credentialPublicKey` property — the only public-key material Apple hands
+        // back is the raw CBOR attestation object. The COSE_Key (RFC 9052) has to be
+        // carved out of its `authData` by hand (see PasskeyService.swift's
+        // `extractCOSEPublicKey`/CBORReader), exactly as the Android client already
+        // does (PasskeyService.kt: extractCosePublicKey/cosePublicKeyBytes) — both
+        // platforms send byte-identical COSE_Key data.
+        let attestationObject = credential.rawAttestationObject
+        let publicKey = try PasskeyService.extractCOSEPublicKey(fromAttestationObject: attestationObject)
 
         // 2. Extract client data (challenge proof)
         let clientDataJSON = credential.rawClientDataJSON
 
-        // 3. Send to backend. Field name MUST be `attestation_object` (not `public_key`).
-        try await registerCredentialWithBackend(
+        // 3. Send to backend for verification and storage. The response is a session
+        // token (AuthToken) returned directly from /auth/register — no separate
+        // /auth/verify round trip (and no second biometric prompt) is needed to sign
+        // the user in right after registering.
+        let authToken = try await registerCredentialWithBackend(
             vaultId: vaultId,
-            attestationObject: attestationObject,
+            publicKey: publicKey,
             clientData: clientDataJSON
         )
     }
@@ -223,8 +231,18 @@ func authorizationController(
 - **Relying Party ID**: Must match domain (e.g., "ethos-protocol.app")
 - **User ID**: Unique identifier per vault owner (not user's Stellar address)
 - **Private Key Storage**: Automatically managed by Secure Enclave on modern iPhones
-- **Biometric Requirement**: Face ID / Touch ID required at time of registration and authentication
+- **Biometric Requirement**: Face ID / Touch ID required at time of registration and authentication —
+  registration is a *single* ceremony/prompt; the session token comes back directly from
+  `/auth/register`, so there is no second, redundant authentication ceremony immediately after (#2)
 - **Attestation**: Optional but recommended for initial registration (allows backend to verify genuine Apple hardware)
+- **Public Key Wire Format**: `public_key` on `/auth/register` is the WebAuthn COSE_Key
+  (RFC 9052) extracted from the attestation object's `authData`, base64url-encoded — never the
+  raw attestation object itself (#1)
+- **Credential-ID Persistence**: The local credential ID (`KeychainService.saveCredentialID`)
+  is persisted immediately after `/auth/register` succeeds, inside `PasskeyService.register()`
+  itself, in the same synchronous continuation — never deferred to a caller. This must remain
+  the case: a caller-side gap between "backend registration succeeded" and "credential ID
+  persisted locally" is exactly the crash window that breaks `ICloudSyncService` associations (#4)
 
 ## Android Implementation
 
@@ -394,12 +412,15 @@ pub async fn verify_registration(
     // 2. Verify origin matches expected domain
     verify_origin(&registration_response.client_data_json, "ethos-protocol.app")?;
 
-    // 3. Parse and verify the attestation object (always required — both clients
-    //    send it as `attestation_object`; the legacy `public_key` field is gone).
-    //    The COSE-encoded public key is extracted from inside the attestation object.
-    let public_key = extract_public_key_from_attestation(&registration_response.attestation_object)?;
+    // 3. The COSE_Key (RFC 9052) public key was already extracted from the attestation
+    //    object's authData client-side (both platforms — see PasskeyService's
+    //    extractCOSEPublicKey/extractCosePublicKey) and sent under `public_key`, not the
+    //    raw attestation object itself (#1). Decode it directly — no further extraction
+    //    needed here.
+    let public_key = decode_cose_key(&registration_response.public_key)?;
 
-    // 4. Optionally verify authenticator provenance (Apple/Google hardware)
+    // 4. Optionally verify authenticator provenance (Apple/Google hardware), if the
+    //    client also submitted the raw attestation object for this purpose.
     verify_attestation(&registration_response.attestation_object)?;
 
     // 5. Store public key associated with vault owner
