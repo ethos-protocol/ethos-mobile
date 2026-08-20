@@ -23,7 +23,7 @@ class BeneficiaryAcceptanceTest {
     fun `extractBeneficiaryAcceptParams returns null when token is missing`() {
         val activity = spyk(MainActivity())
         val intent = mockk<Intent>(relaxed = true)
-        val uri = Uri.parse("https://ethos-protocol.app/accept?vault_id=valid-vault-123")
+        val uri = Uri.parse("https://ethos-protocol.app/vaults/valid-vault-123/accept")
 
         every { intent.data } returns uri
 
@@ -42,7 +42,7 @@ class BeneficiaryAcceptanceTest {
     fun `extractBeneficiaryAcceptParams returns null when token is blank`() {
         val activity = spyk(MainActivity())
         val intent = mockk<Intent>(relaxed = true)
-        val uri = Uri.parse("https://ethos-protocol.app/accept?vault_id=valid-vault-123&token=")
+        val uri = Uri.parse("https://ethos-protocol.app/vaults/valid-vault-123/accept?token=")
 
         every { intent.data } returns uri
 
@@ -60,7 +60,7 @@ class BeneficiaryAcceptanceTest {
     fun `extractBeneficiaryAcceptParams returns null when vault_id is missing`() {
         val activity = spyk(MainActivity())
         val intent = mockk<Intent>(relaxed = true)
-        val uri = Uri.parse("https://ethos-protocol.app/accept?token=some-token-abc")
+        val uri = Uri.parse("https://ethos-protocol.app/vaults/accept?token=some-token-abc")
 
         every { intent.data } returns uri
 
@@ -78,7 +78,7 @@ class BeneficiaryAcceptanceTest {
     fun `extractBeneficiaryAcceptParams returns vaultId and token when both are valid`() {
         val activity = spyk(MainActivity())
         val intent = mockk<Intent>(relaxed = true)
-        val uri = Uri.parse("https://ethos-protocol.app/accept?vault_id=vault-456&token=invite-token-xyz")
+        val uri = Uri.parse("https://ethos-protocol.app/vaults/vault-456/accept?token=invite-token-xyz")
 
         every { intent.data } returns uri
         mockkObject(com.ethosprotocol.services.VaultDeepLinkParser)
@@ -102,7 +102,7 @@ class BeneficiaryAcceptanceTest {
     fun `extractBeneficiaryAcceptParams returns null for wrong host`() {
         val activity = spyk(MainActivity())
         val intent = mockk<Intent>(relaxed = true)
-        val uri = Uri.parse("https://evil-site.com/accept?vault_id=vault-123&token=stolen-token")
+        val uri = Uri.parse("https://evil-site.com/vaults/vault-123/accept?token=stolen-token")
 
         every { intent.data } returns uri
 

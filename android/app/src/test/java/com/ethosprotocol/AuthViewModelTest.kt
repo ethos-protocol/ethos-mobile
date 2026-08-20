@@ -45,6 +45,7 @@ class AuthViewModelTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         every { tokenProvider.token } returns null
+        every { tokenProvider.pushToken } returns null
         vm = AuthViewModel(
             apiClient = apiClient,
             passkeyService = passkeyService,

@@ -144,13 +144,16 @@ class VaultWidgetUpdateWorkerTest {
         // id.take(12) + "…"
         val expectedName = "GABCDEFGHIJKL"  // take(12) = "GABCDEFGHIJK" wait — 12 chars
         // "GABCDEFGHIJKLMNOP".take(12) = "GABCDEFGHIJK" (12 chars) + "…"
+        // Computed outside the verify {} block — a call to the mocked object from inside it
+        // is itself treated as part of what's being verified, not a plain expression.
+        val expectedLastCheckIn = VaultStatusWidget.formatLastCheckIn(v.lastCheckIn)
         verify {
             VaultStatusWidget.saveVaultData(
                 context = any(),
                 vaultId = any(),
                 vaultName = "GABCDEFGHIJK…",
                 ttlRemaining = "2d 0h",
-                lastCheckIn = VaultStatusWidget.formatLastCheckIn(v.lastCheckIn)
+                lastCheckIn = expectedLastCheckIn
             )
         }
     }
@@ -226,13 +229,14 @@ class VaultWidgetUpdateWorkerTest {
 
         // Only the first vault's id should appear in the widget data (#79: update this
         // once the "most urgent vault" selection logic replaces firstOrNull()).
+        val expectedLastCheckIn = VaultStatusWidget.formatLastCheckIn(first.lastCheckIn)
         verify {
             VaultStatusWidget.saveVaultData(
                 context = any(),
                 vaultId = any(),
                 vaultName = "first-vault…",
                 ttlRemaining = any(),
-                lastCheckIn = VaultStatusWidget.formatLastCheckIn(first.lastCheckIn)
+                lastCheckIn = expectedLastCheckIn
             )
         }
         verify(exactly = 0) {
