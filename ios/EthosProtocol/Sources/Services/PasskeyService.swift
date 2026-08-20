@@ -18,13 +18,17 @@ final class PasskeyService: NSObject {
     // Keyed by ObjectIdentifier(controller) so two concurrent performRequest() calls each
     // retain their own delegate without clobbering each other — a single stored property
     // would let an in-flight request's delegate be deallocated out from under it before
-    // its continuation resumes.
+    // its continuation resumes. Guarded by a lock: two concurrent ceremonies (e.g. a stray
+    // double-tap) call makeRetainedDelegate() from different Tasks, and unsynchronized
+    // concurrent mutation of a plain Dictionary is undefined behavior (observed as sporadic
+    // "unrecognized selector" crashes from corrupted storage under real concurrency).
+    private let retainedDelegatesLock = NSLock()
     private var retainedDelegates: [ObjectIdentifier: PasskeyDelegate] = [:]
 
     // `internal` (not `private`): PasskeyDelegateRetentionTests inspects this via
     // `@testable import` to verify concurrent performRequest() calls don't clobber
     // each other's retained delegate.
-    var activeDelegateCount: Int { retainedDelegates.count }
+    var activeDelegateCount: Int { retainedDelegatesLock.withLock { retainedDelegates.count } }
 
     /// Runs a single passkey registration ceremony and returns the session token the
     /// backend issues directly from `/auth/register` (#2) — no second, redundant
@@ -155,9 +159,10 @@ final class PasskeyService: NSObject {
     ) -> PasskeyDelegate {
         let key = ObjectIdentifier(controller)
         let delegate = PasskeyDelegate(continuation: continuation) { [weak self] in
-            self?.retainedDelegates[key] = nil
+            guard let self else { return }
+            self.retainedDelegatesLock.withLock { self.retainedDelegates[key] = nil }
         }
-        retainedDelegates[key] = delegate
+        retainedDelegatesLock.withLock { retainedDelegates[key] = delegate }
         return delegate
     }
 }
