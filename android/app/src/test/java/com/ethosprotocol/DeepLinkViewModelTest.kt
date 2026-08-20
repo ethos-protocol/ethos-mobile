@@ -38,35 +38,35 @@ class DeepLinkViewModelTest {
         val handle = SavedStateHandle()
         val vm1 = viewModel(handle)
 
-        vm1.setPendingBeneficiaryAccept("vault-abc")
+        vm1.setPendingBeneficiaryAccept("vault-abc" to "token-abc")
 
         // Simulate recreation: new ViewModel instance, same handle.
         val vm2 = viewModel(handle)
-        assertEquals("vault-abc", vm2.pendingBeneficiaryAcceptVaultId.value)
+        assertEquals("vault-abc" to "token-abc", vm2.pendingBeneficiaryAccept.value)
     }
 
     @Test
     fun beneficiaryAccept_initiallyNull() {
-        assertNull(viewModel().pendingBeneficiaryAcceptVaultId.value)
+        assertNull(viewModel().pendingBeneficiaryAccept.value)
     }
 
     @Test
     fun consumeBeneficiaryAccept_clearsState() {
         val vm = viewModel()
-        vm.setPendingBeneficiaryAccept("vault-xyz")
+        vm.setPendingBeneficiaryAccept("vault-xyz" to "token-xyz")
         vm.consumeBeneficiaryAccept()
-        assertNull(vm.pendingBeneficiaryAcceptVaultId.value)
+        assertNull(vm.pendingBeneficiaryAccept.value)
     }
 
     @Test
     fun consumeBeneficiaryAccept_clearsState_afterRecreation() {
         val handle = SavedStateHandle()
         val vm1 = viewModel(handle)
-        vm1.setPendingBeneficiaryAccept("vault-xyz")
+        vm1.setPendingBeneficiaryAccept("vault-xyz" to "token-xyz")
 
         val vm2 = viewModel(handle)
         vm2.consumeBeneficiaryAccept()
-        assertNull(vm2.pendingBeneficiaryAcceptVaultId.value)
+        assertNull(vm2.pendingBeneficiaryAccept.value)
     }
 
     // -------------------------------------------------------------------------
@@ -138,10 +138,10 @@ class DeepLinkViewModelTest {
         // MainActivity's handleIncomingIntent clears the other field before setting the new one;
         // but DeepLinkViewModel itself does not enforce mutual exclusion — verify that setting
         // the beneficiary field does not silently wipe the deep-link field.
-        vm.setPendingBeneficiaryAccept("vault-005")
+        vm.setPendingBeneficiaryAccept("vault-005" to "token-005")
         // deep link is still set (caller is responsible for clearing it, as MainActivity does)
         assertEquals(VaultDeepLink("vault-004", VaultDeepLinkAction.CHECK_IN), vm.pendingVaultDeepLink.value)
-        assertEquals("vault-005", vm.pendingBeneficiaryAcceptVaultId.value)
+        assertEquals("vault-005" to "token-005", vm.pendingBeneficiaryAccept.value)
     }
 
     // -------------------------------------------------------------------------
@@ -153,10 +153,23 @@ class DeepLinkViewModelTest {
         // Simulate a process-death restore where the OS parcels the SavedStateHandle
         // entries and restores them before the ViewModel is constructed.
         val restoredHandle = SavedStateHandle(
-            mapOf(DeepLinkViewModel.KEY_BENEFICIARY_VAULT_ID to "vault-restored")
+            mapOf(
+                DeepLinkViewModel.KEY_BENEFICIARY_VAULT_ID to "vault-restored",
+                DeepLinkViewModel.KEY_BENEFICIARY_TOKEN to "token-restored"
+            )
         )
         val vm = viewModel(restoredHandle)
-        assertEquals("vault-restored", vm.pendingBeneficiaryAcceptVaultId.value)
+        assertEquals("vault-restored" to "token-restored", vm.pendingBeneficiaryAccept.value)
+    }
+
+    @Test
+    fun pendingBeneficiaryAccept_nullWhenOnlyVaultIdRestored() {
+        // Partial state (vaultId without token) must not produce a half-constructed pair.
+        val restoredHandle = SavedStateHandle(
+            mapOf(DeepLinkViewModel.KEY_BENEFICIARY_VAULT_ID to "vault-partial")
+        )
+        val vm = viewModel(restoredHandle)
+        assertNull(vm.pendingBeneficiaryAccept.value)
     }
 
     @Test

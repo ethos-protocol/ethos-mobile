@@ -38,6 +38,7 @@ class DeepLinkViewModel @Inject constructor(
 
     companion object {
         internal const val KEY_BENEFICIARY_VAULT_ID = "pending_beneficiary_vault_id"
+        internal const val KEY_BENEFICIARY_TOKEN    = "pending_beneficiary_token"
         internal const val KEY_DEEP_LINK_VAULT_ID   = "pending_deep_link_vault_id"
         internal const val KEY_DEEP_LINK_ACTION     = "pending_deep_link_action"
     }
@@ -46,9 +47,35 @@ class DeepLinkViewModel @Inject constructor(
     // Exposed state as StateFlow (collected by Compose via collectAsStateWithLifecycle)
     // -------------------------------------------------------------------------
 
-    /** Vault ID from an /accept beneficiary intent, or null when none is pending. */
-    val pendingBeneficiaryAcceptVaultId: StateFlow<String?> =
-        savedStateHandle.getStateFlow(KEY_BENEFICIARY_VAULT_ID, null)
+    /** (vaultId, token) from an /accept beneficiary intent (#109), or null when none is pending. */
+    val pendingBeneficiaryAccept: StateFlow<Pair<String, String>?> =
+        // SavedStateHandle does not know how to serialise Pair directly, so we store the two
+        // string components separately and derive the composite value here — same approach
+        // as pendingVaultDeepLink below.
+        object : StateFlow<Pair<String, String>?> {
+            private val delegate = run {
+                val vaultIdFlow: StateFlow<String?> =
+                    savedStateHandle.getStateFlow(KEY_BENEFICIARY_VAULT_ID, null)
+                val tokenFlow: StateFlow<String?> =
+                    savedStateHandle.getStateFlow(KEY_BENEFICIARY_TOKEN, null)
+                object : StateFlow<Pair<String, String>?> {
+                    override val replayCache get() = listOf(value)
+                    override val value: Pair<String, String>?
+                        get() {
+                            val id = vaultIdFlow.value ?: return null
+                            val token = tokenFlow.value ?: return null
+                            return id to token
+                        }
+
+                    override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Pair<String, String>?>) =
+                        vaultIdFlow.collect { collector.emit(value) }
+                }
+            }
+            override val replayCache get() = delegate.replayCache
+            override val value get() = delegate.value
+            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Pair<String, String>?>) =
+                delegate.collect(collector)
+        }
 
     /** Deep link parsed from an ethosprotocol:// URI, or null when none is pending. */
     val pendingVaultDeepLink: StateFlow<VaultDeepLink?> =
@@ -91,8 +118,9 @@ class DeepLinkViewModel @Inject constructor(
     // -------------------------------------------------------------------------
 
     /** Called from [MainActivity.handleIncomingIntent] when a beneficiary-accept URI arrives. */
-    fun setPendingBeneficiaryAccept(vaultId: String?) {
-        savedStateHandle[KEY_BENEFICIARY_VAULT_ID] = vaultId
+    fun setPendingBeneficiaryAccept(accept: Pair<String, String>?) {
+        savedStateHandle[KEY_BENEFICIARY_VAULT_ID] = accept?.first
+        savedStateHandle[KEY_BENEFICIARY_TOKEN] = accept?.second
     }
 
     /** Called from [MainActivity.handleIncomingIntent] when an ethosprotocol:// URI arrives. */

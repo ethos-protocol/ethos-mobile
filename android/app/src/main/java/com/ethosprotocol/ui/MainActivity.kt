@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -67,7 +68,7 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             EthosProtocolTheme {
-                val beneficiaryAcceptVaultId by deepLinkViewModel.pendingBeneficiaryAcceptVaultId
+                val beneficiaryAccept by deepLinkViewModel.pendingBeneficiaryAccept
                     .collectAsStateWithLifecycle()
                 val vaultDeepLink by deepLinkViewModel.pendingVaultDeepLink
                     .collectAsStateWithLifecycle()
@@ -83,7 +84,7 @@ class MainActivity : FragmentActivity() {
                     }
                 )
                 AppNavigation(
-                    beneficiaryAcceptVaultId = beneficiaryAcceptVaultId,
+                    beneficiaryAccept = beneficiaryAccept,
                     vaultDeepLink = vaultDeepLink,
                     onBeneficiaryAcceptConsumed = { deepLinkViewModel.consumeBeneficiaryAccept() },
                     onVaultDeepLinkConsumed = { deepLinkViewModel.consumeVaultDeepLink() }
@@ -108,7 +109,7 @@ class MainActivity : FragmentActivity() {
                 return
             }
         }
-        extractBeneficiaryAcceptVaultId(intent)?.let {
+        extractBeneficiaryAccept(intent)?.let {
             deepLinkViewModel.setPendingBeneficiaryAccept(it)
             deepLinkViewModel.setPendingVaultDeepLink(null)
         }

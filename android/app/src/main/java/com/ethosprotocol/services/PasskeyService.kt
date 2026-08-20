@@ -2,6 +2,16 @@ package com.ethosprotocol.services
 
 import android.app.Activity
 import androidx.credentials.*
+import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.CreateCredentialException
+import androidx.credentials.exceptions.CreateCredentialInterruptedException
+import androidx.credentials.exceptions.CreateCredentialNoCreateOptionException
+import androidx.credentials.exceptions.CreateCredentialProviderConfigurationException
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.GetCredentialInterruptedException
+import androidx.credentials.exceptions.GetCredentialProviderConfigurationException
+import androidx.credentials.exceptions.NoCredentialException
 import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
@@ -9,11 +19,18 @@ import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.models.AuthChallenge
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
+import com.ethosprotocol.models.RecoveryCompleteRequest
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Carries a message already mapped to something actionable for [AuthUiState.error]. */
+class PasskeyException(message: String) : Exception(message)
+
+private const val RP_ID = "ethos-protocol.app"
 
 /**
  * Factory that produces a [CredentialManager] from an [Activity].
@@ -61,17 +78,17 @@ class PasskeyService @Inject constructor(
         val completeReq = RecoveryCompleteRequest(
             recoveryToken = recoveryToken,
             credentialId = json.getString("id"),
-            publicKey = json.getJSONObject("response").getString("attestationObject"),
+            publicKey = extractCosePublicKey(json.getJSONObject("response").getString("attestationObject")),
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
         requireSuccess(apiClient.completeRecovery(completeReq))
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
     private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {
-        val challenge = requireSuccess(apiClient.getChallenge()).challenge
-        val requestJson = buildCreateCredentialRequestJson(challenge, username)
+        val challenge = requireSuccess(apiClient.getChallenge())
+        val requestJson = buildRegistrationRequestJson(challenge, username)
 
-        val credManager = CredentialManager.create(activity)
+        val credManager = credentialManagerFactory.create(activity)
         val resp = try {
             credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
                     as CreatePublicKeyCredentialResponse
@@ -102,6 +119,28 @@ class PasskeyService @Inject constructor(
         )
         tokenProvider.setSession(requireSuccess(apiClient.verifyPasskey(verifyReq)))
     }.onFailure { if (it is CancellationException) throw it }
+
+    // Every CredentialManager failure previously collapsed into one generic message. Map the
+    // subtypes that carry actionable meaning; anything else falls back to a generic retry prompt.
+    private fun mapCreateCredentialError(e: CreateCredentialException): String = when (e) {
+        is CreateCredentialCancellationException -> "Sign-up canceled."
+        is CreateCredentialNoCreateOptionException ->
+            "This device can't create a passkey. Add a screen lock in Settings and try again."
+        is CreateCredentialProviderConfigurationException ->
+            "No passkey provider is set up on this device."
+        is CreateCredentialInterruptedException -> "Setup was interrupted — please try again."
+        else -> "Couldn't create a passkey on this device. Please try again."
+    }
+
+    private fun mapGetCredentialError(e: GetCredentialException): String = when (e) {
+        is GetCredentialCancellationException -> "Sign-in canceled."
+        is NoCredentialException ->
+            "No passkey found for this account on this device. Create an account or use the device you registered with."
+        is GetCredentialProviderConfigurationException ->
+            "No passkey provider is set up on this device."
+        is GetCredentialInterruptedException -> "Sign-in was interrupted — please try again."
+        else -> "Couldn't sign in with a passkey. Please try again."
+    }
 
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {

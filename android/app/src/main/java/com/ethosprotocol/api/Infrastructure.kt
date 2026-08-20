@@ -95,7 +95,7 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
                 totalSize -= file.length()
                 file.delete()
             }
-            accessOrder.remove(fileName)
+            accessOrder.keys.remove(fileName)
         }
     }
 

@@ -50,7 +50,10 @@ class ApiClient(
         private const val TAG = "ApiClient"
     }
 
-    private val client = HttpClient(engine) {
+    // internal (not private): VaultEventSocket reuses this same client/connection pool
+    // to open the `/ws` connection documented in shared/api-contract.md, rather than
+    // standing up a second HttpClient.
+    internal val client = HttpClient(engine) {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
@@ -86,6 +89,14 @@ class ApiClient(
                 }
             }
         }
+        install(WebSockets)
+    }
+
+    // Derives the `wss://.../ws?vault_id={id}` URL from [baseUrl] (documented in
+    // shared/api-contract.md) for VaultEventSocket.
+    internal fun webSocketUrl(vaultId: String): String {
+        val wsBase = baseUrl.replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
+        return "$wsBase/ws?vault_id=$vaultId"
     }
 
     // Auth
