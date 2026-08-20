@@ -101,6 +101,9 @@ targets:
       - path: Sources/Services/RetryPolicy.swift
       # APIClient.decode() logs decode failures through this.
       - path: Sources/Services/DecodingFailureLogger.swift
+      # APIClient's private convenience init() builds its URLSession with a
+      # PinningDelegate, defined here.
+      - path: Sources/Services/CertificatePinning.swift
     info:
       # See the EthosProtocol target's info.path comment above.
       path: ../TTLWidget/Info.plist

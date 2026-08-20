@@ -177,6 +177,11 @@ dependencies {
     testImplementation(libs.work.testing)
     testImplementation(platform(libs.compose.bom))
     testImplementation(libs.compose.ui.test.junit4)
+    // Provides the AndroidManifest.xml entry declaring androidx.activity.ComponentActivity
+    // as a launchable activity — createComposeRule() hosts its composition in one under the
+    // hood, and without this, Robolectric has nothing to resolve that launch Intent against
+    // even with a real app manifest merged in (isIncludeAndroidResources above).
+    testImplementation(libs.compose.ui.test.manifest)
     androidTestImplementation(libs.androidx.test.ext)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(platform(libs.compose.bom))
