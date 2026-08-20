@@ -846,6 +846,7 @@ final class HandleRefreshTests: XCTestCase {
         super.setUp()
         service = BackgroundRefreshService()
         service.scheduleAppRefreshCallCount = 0
+        service.scheduleTTLWarning = { _, _ in }
     }
 
     func test_handleRefresh_successfulFetch_callsSetTaskCompletedWithSuccess() async {

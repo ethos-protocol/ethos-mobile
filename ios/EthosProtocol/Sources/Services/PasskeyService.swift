@@ -321,9 +321,20 @@ private final class CBORReader {
             for _ in 0..<length { items.append(try readItem()) }
             return .array(items)
         case 5:
+            // Map keys are text strings in the outer attestationObject ("fmt", "authData", …)
+            // but integers in a COSE_Key map (RFC 9052 §7 — 1: kty, 3: alg, -1: crv, …).
+            // Only the outer map's decoded contents are actually read by callers; COSE_Key
+            // maps are skipped byte-for-byte to find their end offset, so integer keys just
+            // need a String representation here, not semantic meaning.
             var map: [String: CBORValue] = [:]
             for _ in 0..<length {
-                guard case let .text(key) = try readItem() else { throw PasskeyError.registrationFailed }
+                let key: String
+                switch try readItem() {
+                case .text(let text): key = text
+                case .uint(let value): key = String(value)
+                case .negint(let value): key = String(value)
+                default: throw PasskeyError.registrationFailed
+                }
                 map[key] = try readItem()
             }
             return .map(map)

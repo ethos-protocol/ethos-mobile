@@ -67,7 +67,7 @@ struct TTLTimelineProvider: TimelineProvider {
 
         // Scale based on time remaining until expiry
         switch ttl {
-        case 3_600...: return 15  // >= 1 hour: refresh every 15 min
+        case 21_600...: return 15  // >= 6 hours: refresh every 15 min
         case 3_600..<21_600: return 10  // 1-6 hours: refresh every 10 min
         case 1_800..<3_600: return 5  // 30 min-1 hour: refresh every 5 min
         case 0..<1_800: return 2  // < 30 min: refresh every 2 min

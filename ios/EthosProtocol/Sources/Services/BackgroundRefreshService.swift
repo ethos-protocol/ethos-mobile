@@ -22,6 +22,14 @@ final class BackgroundRefreshService {
     // an account with more vaults than fit on one page.
     var vaultListProvider: VaultListProvider = { try await APIClient.shared.listAllVaults() }
 
+    // Injected dependency for testing: NotificationService.shared.scheduleTTLWarning()
+    // calls UNUserNotificationCenter.current(), which raises
+    // "bundleProxyForCurrentProcess is nil" in the bare, unhosted SPM test bundle —
+    // this seam lets HandleRefreshTests no-op it instead of crashing.
+    var scheduleTTLWarning: (String, UInt64) -> Void = { vaultID, ttlRemaining in
+        NotificationService.shared.scheduleTTLWarning(vaultID: vaultID, ttlRemaining: ttlRemaining)
+    }
+
     // Tracks whether scheduleAppRefresh was called (for testing). `internal` (not
     // `private(set)`): HandleRefreshTests resets this between runs via `@testable import`,
     // which — like `private init()` — a `private` setter would block from another file.
@@ -71,7 +79,7 @@ final class BackgroundRefreshService {
                 let vaults = try await vaultListProvider()
                 for vault in vaults where vault.status == .active {
                     if let ttl = vault.ttlRemaining, ttl < 86_400 {
-                        NotificationService.shared.scheduleTTLWarning(vaultID: vault.id, ttlRemaining: ttl)
+                        scheduleTTLWarning(vault.id, ttl)
                     }
                 }
                 task.setTaskCompleted(success: true)

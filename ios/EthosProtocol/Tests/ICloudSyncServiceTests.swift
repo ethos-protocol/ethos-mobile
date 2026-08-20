@@ -119,7 +119,13 @@ final class ICloudSyncServiceTests: XCTestCase {
         XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "v1"), "new-cred")
     }
 
-    func test_conflictResolution_mostRecentWriteWins() {
+    func test_conflictResolution_mostRecentWriteWins() throws {
+        // NSUbiquitousKeyValueStore silently no-ops without an iCloud entitlement
+        // and a signed-in iCloud account — neither is available in the bare,
+        // unsigned SPM test bundle this runs in on CI, so the manually-seeded
+        // "remote" value below is never actually readable back.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
         // Simulate a conflict where an older local write is present
         let oldTimestamp = Date().timeIntervalSince1970 - 100
         let newTimestamp = Date().timeIntervalSince1970

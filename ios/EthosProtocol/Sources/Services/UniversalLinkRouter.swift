@@ -53,7 +53,11 @@ final class UniversalLinkRouter {
         if parts.count == 3, parts[0] == "vaults", parts[2] == "accept" {
             guard isValidIdentifier(parts[1]) else { return nil }
             let token = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
-            guard !token.isEmpty, isValidIdentifier(token) else { return nil }
+            // A missing/empty token still routes to the acceptance screen (with an empty
+            // token) so the app can show an explicit "missing token" error there, rather
+            // than silently failing to open the link at all. Only a malformed non-empty
+            // token is rejected as an invalid link.
+            guard token.isEmpty || isValidIdentifier(token) else { return nil }
             let link = DeepLink.beneficiaryAcceptance(vaultID: parts[1], token: token)
             logDeepLink(link)
             return link

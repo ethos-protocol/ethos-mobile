@@ -33,7 +33,15 @@ let package = Package(
         .testTarget(
             name: "EthosProtocolTests",
             dependencies: ["EthosProtocol", "TTLWidget"],
-            path: "Tests"
+            path: "Tests",
+            // HostedTests needs a real app host process (Keychain / UNUserNotificationCenter) —
+            // it's compiled into the XcodeGen-generated EthosProtocolTests target instead (see
+            // project.yml and ios-ci.yml's "Hosted" test step), not this bare SPM bundle, where
+            // those APIs raise/return nothing rather than working.
+            // UI is plain XCTestCase-hosted XCUITest code with no UI-testing bundle/target
+            // application configured anywhere in this project, so it cannot run at all here —
+            // "No target application path specified via test configuration".
+            exclude: ["HostedTests", "UI"]
         )
     ]
 )

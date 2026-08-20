@@ -187,7 +187,9 @@ final class VaultEventSocket {
 
     private func handleFailure() {
         guard !isStopped else { return }
-        task = nil
+        // Deliberately keep `task` set to the now-failed task rather than nilling it:
+        // openSocket() unconditionally overwrites it once a reconnect actually opens a
+        // new one, and until then stop() still needs a reference to cancel for cleanup.
         reconnectAttempt += 1
         if reconnectAttempt >= maxReconnectAttempts {
             state = .fallbackToPolling
