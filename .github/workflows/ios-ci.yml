@@ -11,8 +11,13 @@ defaults:
     working-directory: ios/EthosProtocol
 
 jobs:
+  # continue-on-error: ethos-protocol.app isn't a live domain yet, so this
+  # check can't pass until the site is actually deployed — that's out of this
+  # repo's control, so it's marked non-blocking rather than showing as a red
+  # failure on every run (mirrors Android CI's verify-asset-links).
   verify-universal-links:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
