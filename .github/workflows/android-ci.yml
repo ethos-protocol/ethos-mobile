@@ -44,6 +44,22 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - id: date
+        run: echo "week=$(date +%Y-W%U)" >> "$GITHUB_OUTPUT"
+
+      # Without an NVD API key, a from-scratch NVD database sync is what makes this
+      # job slow (heavy rate-limiting on the unkeyed feed). Caching the data
+      # directory (pinned in build.gradle.kts) across runs means most runs only
+      # fetch the incremental delta. Keyed by week so the cache still refreshes
+      # regularly rather than growing stale indefinitely.
+      - name: Cache OWASP dependency-check database
+        uses: actions/cache@v4
+        with:
+          path: android/dependency-check-data
+          key: dependency-check-data-${{ steps.date.outputs.week }}
+          restore-keys: |
+            dependency-check-data-
+
       - name: Scan dependencies for high severity vulnerabilities
         run: ./gradlew dependencyCheckAggregate
 

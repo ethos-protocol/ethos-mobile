@@ -11,4 +11,32 @@ plugins {
 dependencyCheck {
     failBuildOnCVSS = 7.0F
     formats = listOf("HTML", "JSON")
+
+    // Without an NVD API key, the default (unkeyed) NVD feed is aggressively
+    // rate-limited, so a from-scratch database sync is what makes this job slow.
+    // Pinning the data directory to a known path (instead of the plugin's default
+    // under GRADLE_USER_HOME) lets CI cache it across runs, so most runs only fetch
+    // the incremental delta instead of resyncing the whole database.
+    data {
+        directory = "${rootProject.projectDir}/dependency-check-data"
+    }
+
+    // This is a Kotlin/Android project only — skip analyzers for other ecosystems
+    // that don't apply here, since the plugin runs them by default whenever it
+    // finds any file that even loosely matches (e.g. any *.txt, *.md).
+    analyzers {
+        assemblyEnabled = false
+        nugetconfEnabled = false
+        nuspecEnabled = false
+        nodeEnabled = false
+        nodeAuditEnabled = false
+        retirejs { enabled = false }
+        rubygemsEnabled = false
+        cocoapodsEnabled = false
+        swiftEnabled = false
+        swiftPackageResolvedEnabled = false
+        cmakeEnabled = false
+        golangDepEnabled = false
+        golangModEnabled = false
+    }
 }
