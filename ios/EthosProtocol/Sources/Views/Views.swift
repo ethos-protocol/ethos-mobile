@@ -511,6 +511,9 @@ struct StatusBadge: View {
 // MARK: - Vault Detail
 
 struct VaultDetailView: View {
+    /// How often `refreshTTLPeriodically` polls the server, in nanoseconds (60 s).
+    static let ttlRefreshInterval: UInt64 = 60_000_000_000
+
     let vault: Vault
     @EnvironmentObject var vaultStore: VaultStore
     @State private var isCheckingIn = false
@@ -661,7 +664,7 @@ struct VaultDetailView: View {
         ttlRemaining = vault.ttlRemaining   // seed with value from vault list
         while !Task.isCancelled {
             await refreshTTL()
-            try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 

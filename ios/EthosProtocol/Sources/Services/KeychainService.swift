@@ -48,6 +48,10 @@ final class KeychainService {
         load(forKey: credentialKey)
     }
 
+    func deleteCredentialID() {
+        delete(forKey: credentialKey)
+    }
+
     /// Tracks the device push token last successfully registered with the server,
     /// so AuthStore.signOut() knows what to unregister without needing a fresh
     /// UIApplication device-token callback at sign-out time.

@@ -336,6 +336,17 @@ final class VaultStore: ObservableObject {
         }
     }
 
+    /// Replaces the vault matching `updated.id` in place (preserving list order), or
+    /// appends it if it isn't currently in `vaults` — e.g. a vault created from another
+    /// device that this session hasn't loaded yet.
+    func applyUpdate(_ updated: Vault) {
+        if let index = vaults.firstIndex(where: { $0.id == updated.id }) {
+            vaults[index] = updated
+        } else {
+            vaults.append(updated)
+        }
+    }
+
     /// Subscribes to real-time vault events (#20) and applies incoming updates to
     /// `vaults` in place, so balance/status changes made from another device show up
     /// without waiting for the next poll.
@@ -345,9 +356,7 @@ final class VaultStore: ObservableObject {
             guard let self else { return }
             switch event {
             case .vaultUpdated(let updated):
-                if let index = self.vaults.firstIndex(where: { $0.id == updated.id }) {
-                    self.vaults[index] = updated
-                }
+                self.applyUpdate(updated)
             case .unknown:
                 break
             }

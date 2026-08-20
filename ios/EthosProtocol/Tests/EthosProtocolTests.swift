@@ -229,12 +229,12 @@ final class TTLWidgetTests: XCTestCase {
     // covered below via VaultEntry directly.
 
     func test_widgetEntry_isExpiringSoon_whenTTLUnder24h() {
-        let entry = VaultEntry(date: .now, vaultName: "Test", ttlRemaining: 3_600, isExpiringSoon: true)
+        let entry = VaultEntry(date: .now, vaultID: "vault-test", vaultName: "Test", ttlRemaining: 3_600, isExpiringSoon: true)
         XCTAssertTrue(entry.isExpiringSoon)
     }
 
     func test_widgetEntry_isNotExpiringSoon_whenTTLOver24h() {
-        let entry = VaultEntry(date: .now, vaultName: "Test", ttlRemaining: 172_800, isExpiringSoon: false)
+        let entry = VaultEntry(date: .now, vaultID: "vault-test", vaultName: "Test", ttlRemaining: 172_800, isExpiringSoon: false)
         XCTAssertFalse(entry.isExpiringSoon)
     }
 
