@@ -1275,6 +1275,7 @@ struct VaultActionDeepLinkView: View {
     @State private var isLoading = false
     @State private var hasAttemptedLoad = false
     @State private var showWithdrawSheet = false
+    @State private var showManageBeneficiary = false
 
     private var vault: Vault? { vaultStore.vaults.first { $0.id == vaultID } }
 
@@ -1338,6 +1339,11 @@ struct VaultActionDeepLinkView: View {
         .sheet(isPresented: $showWithdrawSheet) {
             if let vault {
                 NavigationStack { WithdrawView(vault: vault) }
+            }
+        }
+        .sheet(isPresented: $showManageBeneficiary) {
+            if let vault {
+                NavigationStack { ManageBeneficiaryView(vault: vault) }
             }
         }
     }

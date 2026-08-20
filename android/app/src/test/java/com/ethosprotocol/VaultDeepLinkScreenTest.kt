@@ -11,12 +11,17 @@ import io.mockk.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Tests for issue #64: VaultDeepLinkScreen must show an explicit loading indicator while
  * state.isLoading is true and vault is null, and only show "Vault not found" once loading
  * has completed and the vault genuinely isn't present (preventing false flash of error).
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE)
 class VaultDeepLinkScreenTest {
 
     @get:Rule

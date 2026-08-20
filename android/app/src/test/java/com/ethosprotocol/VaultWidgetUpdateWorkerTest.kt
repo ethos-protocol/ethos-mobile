@@ -42,7 +42,7 @@ class VaultWidgetUpdateWorkerTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         mockkObject(VaultStatusWidget)
-        every { VaultStatusWidget.saveVaultData(any(), any(), any(), any()) } just Runs
+        every { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) } just Runs
         every { VaultStatusWidget.refreshAll(any()) } just Runs
     }
 
@@ -87,7 +87,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -102,7 +102,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -117,7 +117,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -137,7 +137,8 @@ class VaultWidgetUpdateWorkerTest {
         // "GABCDEFGHIJKLMNOP".take(12) = "GABCDEFGHIJK" (12 chars) + "…"
         verify {
             VaultStatusWidget.saveVaultData(
-                any(),
+                context = any(),
+                vaultId = any(),
                 vaultName = "GABCDEFGHIJK…",
                 ttlRemaining = "2d 0h",
                 lastCheckIn = v.lastCheckIn
@@ -154,7 +155,7 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(any(), any(), ttlRemaining = "1d 1h", any())
+            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "1d 1h", lastCheckIn = any())
         }
     }
 
@@ -167,7 +168,7 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(any(), any(), ttlRemaining = "1h", any())
+            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "1h", lastCheckIn = any())
         }
     }
 
@@ -179,7 +180,7 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(any(), any(), ttlRemaining = "Unknown", any())
+            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "Unknown", lastCheckIn = any())
         }
     }
 
@@ -192,7 +193,7 @@ class VaultWidgetUpdateWorkerTest {
 
         assertEquals(ListenableWorker.Result.success(), result)
         verifyOrder {
-            VaultStatusWidget.saveVaultData(any(), any(), any(), any())
+            VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any())
             VaultStatusWidget.refreshAll(any())
         }
     }
@@ -218,14 +219,15 @@ class VaultWidgetUpdateWorkerTest {
         // once the "most urgent vault" selection logic replaces firstOrNull()).
         verify {
             VaultStatusWidget.saveVaultData(
-                any(),
+                context = any(),
+                vaultId = any(),
                 vaultName = "first-vault…",
-                any(),
+                ttlRemaining = any(),
                 lastCheckIn = first.lastCheckIn
             )
         }
         verify(exactly = 0) {
-            VaultStatusWidget.saveVaultData(any(), vaultName = "second-vault…", any(), any())
+            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = "second-vault…", ttlRemaining = any(), lastCheckIn = any())
         }
     }
 

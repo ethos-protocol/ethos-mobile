@@ -6,6 +6,7 @@ import androidx.work.WorkManager
 import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.NetworkMonitor
+import com.ethosprotocol.api.EncryptedTokenProvider
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.services.CredentialManagerFactory
@@ -21,6 +22,9 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides @Singleton
+    fun provideTokenProvider(impl: EncryptedTokenProvider): TokenProvider = impl
 
     @Provides @Singleton
     fun provideApiClient(

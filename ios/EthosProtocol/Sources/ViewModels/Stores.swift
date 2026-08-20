@@ -40,6 +40,9 @@ final class AuthStore: ObservableObject {
     var passkeyRegister: (String) async throws -> AuthToken = { try await PasskeyService.shared.register(username: $0) }
     var passkeyAuthenticate: () async throws -> AuthToken = { try await PasskeyService.shared.authenticate() }
     var refreshToken: () async throws -> AuthToken = { try await APIClient.shared.refreshToken() }
+    var linkAdditionalPasskey: (String, AccountRecoveryProof) async throws -> String = { username, proof in
+        try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
+    }
 
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
@@ -74,6 +77,27 @@ final class AuthStore: ObservableObject {
         isLoading = true; error = nil
         do {
             let token = try await passkeyRegister(username)
+            KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
+            ifNotCancelled {
+                isAuthenticated = true
+                scheduleRefresh(before: token.expiresAt)
+            }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+        isLoading = false
+    }
+
+    /// Links a newly created passkey to an existing vault-owning account (for a user who
+    /// lost their original device), then signs in with it. `linkAdditionalPasskey` only
+    /// attaches the credential server-side and returns no session — a normal passkey
+    /// authenticate() ceremony against the freshly-linked credential is what actually
+    /// establishes the session, mirroring signIn().
+    func recoverAccess(email: String, backupCode: String, username: String) async {
+        isLoading = true; error = nil
+        do {
+            _ = try await linkAdditionalPasskey(username, AccountRecoveryProof(email: email, backupCode: backupCode))
+            let token = try await passkeyAuthenticate()
             KeychainService.shared.saveToken(token.token, expiresAt: token.expiresAt)
             ifNotCancelled {
                 isAuthenticated = true

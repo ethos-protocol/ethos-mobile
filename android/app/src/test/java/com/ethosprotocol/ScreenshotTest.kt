@@ -14,8 +14,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
+import com.android.resources.NightMode
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
@@ -58,7 +60,7 @@ class ScreenshotLightTest {
     @get:Rule
     val paparazzi = Paparazzi(
         deviceConfig = DeviceConfig.PIXEL_5.copy(
-            nightMode = false,
+            nightMode = NightMode.NOTNIGHT,
             softButtons = false
         )
     )
@@ -81,7 +83,7 @@ class ScreenshotDarkTest {
     @get:Rule
     val paparazzi = Paparazzi(
         deviceConfig = DeviceConfig.PIXEL_5.copy(
-            nightMode = true,
+            nightMode = NightMode.NIGHT,
             softButtons = false
         )
     )
@@ -178,12 +180,12 @@ private fun VaultListPopulatedPreview(darkTheme: Boolean) {
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(
-                                horizontal = androidx.compose.ui.unit.dp * 16,
-                                vertical = androidx.compose.ui.unit.dp * 6
+                                horizontal = 16.dp,
+                                vertical = 6.dp
                             )
                     ) {
                         androidx.compose.foundation.layout.Column(
-                            Modifier.padding(androidx.compose.ui.unit.dp * 16)
+                            Modifier.padding(16.dp)
                         ) {
                             Text(
                                 vault.id.take(12) + "…",

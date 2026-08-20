@@ -101,7 +101,7 @@ class PasskeyServiceTest {
         }
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
         coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
-        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Success(Unit)
+        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Success(fakeToken)
 
         val result = service.register(mockActivity, "alice")
 

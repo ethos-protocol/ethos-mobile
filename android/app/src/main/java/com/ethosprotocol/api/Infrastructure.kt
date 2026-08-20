@@ -110,8 +110,26 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     }
 }
 
+/**
+ * Abstracted so PasskeyServiceTest can supply an in-memory fake without a real
+ * Android Context / EncryptedSharedPreferences. [pushToken], [setSession], and
+ * [isNearExpiry] get harmless defaults so a minimal fake only needs to implement
+ * [token] and [clear] — see [EncryptedTokenProvider] for the real, persisted behavior.
+ */
+interface TokenProvider {
+    var token: String?
+    var pushToken: String?
+        get() = null
+        set(_) {}
+    fun setSession(authToken: AuthToken) { token = authToken.token }
+    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean = false
+    fun clear()
+}
+
 @Singleton
-class TokenProvider @Inject constructor(@ApplicationContext private val context: Context) {
+class EncryptedTokenProvider @Inject constructor(
+    @ApplicationContext private val context: Context
+) : TokenProvider {
     // ---------------------------------------------------------------------------
     // Android token-storage accessibility review (task #122) — mirrors the
     // documented rationale in iOS KeychainService.swift (saveToken).
@@ -156,7 +174,7 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
-    var token: String?
+    override var token: String?
         get() = prefs.getString("token", null)
         set(value) = prefs.edit().apply {
             if (value != null) putString("token", value) else remove("token")
@@ -164,7 +182,7 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
 
     // The last FCM token this device registered with the backend, so it can be
     // unregistered on sign-out even if Firebase doesn't hand out a fresh token then.
-    var pushToken: String?
+    override var pushToken: String?
         get() = prefs.getString("push_token", null)
         set(value) = prefs.edit().apply {
             if (value != null) putString("push_token", value) else remove("push_token")
@@ -179,17 +197,17 @@ class TokenProvider @Inject constructor(@ApplicationContext private val context:
     // Stores both the bearer token and its expiry from an auth response, so ApiClient can
     // proactively refresh before the backend would reject the token with a 401 — previously
     // AuthToken.expiresAt was parsed off the wire and then never read anywhere.
-    fun setSession(authToken: AuthToken) {
+    override fun setSession(authToken: AuthToken) {
         token = authToken.token
         expiresAtEpochMillis = runCatching { Instant.parse(authToken.expiresAt).toEpochMilli() }.getOrNull()
     }
 
-    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean {
+    override fun isNearExpiry(threshold: Duration): Boolean {
         val expiry = expiresAtEpochMillis ?: return false
         return Instant.now().plus(threshold).toEpochMilli() >= expiry
     }
 
-    fun clear() {
+    override fun clear() {
         token = null
         expiresAtEpochMillis = null
     }
