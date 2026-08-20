@@ -40,6 +40,25 @@ android {
 
     buildFeatures { compose = true; buildConfig = true }
 
+    // Several JUnit Jupiter jars pulled in transitively by androidTest dependencies (e.g.
+    // hilt-android-testing) each bundle their own copy of common META-INF license/notice
+    // files, which collide when packaging the androidTest APK
+    // ("6 files found with path 'META-INF/LICENSE.md'"). This project only uses JUnit 4
+    // directly; these files carry no runtime behavior, so it's safe to just keep one copy.
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/LICENSE.md",
+                "META-INF/LICENSE-notice.md",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/DEPENDENCIES"
+            )
+        }
+    }
+
     // Without this, Robolectric's unit-test runtime falls back to a synthetic manifest
     // with no registered activities (package "org.robolectric.default") instead of this
     // module's real merged manifest/resources — anything that needs to actually launch an
