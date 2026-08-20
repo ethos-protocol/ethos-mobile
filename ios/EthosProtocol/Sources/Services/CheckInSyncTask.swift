@@ -131,8 +131,12 @@ enum CheckInResult {
 
 extension APIClient: APIClientProtocol {
     func checkIn(vaultID: String) async -> CheckInResult {
+        // `checkIn(vaultID:)` is ambiguous here — this extension adds a second overload
+        // of the same name — so pin the reference to APIClient's original throwing/Void
+        // signature via an explicitly-typed variable before calling it.
+        let performCheckIn: (String) async throws -> Void = checkIn(vaultID:)
         do {
-            try await checkIn(vaultID: vaultID)
+            try await performCheckIn(vaultID)
             return .success
         } catch APIError.networkUnavailable {
             return .networkUnavailable
