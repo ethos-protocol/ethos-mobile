@@ -11,26 +11,10 @@ defaults:
     working-directory: android
 
 jobs:
-  # Kept in its own job (like instrumented-tests below) so an unrelated outage
-  # of the hosted assetlinks.json does not block build/lint/unit-test signal
-  # on every push and PR. continue-on-error: ethos-protocol.app isn't a live
-  # domain yet, so this check can't pass until the site is actually deployed —
-  # that's out of this repo's control, so it's marked non-blocking rather than
-  # showing as a red failure on every run.
-  verify-asset-links:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify Digital Asset Links (assetlinks.json)
-        working-directory: ${{ github.workspace }}
-        run: python3 .github/scripts/verify_asset_links.py
-
   # Kept out of build-and-test: the OWASP dependency-check task calls the NVD
   # API, which has no key configured here and rate-limits (HTTP 429) under
   # normal use — a scan flake should not block build/lint/unit-test signal on
-  # every push and PR (same reasoning as verify-asset-links above).
+  # every push and PR.
   dependency-check:
     runs-on: ubuntu-latest
     steps:
