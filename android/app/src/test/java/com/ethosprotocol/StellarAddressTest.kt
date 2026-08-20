@@ -39,7 +39,7 @@ class StellarAddressTest {
     @Test
     fun `isValidPublicKey accepts third canonical valid address`() {
         assertTrue(StellarAddress.isValidPublicKey(
-            "GD6WNKTD7WDTPTGTOVFLBKLPIHMYZPBKBWUQHVL3OQQZZIJDX4GKCY5"
+            "GB5JRTBIPHQBDXIEBQDEBZKHQ7DR5OWU5W2MWGGKXESYIYNEGQFRNEP7"
         ))
     }
 

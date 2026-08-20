@@ -2,6 +2,7 @@ package com.ethosprotocol
 
 import android.app.Activity
 import androidx.credentials.*
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
@@ -64,12 +65,23 @@ class PasskeyServiceTest {
         expiresAt = "2099-01-01T00:00:00Z"
     )
 
+    // extractCosePublicKey() actually base64url-decodes and CBOR-parses attestationObject,
+    // so the fixture needs to be real CBOR bytes (via CborTestUtils), not a placeholder
+    // string — a bogus string fails to decode before registerPasskey() is ever reached.
+    private val fakeCoseKey = cborEs256CoseKey(x = ByteArray(32) { 0x11 }, y = ByteArray(32) { 0x22 })
+    private val fakeAttestationObject = cborAttestationObject(
+        cborAuthData(credentialId = byteArrayOf(0xCA.toByte(), 0xFE.toByte()), coseKeyBytes = fakeCoseKey)
+    )
+    private val fakeCoseKeyBase64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(fakeCoseKey)
+    private val fakeAttestationObjectBase64 =
+        java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(fakeAttestationObject)
+
     /** Minimal valid WebAuthn registration response JSON. */
     private val fakeRegistrationJson = """
         {
           "id": "credential-id-reg",
           "response": {
-            "attestationObject": "att-obj-base64",
+            "attestationObject": "$fakeAttestationObjectBase64",
             "clientDataJSON": "client-data-base64"
           }
         }
@@ -110,7 +122,7 @@ class PasskeyServiceTest {
         val slot = slot<PasskeyRegisterRequest>()
         coVerify { mockApiClient.registerPasskey(capture(slot)) }
         assertEquals("credential-id-reg",  slot.captured.credentialId)
-        assertEquals("att-obj-base64",     slot.captured.publicKey)
+        assertEquals(fakeCoseKeyBase64,    slot.captured.publicKey)
         assertEquals("client-data-base64", slot.captured.clientDataJson)
     }
 
@@ -252,7 +264,7 @@ class PasskeyServiceTest {
         assertEquals("hello", service.requireSuccess(ApiResult.Success("hello")))
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test(expected = ApiCallFailedException::class)
     fun requireSuccess_apiError_throwsWithMessage() {
         service.requireSuccess(ApiResult.Error("Something went wrong", 500))
     }
@@ -265,7 +277,7 @@ class PasskeyServiceTest {
         assertEquals("Bad request", ex?.message)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test(expected = ApiCallFailedException::class)
     fun requireSuccess_networkUnavailable_throws() {
         service.requireSuccess(ApiResult.NetworkUnavailable)
     }

@@ -18,6 +18,9 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Also covers issue #61: queued pending actions and their ongoing notification must be
@@ -25,6 +28,8 @@ import org.junit.Test
  * signs out.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE)
 class AuthViewModelTest {
 
     private val testDispatcher = UnconfinedTestDispatcher()

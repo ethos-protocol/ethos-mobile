@@ -125,7 +125,10 @@ class VaultViewModelTest {
 
         vm.loadMore()
 
-        coVerify(exactly = 0) { apiClient.listVaults(limit = 20, after = any()) }
+        // load() itself already calls listVaults once with after=null, which any()
+        // also matches — asserting a total count of 1 (not 0) is what actually proves
+        // loadMore() triggered no additional call.
+        coVerify(exactly = 1) { apiClient.listVaults(any(), any()) }
     }
 
     @Test

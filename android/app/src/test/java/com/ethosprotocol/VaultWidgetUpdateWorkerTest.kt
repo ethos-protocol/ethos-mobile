@@ -6,6 +6,7 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.testing.WorkManagerTestInitHelper
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.Vault
@@ -41,6 +42,11 @@ class VaultWidgetUpdateWorkerTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        // VaultWidgetUpdateWorker.doWork() calls VaultWidgetUpdateWorker.schedule(context),
+        // which calls WorkManager.getInstance(context) — real WorkManager is never
+        // auto-initialized here (@Config(manifest = Config.NONE) means no manifest merging,
+        // so WorkManagerInitializer's ContentProvider never runs). Initialize a test instance.
+        WorkManagerTestInitHelper.initializeTestWorkManager(context)
         mockkObject(VaultStatusWidget)
         every { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) } just Runs
         every { VaultStatusWidget.refreshAll(any()) } just Runs

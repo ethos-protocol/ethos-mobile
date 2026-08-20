@@ -6,12 +6,17 @@ import com.ethosprotocol.ui.MainActivity
 import io.mockk.*
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Tests for issue #63: beneficiary acceptance must require and forward an invitation token
  * to prove the requester is the originally invited party, preventing unauthorized acceptance
  * by anyone who learns a vault ID.
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(manifest = Config.NONE)
 class BeneficiaryAcceptanceTest {
 
     @Test
