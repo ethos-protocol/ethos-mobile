@@ -130,6 +130,7 @@ targets:
         PRODUCT_NAME: EthosProtocolTests
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/EthosProtocol.app/EthosProtocol
         BUNDLE_LOADER: $(TEST_HOST)
+        GENERATE_INFOPLIST_FILE: YES
     dependencies:
       - target: EthosProtocol
 
