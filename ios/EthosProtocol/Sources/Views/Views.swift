@@ -279,7 +279,7 @@ struct RecoverAccessView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Verify your identity") {
+                Section {
                     TextField("Email", text: $email)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
@@ -287,6 +287,8 @@ struct RecoverAccessView: View {
                     TextField("Backup code", text: $backupCode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                } header: {
+                    Text("Verify your identity")
                 } footer: {
                     Text("Enter the email and backup code from when you created your account. We'll use them to link a new passkey on this device.")
                 }
