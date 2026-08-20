@@ -3,6 +3,7 @@ package com.ethosprotocol
 import io.ktor.client.*
 import io.ktor.client.engine.mock.*
 import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.runBlocking
@@ -166,15 +167,11 @@ class AntiReplayHeaderTest {
         }
 
         // First call should succeed.
-        val response1 = httpClient.post<io.ktor.client.statement.HttpResponse>(
-            "https://api.test/auth/verify"
-        )
+        val response1 = httpClient.post("https://api.test/auth/verify")
         assertEquals("First request should succeed", 200, response1.status.value)
 
         // Second call (simulated replay) should be rejected.
-        val response2 = httpClient.post<io.ktor.client.statement.HttpResponse>(
-            "https://api.test/auth/verify"
-        )
+        val response2 = httpClient.post("https://api.test/auth/verify")
         assertEquals(
             "Replayed request must be rejected by server (400)",
             400,

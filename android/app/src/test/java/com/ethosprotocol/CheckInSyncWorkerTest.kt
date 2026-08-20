@@ -6,10 +6,12 @@ import androidx.work.ListenableWorker
 import androidx.work.testing.TestListenableWorkerBuilder
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
-import com.ethosprotocol.services.CheckInSyncWorker
+import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.services.NotificationHelper
-import com.ethosprotocol.services.PendingCheckIn
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingAction
+import com.ethosprotocol.services.PendingActionDao
+import com.ethosprotocol.services.PendingActionSyncWorker
+import com.ethosprotocol.services.PendingActionType
 import io.mockk.*
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -21,7 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Unit tests for [CheckInSyncWorker] using [TestListenableWorkerBuilder].
+ * Unit tests for [PendingActionSyncWorker] using [TestListenableWorkerBuilder].
  *
  * The worker enforces a dead-man's-switch invariant: a pending check-in must never
  * be silently dropped unless the server has definitively rejected the request with a
@@ -34,14 +36,16 @@ import org.robolectric.annotation.Config
 class CheckInSyncWorkerTest {
 
     private val apiClient: ApiClient = mockk()
-    private val dao: PendingCheckInDao = mockk(relaxed = true)
+    private val dao: PendingActionDao = mockk(relaxed = true)
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
+    private val networkMonitor: NetworkMonitor = mockk()
 
     private lateinit var context: Context
 
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        every { networkMonitor.isConnected } returns true
     }
 
     @After
@@ -53,14 +57,14 @@ class CheckInSyncWorkerTest {
     // Helpers
     // ---------------------------------------------------------------------------
 
-    private fun buildWorker(): CheckInSyncWorker =
-        TestListenableWorkerBuilder<CheckInSyncWorker>(context)
+    private fun buildWorker(): PendingActionSyncWorker =
+        TestListenableWorkerBuilder<PendingActionSyncWorker>(context)
             .setWorkerFactory(
-                CheckInSyncWorkerFactory(apiClient, dao, notificationHelper)
+                CheckInSyncWorkerFactory(apiClient, dao, notificationHelper, networkMonitor)
             )
             .build()
 
-    private fun item(id: String) = PendingCheckIn(vaultId = id, queuedAt = 1_000L)
+    private fun item(id: String) = PendingAction(type = PendingActionType.CHECK_IN, vaultId = id, queuedAt = 1_000L)
 
     // ---------------------------------------------------------------------------
     // 1. Empty queue → success, nothing deleted, notification not cancelled
@@ -76,7 +80,7 @@ class CheckInSyncWorkerTest {
         // No items to process so delete should never be called
         coVerify(exactly = 0) { dao.delete(any()) }
         // Queue is empty from the start so cancelQueuedCheckIn should not be called
-        verify(exactly = 0) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 0) { notificationHelper.cancelQueuedActions() }
     }
 
     // ---------------------------------------------------------------------------
@@ -96,7 +100,7 @@ class CheckInSyncWorkerTest {
         coVerify(exactly = 1) { dao.delete(item("v1")) }
         coVerify(exactly = 1) { dao.delete(item("v2")) }
         coVerify(exactly = 1) { dao.delete(item("v3")) }
-        verify(exactly = 1) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
     }
 
     // ---------------------------------------------------------------------------
@@ -113,7 +117,7 @@ class CheckInSyncWorkerTest {
 
         assertEquals(ListenableWorker.Result.retry(), result)
         coVerify(exactly = 0) { dao.delete(any()) }
-        verify(exactly = 0) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 0) { notificationHelper.cancelQueuedActions() }
     }
 
     // ---------------------------------------------------------------------------
@@ -130,7 +134,7 @@ class CheckInSyncWorkerTest {
 
         assertEquals(ListenableWorker.Result.success(), result)
         coVerify(exactly = 1) { dao.delete(item("v1")) }
-        verify(exactly = 1) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
     }
 
     @Test
@@ -143,7 +147,7 @@ class CheckInSyncWorkerTest {
 
         assertEquals(ListenableWorker.Result.success(), result)
         coVerify(exactly = 1) { dao.delete(item("v1")) }
-        verify(exactly = 1) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
     }
 
     @Test
@@ -156,7 +160,7 @@ class CheckInSyncWorkerTest {
 
         assertEquals(ListenableWorker.Result.success(), result)
         coVerify(exactly = 1) { dao.delete(item("v1")) }
-        verify(exactly = 1) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
     }
 
     // ---------------------------------------------------------------------------
@@ -173,7 +177,7 @@ class CheckInSyncWorkerTest {
 
         assertEquals(ListenableWorker.Result.retry(), result)
         coVerify(exactly = 0) { dao.delete(any()) }
-        verify(exactly = 0) { notificationHelper.cancelQueuedCheckIn() }
+        verify(exactly = 0) { notificationHelper.cancelQueuedActions() }
     }
 
     @Test
@@ -194,7 +198,7 @@ class CheckInSyncWorkerTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `mixed results: non-retryable and success deleted, network error retained, returns retry`() =
+    fun `mixed results - non-retryable and success deleted, network error retained, returns retry`() =
         runBlocking {
             val vGone = item("gone")      // 410 → delete
             val vOffline = item("offline") // NetworkUnavailable → keep
@@ -214,7 +218,7 @@ class CheckInSyncWorkerTest {
             coVerify(exactly = 1) { dao.delete(vOk) }
             coVerify(exactly = 0) { dao.delete(vOffline) }
             // Queue is not empty (vOffline remains) → do NOT cancel notification
-            verify(exactly = 0) { notificationHelper.cancelQueuedCheckIn() }
+            verify(exactly = 0) { notificationHelper.cancelQueuedActions() }
         }
 
     // ---------------------------------------------------------------------------
@@ -222,7 +226,7 @@ class CheckInSyncWorkerTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `all non-retryable: all deleted, queue drained, notification cancelled, returns success`() =
+    fun `all non-retryable - all deleted, queue drained, notification cancelled, returns success`() =
         runBlocking {
             val items = listOf(item("a"), item("b"))
             coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
@@ -234,6 +238,6 @@ class CheckInSyncWorkerTest {
             assertEquals(ListenableWorker.Result.success(), result)
             coVerify(exactly = 1) { dao.delete(item("a")) }
             coVerify(exactly = 1) { dao.delete(item("b")) }
-            verify(exactly = 1) { notificationHelper.cancelQueuedCheckIn() }
+            verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
         }
 }

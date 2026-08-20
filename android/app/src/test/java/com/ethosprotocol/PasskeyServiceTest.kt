@@ -164,7 +164,7 @@ class PasskeyServiceTest {
             every { credential } returns fakeCredential
         }
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockCredentialManager.getCredential(mockActivity, any<GetCredentialRequest>()) } returns fakeGetResp
         coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.Success(fakeToken)
 
         val result = service.authenticate(mockActivity)
@@ -189,14 +189,14 @@ class PasskeyServiceTest {
         assertTrue("Expected failure", result.isFailure)
         assertEquals("No network connection", result.exceptionOrNull()?.message)
         assertEquals("old-token", tokenProvider.token)
-        coVerify(exactly = 0) { mockCredentialManager.getCredential(any(), any()) }
+        coVerify(exactly = 0) { mockCredentialManager.getCredential(any(), any<GetCredentialRequest>()) }
     }
 
     @Test
     fun authenticate_credentialManagerThrows_returnsFailure_tokenUnchanged() = runTest {
         tokenProvider.token = "old-token"
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } throws
+        coEvery { mockCredentialManager.getCredential(mockActivity, any<GetCredentialRequest>()) } throws
             RuntimeException("no credentials available")
 
         val result = service.authenticate(mockActivity)
@@ -216,7 +216,7 @@ class PasskeyServiceTest {
             every { credential } returns fakeCredential
         }
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockCredentialManager.getCredential(mockActivity, any<GetCredentialRequest>()) } returns fakeGetResp
         coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.Error("Invalid signature", 401)
 
         val result = service.authenticate(mockActivity)
@@ -236,7 +236,7 @@ class PasskeyServiceTest {
             every { credential } returns fakeCredential
         }
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.getCredential(mockActivity, any()) } returns fakeGetResp
+        coEvery { mockCredentialManager.getCredential(mockActivity, any<GetCredentialRequest>()) } returns fakeGetResp
         coEvery { mockApiClient.verifyPasskey(any()) } returns ApiResult.NetworkUnavailable
 
         val result = service.authenticate(mockActivity)

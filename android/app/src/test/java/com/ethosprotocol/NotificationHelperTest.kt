@@ -18,7 +18,7 @@ class NotificationHelperTest {
     @Before
     fun setup() {
         val context: Context = mockk(relaxed = true)
-        every { context.getSharedPreferences(any(), any()) } returns fakeSharedPreferences()
+        every { context.getSharedPreferences(any<String>(), any()) } returns fakeSharedPreferences()
         helper = NotificationHelper(context)
     }
 
