@@ -46,7 +46,8 @@ data class AuthUiState(
     val error: String? = null,
     // Set once initiateRecovery() succeeds — its presence means a recovery code has been
     // sent and the UI should show the "finish recovery" step.
-    val recoveryToken: String? = null
+    val recoveryToken: String? = null,
+    val cooldownRemainingSeconds: Int = 0
 )
 
 @HiltViewModel
@@ -54,7 +55,6 @@ class AuthViewModel @Inject constructor(
     private val apiClient: ApiClient,
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
-    private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
     private val pendingActionDao: PendingActionDao
 ) : ViewModel() {
@@ -67,6 +67,9 @@ class AuthViewModel @Inject constructor(
     // Default re-lock timeout — kept in sync with iOS's equivalent (#12) so both
     // platforms re-prompt biometrics after the same amount of backgrounded time.
     var relockTimeoutMillis: Long = DEFAULT_RELOCK_TIMEOUT_MILLIS
+
+    private var consecutiveFailures = 0
+    private var cooldownJob: Job? = null
 
     /** Called from MainActivity.onStop — records when the app left the foreground. */
     fun onAppBackgrounded(now: Long = System.currentTimeMillis()) {
@@ -90,8 +93,28 @@ class AuthViewModel @Inject constructor(
         if (_state.value.cooldownRemainingSeconds > 0) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
         passkeyService.authenticate(activity)
-            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
+            .onSuccess {
+                consecutiveFailures = 0
+                cooldownJob?.cancel()
+                _state.update { it.copy(isAuthenticated = true, isLoading = false, cooldownRemainingSeconds = 0) }
+            }
             .onFailure { e -> handleAuthFailure(e) }
+    }
+
+    private fun startCooldownIfNeeded() {
+        if (consecutiveFailures < COOLDOWN_FAILURE_THRESHOLD) return
+        // Cap the exponent well below where `shl` would overflow Int — the clamp to
+        // COOLDOWN_MAX_SECONDS below makes any exponent past this point equivalent anyway.
+        val exponent = (consecutiveFailures - COOLDOWN_FAILURE_THRESHOLD).coerceAtMost(10)
+        val seconds = (COOLDOWN_BASE_SECONDS shl exponent).coerceAtMost(COOLDOWN_MAX_SECONDS)
+        cooldownJob?.cancel()
+        cooldownJob = viewModelScope.launch {
+            for (remaining in seconds downTo 1) {
+                _state.update { it.copy(cooldownRemainingSeconds = remaining) }
+                delay(1_000)
+            }
+            _state.update { it.copy(cooldownRemainingSeconds = 0) }
+        }
     }
 
     fun register(activity: Activity, username: String) = viewModelScope.launch {
@@ -114,16 +137,25 @@ class AuthViewModel @Inject constructor(
         // should not persist or sync after sign-out (they belong to the previous user's vaults).
         pendingActionDao.deleteAll()
         notificationHelper.cancelQueuedActions()
-        _state.update { it.copy(isAuthenticated = false) }
+        backgroundedAtMillis = null
+        consecutiveFailures = 0
+        cooldownJob?.cancel()
+        _state.update { it.copy(isAuthenticated = false, isLocked = false, cooldownRemainingSeconds = 0) }
     }
 
     private fun handleAuthFailure(e: Throwable) {
         if (BuildConfig.DEBUG) Log.w(TAG, "auth failed", e)
+        consecutiveFailures++
         _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
+        startCooldownIfNeeded()
     }
 
     companion object {
         private const val TAG = "AuthViewModel"
+        const val DEFAULT_RELOCK_TIMEOUT_MILLIS = 30_000L
+        private const val COOLDOWN_FAILURE_THRESHOLD = 3
+        private const val COOLDOWN_BASE_SECONDS = 2
+        private const val COOLDOWN_MAX_SECONDS = 60
     }
 }
 
@@ -407,6 +439,29 @@ class VaultViewModel @Inject constructor(
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
         }
+    }
+
+    private fun updateVaultInPlace(vault: Vault) {
+        _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
+    }
+
+    /// Update the beneficiary for a vault (owner-only). On success the vault list is
+    /// refreshed so the UI reflects the new beneficiary immediately — matching the
+    /// same pattern used by checkIn(). Mirrors iOS VaultStore.updateBeneficiary.
+    fun updateBeneficiary(vaultId: String, newBeneficiary: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null, beneficiaryUpdated = false) }
+        when (val result = apiClient.updateBeneficiary(vaultId, newBeneficiary)) {
+            is ApiResult.Success -> {
+                _state.update { it.copy(isLoading = false, beneficiaryUpdated = true) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearBeneficiaryUpdated() {
+        _state.update { it.copy(beneficiaryUpdated = false) }
     }
 
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {

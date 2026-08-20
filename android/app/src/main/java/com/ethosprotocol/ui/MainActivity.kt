@@ -221,10 +221,12 @@ private fun AppNavigation(
             composable("vaults") {
                 VaultListScreen(onVaultClick = { /* navigate to detail */ })
             }
-            composable("accept/{vaultId}") { backStack ->
+            composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                val token = backStack.arguments?.getString("token") ?: return@composable
                 BeneficiaryAcceptanceScreen(
                     vaultId = vaultId,
+                    token = token,
                     onAccepted = { navController.popBackStack() },
                     onDecline = { navController.popBackStack() }
                 )
@@ -235,52 +237,33 @@ private fun AppNavigation(
                 VaultDeepLinkScreen(
                     vaultId = vaultId,
                     actionPath = action,
+                    onDone = { navController.popBackStack() },
+                    onDeposit = { id -> navController.navigate("deposit/$id") },
+                    onWithdraw = { id -> navController.navigate("withdraw/$id/0") }
+                )
+            }
+            // Deposit route: reached from VaultDeepLinkScreen (deposit action) or directly.
+            composable("deposit/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                DepositScreen(
+                    vaultId = vaultId,
                     onDone = { navController.popBackStack() }
                 )
             }
-        }
-        composable("accept/{vaultId}/{token}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            val token = backStack.arguments?.getString("token") ?: return@composable
-            BeneficiaryAcceptanceScreen(
-                vaultId = vaultId,
-                token = token,
-                onAccepted = { navController.popBackStack() },
-                onDecline = { navController.popBackStack() }
-            )
-        }
-        composable("vault/{vaultId}/{action}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            val action = backStack.arguments?.getString("action") ?: return@composable
-            VaultDeepLinkScreen(
-                vaultId = vaultId,
-                actionPath = action,
-                onDone = { navController.popBackStack() },
-                onDeposit = { id -> navController.navigate("deposit/$id") },
-                onWithdraw = { id -> navController.navigate("withdraw/$id/0") }
-            )
-        }
-        // Deposit route: reached from VaultDeepLinkScreen (deposit action) or directly.
-        composable("deposit/{vaultId}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            DepositScreen(
-                vaultId = vaultId,
-                onDone = { navController.popBackStack() }
-            )
-        }
-        // Withdraw route: vaultBalance is passed as a stroop-encoded Long string so the
-        // WithdrawScreen can enforce the client-side balance guard without a separate
-        // ViewModel load. The deep-link entry point passes 0 (balance unknown from the
-        // push notification context); the UI displays the field but the server always
-        // enforces the real balance server-side.
-        composable("withdraw/{vaultId}/{vaultBalance}") { backStack ->
-            val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
-            val vaultBalance = backStack.arguments?.getString("vaultBalance")?.toLongOrNull() ?: 0L
-            WithdrawScreen(
-                vaultId = vaultId,
-                vaultBalanceStroops = vaultBalance,
-                onDone = { navController.popBackStack() }
-            )
+            // Withdraw route: vaultBalance is passed as a stroop-encoded Long string so the
+            // WithdrawScreen can enforce the client-side balance guard without a separate
+            // ViewModel load. The deep-link entry point passes 0 (balance unknown from the
+            // push notification context); the UI displays the field but the server always
+            // enforces the real balance server-side.
+            composable("withdraw/{vaultId}/{vaultBalance}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                val vaultBalance = backStack.arguments?.getString("vaultBalance")?.toLongOrNull() ?: 0L
+                WithdrawScreen(
+                    vaultId = vaultId,
+                    vaultBalanceStroops = vaultBalance,
+                    onDone = { navController.popBackStack() }
+                )
+            }
         }
     }
 }

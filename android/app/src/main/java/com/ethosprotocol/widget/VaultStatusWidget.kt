@@ -104,7 +104,7 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val result = apiClient.listVaults(limit = 1)
+        val result = apiClient.listVaults()
         if (result is ApiResult.Success) {
             // Pick the active vault with the lowest ttlRemaining — the same
             // "most urgent vault" selection that iOS TTLTimelineProvider uses

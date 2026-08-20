@@ -129,6 +129,8 @@ class ApiClient(
     // Required by the server — see shared/api-contract.md §POST /vaults/{id}/accept.
     suspend fun acceptBeneficiary(vaultId: String, token: String): ApiResult<Unit> =
         post("/vaults/$vaultId/accept", BeneficiaryAcceptRequest(vaultId = vaultId, token = token))
+    suspend fun updateBeneficiary(vaultId: String, newBeneficiary: String): ApiResult<Vault> =
+        post("/vaults/$vaultId/beneficiary", BeneficiaryUpdateRequest(newBeneficiary))
 
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")

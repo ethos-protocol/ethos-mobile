@@ -33,13 +33,20 @@ class AuthViewModelTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val activity: android.app.Activity = mockk(relaxed = true)
     private lateinit var vm: AuthViewModel
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         every { tokenProvider.token } returns null
-        vm = AuthViewModel(passkeyService, tokenProvider, apiClient, notificationHelper, pendingActionDao)
+        vm = AuthViewModel(
+            apiClient = apiClient,
+            passkeyService = passkeyService,
+            tokenProvider = tokenProvider,
+            notificationHelper = notificationHelper,
+            pendingActionDao = pendingActionDao
+        )
     }
 
     @After
@@ -121,5 +128,94 @@ class AuthViewModelTest {
 
         coVerify(exactly = 1) { pendingActionDao.deleteAll() }
         verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
+    }
+
+    // MARK: - Sign-in cooldown
+
+    @Test
+    fun `signIn success authenticates with no cooldown`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+
+        vm.signIn(activity)
+
+        assertTrue(vm.state.value.isAuthenticated)
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `signIn failure below threshold does not start cooldown`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+
+        vm.signIn(activity)
+        vm.signIn(activity)
+
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `signIn failure reaching threshold starts base cooldown`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+
+        repeat(3) { vm.signIn(activity) }
+
+        assertEquals(2, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `cooldown escalates exponentially with further failures`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+
+        repeat(4) { vm.signIn(activity) }
+        assertEquals(4, vm.state.value.cooldownRemainingSeconds)
+
+        repeat(1) { vm.signIn(activity) }
+        assertEquals(8, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `cooldown is clamped to max`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+
+        repeat(10) { vm.signIn(activity) }
+
+        assertEquals(60, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `signIn is a no-op while cooldown is active`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+        repeat(3) { vm.signIn(activity) }
+        assertEquals(2, vm.state.value.cooldownRemainingSeconds)
+
+        vm.signIn(activity)
+
+        coVerify(exactly = 3) { passkeyService.authenticate(activity) }
+    }
+
+    @Test
+    fun `successful signIn resets failure count and cooldown`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+        repeat(2) { vm.signIn(activity) }
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        vm.signIn(activity)
+        assertTrue(vm.state.value.isAuthenticated)
+
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad again"))
+        repeat(2) { vm.signIn(activity) }
+
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    @Test
+    fun `signOut clears cooldown state`() = runTest {
+        coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
+        repeat(3) { vm.signIn(activity) }
+        assertEquals(2, vm.state.value.cooldownRemainingSeconds)
+
+        vm.signOut()
+
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
     }
 }
