@@ -275,6 +275,24 @@ final class VaultStore: ObservableObject {
         isLoading = false
     }
 
+    /// Fetches the next page after `nextCursor` and appends it to `vaults`, for
+    /// VaultListView's "Load More" row. No-ops if a fetch is already in flight or
+    /// there is no further page.
+    func loadMore() async {
+        guard !isLoadingMore, let cursor = nextCursor else { return }
+        isLoadingMore = true; error = nil
+        do {
+            let page = try await APIClient.shared.listVaults(cursor: cursor)
+            ifNotCancelled {
+                vaults += page.vaults
+                nextCursor = page.nextCursor
+            }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+        isLoadingMore = false
+    }
+
     /// Fetches all vault pages via cursor-based pagination (#112) and replaces the local list.
     func loadAll(limit: Int = 20) async {
         isLoading = true; error = nil
