@@ -3,7 +3,7 @@ import Foundation
 // MARK: - PendingCheckIn
 
 /// A single queued check-in that could not be delivered while the device was offline.
-/// Mirrors Android's `PendingCheckIn` Room entity in CheckInQueue.kt.
+/// Mirrors the CHECK_IN case of Android's `PendingAction` Room entity (PendingAction.kt).
 struct PendingCheckIn: Codable, Equatable {
     let vaultId: String
     let queuedAt: Date
@@ -13,8 +13,9 @@ struct PendingCheckIn: Codable, Equatable {
 
 /// Durable, disk-backed queue for offline check-ins.
 ///
-/// Mirrors Android's `PendingCheckInDao` (CheckInQueue.kt) — insert on offline check-in,
-/// delete on successful delivery, read by `CheckInSyncTask` when connectivity returns.
+/// Mirrors the CHECK_IN path of Android's `PendingActionDao` (PendingActionDatabase.kt) —
+/// insert on offline check-in, delete on successful delivery, read by `CheckInSyncTask`
+/// when connectivity returns.
 ///
 /// Storage: a JSON file in the app's Application Support directory so it survives
 /// app restarts (unlike UserDefaults, which can be evicted under storage pressure).

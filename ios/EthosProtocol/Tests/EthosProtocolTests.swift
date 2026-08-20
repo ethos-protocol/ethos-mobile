@@ -1260,6 +1260,54 @@ final class BeneficiaryUpdateTests: XCTestCase {
     }
 }
 
+// MARK: - #11 Username Validation Tests
+
+final class UsernameValidationTests: XCTestCase {
+
+    func test_validate_wellFormedUsername_succeedsAndReturnsTrimmed() {
+        switch UsernameValidation.validate("alice_92") {
+        case .success(let value): XCTAssertEqual(value, "alice_92")
+        case .failure(let error): XCTFail("Expected success, got \(error)")
+        }
+    }
+
+    func test_validate_trimsLeadingAndTrailingWhitespace() {
+        switch UsernameValidation.validate("  alice  ") {
+        case .success(let value): XCTAssertEqual(value, "alice")
+        case .failure(let error): XCTFail("Expected success, got \(error)")
+        }
+    }
+
+    func test_validate_tooShort_fails() {
+        XCTAssertEqual(UsernameValidation.validate("ab"), .failure(.tooShort))
+    }
+
+    func test_validate_whitespaceOnly_failsAsTooShort() {
+        XCTAssertEqual(UsernameValidation.validate("   "), .failure(.tooShort))
+    }
+
+    func test_validate_tooLong_fails() {
+        let tooLong = String(repeating: "a", count: UsernameValidation.maxLength + 1)
+        XCTAssertEqual(UsernameValidation.validate(tooLong), .failure(.tooLong))
+    }
+
+    func test_validate_atMaxLength_succeeds() {
+        let atMax = String(repeating: "a", count: UsernameValidation.maxLength)
+        XCTAssertEqual(UsernameValidation.validate(atMax), .success(atMax))
+    }
+
+    func test_validate_invalidCharacters_fails() {
+        for invalid in ["alice smith", "alice@site.com", "alice!", "alice/bob"] {
+            XCTAssertEqual(UsernameValidation.validate(invalid), .failure(.invalidCharacters),
+                           "Expected \(invalid) to be rejected")
+        }
+    }
+
+    func test_validate_allowsHyphenAndUnderscore() {
+        XCTAssertEqual(UsernameValidation.validate("alice-bob_92"), .success("alice-bob_92"))
+    }
+}
+
 // MARK: - #121 Anti-Replay Header Tests
 
 final class AntiReplayHeaderTests: XCTestCase {

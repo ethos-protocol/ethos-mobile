@@ -232,7 +232,7 @@ final class VaultStore: ObservableObject {
     func load() async {
         isLoading = true; error = nil
         if NetworkMonitor.shared.isConnected {
-            await CheckInSyncService.shared.flush()
+            await CheckInSyncTask.shared.performSync()
             updateQueuedIndicator()
         }
         do {
@@ -258,7 +258,7 @@ final class VaultStore: ObservableObject {
             var accumulated: [Vault] = []
             var cursor: String? = nil
             repeat {
-                let page = try await APIClient.shared.listVaults(limit: limit, after: cursor)
+                let page = try await APIClient.shared.listVaults(cursor: cursor, limit: limit)
                 accumulated.append(contentsOf: page.vaults)
                 cursor = page.nextCursor
                 if Task.isCancelled { return }

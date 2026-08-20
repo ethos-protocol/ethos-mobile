@@ -610,7 +610,7 @@ struct VaultDetailView: View {
         // The real-time event subscription (#20) rides along on the same task:
         // opened before the loop starts, torn down via `defer` once it exits.
         .task {
-            vaultStore.subscribeToEvents(vaultID: vault.id)
+            vaultStore.subscribeToEvents(vaultID: vault.id, socket: VaultEventSocket(baseURL: APIClient.shared.baseURL))
             defer { vaultStore.unsubscribeFromEvents() }
             await refreshTTLPeriodically()
         }
@@ -647,13 +647,6 @@ struct VaultDetailView: View {
                 twoFactorLoadError = error.localizedDescription
                 twoFactorStatus = nil
             }
-        }
-    }
-
-    private func refreshTTLPeriodically() async {
-        while !Task.isCancelled {
-            await refreshTTL()
-            try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
     }
 

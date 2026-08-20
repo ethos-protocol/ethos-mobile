@@ -22,9 +22,6 @@ final class BackgroundRefreshService {
     // an account with more vaults than fit on one page.
     var vaultListProvider: VaultListProvider = { try await APIClient.shared.listAllVaults() }
 
-    // Injected dependency for testing; defaults to the shared check-in retry queue.
-    var checkInSync: CheckInSyncService = .shared
-
     // Tracks whether scheduleAppRefresh was called (for testing). `internal` (not
     // `private(set)`): HandleRefreshTests resets this between runs via `@testable import`,
     // which — like `private init()` — a `private` setter would block from another file.
@@ -70,12 +67,6 @@ final class BackgroundRefreshService {
         mutableTask.expirationHandler = { refreshTask?.cancel() }
 
         refreshTask = Task {
-            // Piggyback the offline check-in retry queue on this already-registered,
-            // already-scheduled BGAppRefreshTask rather than registering a second background
-            // task identifier — see issue #28. Best-effort: a flush failure shouldn't fail the
-            // TTL refresh this task also performs.
-            await checkInSync.flush()
-
             do {
                 let vaults = try await vaultListProvider()
                 for vault in vaults where vault.status == .active {

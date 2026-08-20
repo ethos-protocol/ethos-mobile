@@ -5,7 +5,7 @@ import Foundation
 
 /// Drains the `PendingCheckInStore` queue whenever the device has connectivity.
 ///
-/// Mirrors Android's `CheckInSyncWorker` (CheckInSyncWorker.kt) exactly:
+/// Mirrors the CHECK_IN path of Android's `PendingActionSyncWorker` (PendingActionSyncWorker.kt) exactly:
 /// - Iterates pending items oldest-first.
 /// - On `ApiResult.Success` → delete from queue.
 /// - On network unavailable → mark `hasRetryableFailure`, leave item, schedule again.
@@ -23,7 +23,7 @@ final class CheckInSyncTask {
     static let taskIdentifier = "app.ethos-protocol.checkin-sync"
 
     // Error codes where the server has definitively rejected the check-in. Matches
-    // CheckInSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
+    // PendingActionSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
     static let nonRetryableErrorCodes: Set<Int> = [400, 404, 410]
 
     // Injected for testing

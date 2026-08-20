@@ -38,8 +38,10 @@ public final class IntegrityService {
     }
     var forkChecker: () -> Bool = {
         // On a jailbroken device the sandbox is typically weakened and fork() succeeds.
-        // On a stock device fork() returns -1 immediately.
-        let pid = fork()
+        // On a stock device fork() returns -1 immediately. Swift's `fork()` overlay is
+        // marked unavailable on this platform (compile-time only — the syscall itself
+        // still exists), so invoke it directly via its raw syscall number instead.
+        let pid = syscall(SYS_fork)
         if pid == 0 {
             // Child process — shouldn't happen in a healthy sandbox
             exit(0)

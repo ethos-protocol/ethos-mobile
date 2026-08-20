@@ -200,14 +200,6 @@ public final class APIClient {
         return all
     }
 
-    /// Paginated variant of listVaults (#112).
-    /// Pass `after: page.nextCursor` to fetch subsequent pages until `page.hasMore == false`.
-    func listVaults(limit: Int = 20, after cursor: String? = nil) async throws -> VaultPage {
-        var path = "/vaults?limit=\(limit)"
-        if let cursor = cursor { path += "&after=\(cursor)" }
-        return try await get(path: path)
-    }
-
     /// How long ago the cached `/vaults` response was written, or nil if nothing is cached yet.
     /// Lets VaultStore surface "data as of X ago" when a `listVaults()` call was served from
     /// the offline cache. Uses the same cache key `execute(_:)` saves under (the request URL).
