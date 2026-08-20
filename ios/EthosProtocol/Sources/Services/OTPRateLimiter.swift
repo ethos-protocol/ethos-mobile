@@ -60,7 +60,7 @@ final class OTPRateLimiter: ObservableObject {
 
     // MARK: - Cooldown schedule
 
-    static func cooldownSeconds(for failures: Int) -> Int {
+    nonisolated static func cooldownSeconds(for failures: Int) -> Int {
         switch failures {
         case ..<3:   return 0
         case 3:      return 30

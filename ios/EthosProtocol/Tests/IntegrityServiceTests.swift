@@ -153,7 +153,15 @@ final class IntegrityServiceTests: XCTestCase {
         }
         svc.environmentChecker = { ProcessInfo.processInfo.environment[$0] }
         svc.forkChecker = {
-            let pid = fork()
+            // `fork()` is marked unavailable at compile time on this platform (the
+            // underlying libc symbol still exists) — resolve and call it via dlsym,
+            // matching IntegrityService's production forkChecker.
+            typealias ForkFn = @convention(c) () -> pid_t
+            guard let handle = dlopen(nil, RTLD_NOW),
+                  let sym = dlsym(handle, "fork") else {
+                return false
+            }
+            let pid = unsafeBitCast(sym, to: ForkFn.self)()
             if pid == 0 { exit(0) }
             return pid > 0
         }
