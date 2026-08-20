@@ -151,7 +151,7 @@ jobs:
       # `swift test` isn't used here because several files import iOS-only
       # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
       # for swift test's default macOS host destination.
-      - name: Test (iOS Simulator) ${{ matrix.name-suffix }}
+      - name: Test (iOS Simulator)
         # GitHub Actions sets CI=true for this shell, but that does NOT reach
         # the Simulator-hosted xctest process — it runs in its own sandboxed
         # environment, not inherited from the invoking shell. xcodebuild's
@@ -164,7 +164,7 @@ jobs:
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=${{ matrix.simulator-name }},OS=${{ matrix.simulator-os }}' \
+            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation
 
       - name: Install XcodeGen
