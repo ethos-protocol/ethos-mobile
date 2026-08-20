@@ -13,7 +13,7 @@ import com.ethosprotocol.ui.TwoFactorViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.screens.*
 import com.ethosprotocol.services.NotificationHelper
-import com.ethosprotocol.services.PendingCheckInDao
+import com.ethosprotocol.services.PendingActionDao
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import io.mockk.*
@@ -22,7 +22,8 @@ import org.junit.Rule
 import org.junit.Test
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.ethosprotocol.services.CheckInSyncWorker
+import com.ethosprotocol.services.PendingActionSyncWorker
+import com.ethosprotocol.services.VaultEventSocket
 
 // ============================================================================
 // AuthScreenTest
@@ -40,15 +41,18 @@ class AuthScreenTest {
     @get:Rule(order = 0) val hiltRule = HiltAndroidRule(this)
     @get:Rule(order = 1) val composeRule = createComposeRule()
 
+    private val apiClient: ApiClient = mockk(relaxed = true)
     private val passkeyService: PasskeyService = mockk(relaxed = true)
     private val tokenProvider: TokenProvider = mockk(relaxed = true)
+    private val notificationHelper: NotificationHelper = mockk(relaxed = true)
+    private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private lateinit var vm: AuthViewModel
 
     @Before
     fun setUp() {
         hiltRule.inject()
         every { tokenProvider.token } returns null
-        vm = AuthViewModel(passkeyService, tokenProvider)
+        vm = AuthViewModel(apiClient, passkeyService, tokenProvider, notificationHelper, pendingActionDao)
     }
 
     @Test
@@ -160,6 +164,7 @@ class BeneficiaryAcceptanceScreenTest {
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "VAULT-ABC-123",
+                token = "test-token",
                 onAccepted = {},
                 onDecline = {},
                 vm = vm
@@ -174,6 +179,7 @@ class BeneficiaryAcceptanceScreenTest {
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "v1",
+                token = "test-token",
                 onAccepted = {},
                 onDecline = {},
                 vm = vm
@@ -190,6 +196,7 @@ class BeneficiaryAcceptanceScreenTest {
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "v1",
+                token = "test-token",
                 onAccepted = {},
                 onDecline = { declined = true },
                 vm = vm
@@ -209,11 +216,12 @@ class BeneficiaryAcceptanceScreenTest {
      */
     @Test
     fun acceptanceScreen_networkError_isDisplayed() {
-        coEvery { apiClient.acceptBeneficiary(any()) } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.acceptBeneficiary(any(), any()) } returns ApiResult.NetworkUnavailable
 
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "v1",
+                token = "test-token",
                 onAccepted = {},
                 onDecline = {},
                 vm = vm
@@ -228,12 +236,13 @@ class BeneficiaryAcceptanceScreenTest {
 
     @Test
     fun acceptanceScreen_apiError_isDisplayed() {
-        coEvery { apiClient.acceptBeneficiary(any()) } returns
+        coEvery { apiClient.acceptBeneficiary(any(), any()) } returns
             ApiResult.Error("Vault not found", 404)
 
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "v1",
+                token = "test-token",
                 onAccepted = {},
                 onDecline = {},
                 vm = vm
@@ -248,11 +257,12 @@ class BeneficiaryAcceptanceScreenTest {
     @Test
     fun acceptanceScreen_acceptSuccess_invokesOnAcceptedCallback() {
         var accepted = false
-        coEvery { apiClient.acceptBeneficiary("v1") } returns ApiResult.Success(Unit)
+        coEvery { apiClient.acceptBeneficiary("v1", "test-token") } returns ApiResult.Success(Unit)
 
         composeRule.setContent {
             BeneficiaryAcceptanceScreen(
                 vaultId = "v1",
+                token = "test-token",
                 onAccepted = { accepted = true },
                 onDecline = {},
                 vm = vm
@@ -397,16 +407,17 @@ class VaultDeepLinkScreenTest {
 
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
-    private val pendingCheckInDao: PendingCheckInDao = mockk(relaxed = true)
+    private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val vaultEventSocket: VaultEventSocket = mockk(relaxed = true)
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var vm: VaultViewModel
 
     @Before
     fun setUp() {
         hiltRule.inject()
-        mockkObject(CheckInSyncWorker.Companion)
-        every { CheckInSyncWorker.schedule(any()) } just Runs
-        vm = VaultViewModel(apiClient, notificationHelper, pendingCheckInDao, context)
+        mockkObject(PendingActionSyncWorker.Companion)
+        every { PendingActionSyncWorker.schedule(any()) } just Runs
+        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
     }
 
     private fun makeVault(id: String) = Vault(

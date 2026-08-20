@@ -191,4 +191,7 @@ dependencies {
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.mockk.android)
+    // @HiltAndroidTest / HiltAndroidRule, used by the instrumented tests under androidTest/.
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
 }

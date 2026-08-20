@@ -44,7 +44,8 @@ class VaultListPullToRefreshTest {
         val vm = VaultViewModel(
             apiClient = apiClient,
             notificationHelper = mockk(relaxed = true),
-            pendingCheckInDao = mockk(relaxed = true),
+            pendingActionDao = mockk(relaxed = true),
+            vaultEventSocket = mockk(relaxed = true),
             context = InstrumentationRegistry.getInstrumentation().targetContext
         )
 
