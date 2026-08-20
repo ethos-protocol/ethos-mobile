@@ -20,6 +20,7 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
+import java.io.IOException
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -43,8 +44,32 @@ class ApiClient(
     private val offlineCache: OfflineCache,
     private val baseUrl: String,
     // Overridable so tests can substitute a MockEngine instead of hitting real Android
-    // networking; production callers (AppModule) get the real Android engine for free.
-    engine: HttpClientEngine = Android.create()
+    // networking; production callers (AppModule) get the real Android engine, pre-configured
+    // with certificate pinning, for free.
+    //
+    // #117: Certificate / public-key pinning for api.ethos-protocol.app. PinningTrustManager
+    // wraps the system TrustManager and additionally verifies that at least one certificate
+    // in the chain matches a pinned SPKI SHA-256 hash. See CertificatePinning.kt for the
+    // rotation strategy.
+    //
+    // This has to be configured here, on the engine instance itself, rather than via
+    // HttpClient(engine) { engine { sslManager = ... } } below: that `engine { }` builder
+    // DSL is only available when HttpClient is constructed from an engine *factory*
+    // (HttpClient(Android) { ... }), not from an already-built HttpClientEngine instance —
+    // which is what's injected here for testability.
+    engine: HttpClientEngine = Android.create {
+        sslManager = { httpsURLConnection ->
+            val systemTm = getSystemTrustManager()
+            if (systemTm != null) {
+                val pinner = CertificatePinner()
+                val pinningTm = PinningTrustManager(pinner, systemTm)
+                val sslContext = SSLContext.getInstance("TLS")
+                sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
+                httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+            }
+        }
+    },
+    private val retryPolicy: RetryPolicy = RetryPolicy.networkDefault
 ) {
     companion object {
         private const val TAG = "ApiClient"
@@ -72,22 +97,6 @@ class ApiClient(
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
             socketTimeoutMillis = 30_000
-        }
-        // #117: Certificate / public-key pinning for api.ethos-protocol.app.
-        // PinningTrustManager wraps the system TrustManager and additionally
-        // verifies that at least one certificate in the chain matches a pinned
-        // SPKI SHA-256 hash. See CertificatePinning.kt for the rotation strategy.
-        engine {
-            sslManager = { httpsURLConnection ->
-                val systemTm = getSystemTrustManager()
-                if (systemTm != null) {
-                    val pinner = CertificatePinner()
-                    val pinningTm = PinningTrustManager(pinner, systemTm)
-                    val sslContext = SSLContext.getInstance("TLS")
-                    sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
-                    httpsURLConnection.sslSocketFactory = sslContext.socketFactory
-                }
-            }
         }
         install(WebSockets)
     }

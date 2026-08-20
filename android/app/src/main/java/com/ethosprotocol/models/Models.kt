@@ -68,10 +68,10 @@ data class PasskeyVerifyRequest(
 @Serializable
 data class PasskeyRegisterRequest(
     @SerialName("credential_id") val credentialId: String,
-    // Field name is `attestation_object` per shared/api-contract.md — the backend
-    // extracts the COSE-encoded public key from this object. The legacy `public_key`
-    // field is not accepted by the server. (#108)
-    @SerialName("attestation_object") val attestationObject: String,
+    // `public_key` is the WebAuthn COSE_Key (RFC 9052) extracted from the attestation
+    // object's authData, base64url-encoded — not the raw CBOR attestation object.
+    // See shared/api-contract.md's PasskeyRegisterRequest (#1) section.
+    @SerialName("public_key") val publicKey: String,
     @SerialName("client_data_json") val clientDataJson: String
 )
 
