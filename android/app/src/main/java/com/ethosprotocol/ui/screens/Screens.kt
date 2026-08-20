@@ -323,13 +323,13 @@ fun VaultListScreen(
                                     onCheckIn = { pendingCheckIn = vault },
                                 )
                             }
-                        }
-                        if (state.hasMore) item {
-                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                                if (state.isLoadingMore) {
-                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-                                } else {
-                                    OutlinedButton(onClick = { vm.loadMore() }) { Text("Load more") }
+                            if (state.hasMore) item {
+                                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    if (state.isLoadingMore) {
+                                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        OutlinedButton(onClick = { vm.loadMore() }) { Text("Load more") }
+                                    }
                                 }
                             }
                         }
@@ -812,6 +812,56 @@ fun VaultDeepLinkScreen(
         },
         onDone = onDone
     )
+
+    if (showBeneficiaryDialog && vault != null) {
+        ManageBeneficiaryDialog(
+            currentBeneficiary = vault.beneficiary,
+            onSubmit = { newBeneficiary ->
+                showBeneficiaryDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Beneficiary Change",
+                    subtitle = "Vault ${vault.id.take(12)}… beneficiary will change to ${newBeneficiary.take(12)}…",
+                    onSuccess = {
+                        vm.updateBeneficiary(vault.id, newBeneficiary)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showBeneficiaryDialog = false }
+        )
+    }
+
+    if (showWithdrawDialog && vault != null) {
+        WithdrawDialog(
+            vault = vault,
+            onSubmit = { amount ->
+                showWithdrawDialog = false
+                isProcessing = true
+                error = null
+                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                    title = "Confirm Withdrawal",
+                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
+                    onSuccess = {
+                        vm.withdraw(vault.id, amount)
+                        isProcessing = false
+                        onDone()
+                    },
+                    onError = { err ->
+                        error = err
+                        isProcessing = false
+                    }
+                )
+            },
+            onDismiss = { showWithdrawDialog = false }
+        )
+    }
 }
 
 /**
@@ -864,56 +914,6 @@ fun VaultDeepLinkScreenContent(
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
-    }
-
-    if (showBeneficiaryDialog && vault != null) {
-        ManageBeneficiaryDialog(
-            currentBeneficiary = vault.beneficiary,
-            onSubmit = { newBeneficiary ->
-                showBeneficiaryDialog = false
-                isProcessing = true
-                error = null
-                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                    title = "Confirm Beneficiary Change",
-                    subtitle = "Vault ${vault.id.take(12)}… beneficiary will change to ${newBeneficiary.take(12)}…",
-                    onSuccess = {
-                        vm.updateBeneficiary(vault.id, newBeneficiary)
-                        isProcessing = false
-                        onDone()
-                    },
-                    onError = { err ->
-                        error = err
-                        isProcessing = false
-                    }
-                )
-            },
-            onDismiss = { showBeneficiaryDialog = false }
-        )
-    }
-
-    if (showWithdrawDialog && vault != null) {
-        WithdrawDialog(
-            vault = vault,
-            onSubmit = { amount ->
-                showWithdrawDialog = false
-                isProcessing = true
-                error = null
-                BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                    title = "Confirm Withdrawal",
-                    subtitle = "Withdraw from vault ${vault.id.take(12)}…",
-                    onSuccess = {
-                        vm.withdraw(vault.id, amount)
-                        isProcessing = false
-                        onDone()
-                    },
-                    onError = { err ->
-                        error = err
-                        isProcessing = false
-                    }
-                )
-            },
-            onDismiss = { showWithdrawDialog = false }
-        )
     }
 }
 

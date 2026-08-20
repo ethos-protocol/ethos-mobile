@@ -13,6 +13,7 @@ import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultEventSocket
 import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
@@ -33,6 +34,7 @@ class VaultViewModelTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val vaultEventSocket: VaultEventSocket = mockk()
     private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
 
@@ -41,7 +43,8 @@ class VaultViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, context)
+        every { vaultEventSocket.events(any()) } returns emptyFlow()
+        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
     }
 
     @After
@@ -53,8 +56,8 @@ class VaultViewModelTest {
     @Test
     fun `load success updates vaults`() = runTest {
         val vaults = listOf(makeVault("v1"), makeVault("v2"))
-        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns
-            ApiResult.Success(VaultPage(vaults, nextOffset = null, hasMore = false))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextCursor = null, hasMore = false))
 
         vm.load()
 
@@ -66,7 +69,7 @@ class VaultViewModelTest {
 
     @Test
     fun `load network unavailable sets offline flag`() = runTest {
-        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.listVaults(limit = 20) } returns ApiResult.NetworkUnavailable
 
         vm.load()
 
@@ -79,7 +82,7 @@ class VaultViewModelTest {
         // Simulates the screen (and viewModelScope) being torn down while
         // apiClient.listVaults() is in flight — the coroutine should stop silently
         // instead of writing a stray error/loading update to dead state.
-        coEvery { apiClient.listVaults() } throws CancellationException("scope cancelled")
+        coEvery { apiClient.listVaults(limit = 20) } throws CancellationException("scope cancelled")
 
         vm.load()
 
@@ -89,7 +92,7 @@ class VaultViewModelTest {
 
     @Test
     fun `load error sets error message`() = runTest {
-        coEvery { apiClient.listVaults(offset = 0, limit = 20) } returns ApiResult.Error("Server error", 500)
+        coEvery { apiClient.listVaults(limit = 20) } returns ApiResult.Error("Server error", 500)
 
         vm.load()
 
@@ -98,10 +101,39 @@ class VaultViewModelTest {
     }
 
     @Test
+    fun `loadMore appends the next page and advances the cursor`() = runTest {
+        val page1Vaults = listOf(makeVault("v1"), makeVault("v2"))
+        val page2Vaults = listOf(makeVault("v3"))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(page1Vaults, nextCursor = "cursor-1", hasMore = true))
+        coEvery { apiClient.listVaults(limit = 20, after = "cursor-1") } returns
+            ApiResult.Success(VaultPage(page2Vaults, nextCursor = null, hasMore = false))
+        vm.load()
+
+        vm.loadMore()
+
+        assertEquals(page1Vaults + page2Vaults, vm.state.value.vaults)
+        assertFalse(vm.state.value.isLoadingMore)
+        assertFalse(vm.state.value.hasMore)
+    }
+
+    @Test
+    fun `loadMore does nothing when there is no next page`() = runTest {
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(makeVault("v1")), nextCursor = null, hasMore = false))
+        vm.load()
+
+        vm.loadMore()
+
+        coVerify(exactly = 0) { apiClient.listVaults(limit = 20, after = any()) }
+    }
+
+    @Test
     fun `checkIn success refreshes only the checked-in vault`() = runTest {
         val v1 = makeVault("v1")
         val v2 = makeVault("v2")
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1, v2), nextCursor = null, hasMore = false))
         vm.load()
 
         val refreshedV1 = v1.copy(lastCheckIn = "2026-05-01T00:00:00Z", ttlRemaining = 2_592_000L)
@@ -112,7 +144,7 @@ class VaultViewModelTest {
 
         coVerify { apiClient.checkIn("v1") }
         coVerify { apiClient.getVault("v1") }
-        coVerify(exactly = 1) { apiClient.listVaults() }
+        coVerify(exactly = 1) { apiClient.listVaults(limit = 20) }
         coVerify(exactly = 0) { apiClient.getVault("v2") }
         assertEquals(listOf(refreshedV1, v2), vm.state.value.vaults)
     }
@@ -137,12 +169,13 @@ class VaultViewModelTest {
     fun `createVault success reloads vaults`() = runTest {
         val vaults = listOf(makeVault("v1"))
         coEvery { apiClient.createVault(any()) } returns ApiResult.Success(makeVault("v1"))
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(vaults, nextCursor = null, hasMore = false))
 
         vm.createVault("GXYZ", 30)
 
         coVerify { apiClient.createVault(any()) }
-        coVerify { apiClient.listVaults() }
+        coVerify { apiClient.listVaults(limit = 20) }
     }
 
     @Test
@@ -248,7 +281,8 @@ class VaultViewModelTest {
     fun `deposit success updates only the target vault`() = runTest {
         val v1 = makeVault("v1")
         val v2 = makeVault("v2")
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1, v2), nextCursor = null, hasMore = false))
         vm.load()
 
         val updatedV1 = v1.copy(balance = v1.balance + 1_000_000L)
@@ -282,7 +316,8 @@ class VaultViewModelTest {
     fun `withdraw success updates only the target vault`() = runTest {
         val v1 = makeVault("v1")
         val v2 = makeVault("v2")
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1, v2), nextCursor = null, hasMore = false))
         vm.load()
 
         val updatedV1 = v1.copy(balance = v1.balance - 1_000_000L)
@@ -316,7 +351,8 @@ class VaultViewModelTest {
     fun `updateBeneficiary success updates only the target vault`() = runTest {
         val v1 = makeVault("v1")
         val v2 = makeVault("v2")
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v1, v2))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1, v2), nextCursor = null, hasMore = false))
         vm.load()
 
         val updatedV1 = v1.copy(beneficiary = "GNEWBENEFICIARY")

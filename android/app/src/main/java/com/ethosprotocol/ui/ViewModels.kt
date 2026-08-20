@@ -25,6 +25,7 @@ import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultEventSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -254,30 +255,34 @@ data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
     val isLoadingMore: Boolean = false,
+    val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
     val beneficiaryUpdated: Boolean = false
 )
+
+private const val PAGE_SIZE = 20
 
 @HiltViewModel
 class VaultViewModel @Inject constructor(
     private val apiClient: ApiClient,
     private val notificationHelper: NotificationHelper,
     private val pendingActionDao: PendingActionDao,
+    private val vaultEventSocket: VaultEventSocket,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
 
-    private var nextOffset = 0
+    private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
-        when (val result = apiClient.listVaults(offset = 0, limit = PAGE_SIZE)) {
+        when (val result = apiClient.listVaults(limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
-                nextOffset = result.data.nextOffset ?: result.data.vaults.size
+                nextCursor = result.data.nextCursor
                 _state.update {
                     it.copy(
                         vaults = result.data.vaults,
@@ -293,6 +298,37 @@ class VaultViewModel @Inject constructor(
             }
             is ApiResult.Error -> {
                 _state.update { it.copy(isLoading = false, error = result.message) }
+            }
+        }
+    }
+
+    /**
+     * Fetches the next page (via [nextCursor], captured by the preceding [load]) and appends it
+     * to the current list, for the "Load more" control in VaultListScreen's LazyColumn.
+     */
+    fun loadMore() {
+        val cursor = nextCursor ?: return
+        if (_state.value.isLoadingMore) return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingMore = true) }
+            when (val result = apiClient.listVaults(limit = PAGE_SIZE, after = cursor)) {
+                is ApiResult.Success -> {
+                    nextCursor = result.data.nextCursor
+                    _state.update {
+                        it.copy(
+                            vaults = it.vaults + result.data.vaults,
+                            isLoadingMore = false,
+                            hasMore = result.data.hasMore
+                        )
+                    }
+                    subscribeToEvents(result.data.vaults.map { it.id })
+                }
+                ApiResult.NetworkUnavailable -> {
+                    _state.update { it.copy(isLoadingMore = false, isOffline = true) }
+                }
+                is ApiResult.Error -> {
+                    _state.update { it.copy(isLoadingMore = false, error = result.message) }
+                }
             }
         }
     }
@@ -326,6 +362,27 @@ class VaultViewModel @Inject constructor(
             }
         } while (cursor != null)
         _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+    }
+
+    // Keeps one VaultEventSocket subscription per vault currently in [_state], so
+    // check-ins/deposits/withdrawals made elsewhere (another device, an expiry)
+    // update this list in place instead of requiring a manual refresh.
+    private fun subscribeToEvents(vaultIds: List<String>) {
+        val currentIds = vaultIds.toSet()
+        eventJobs.keys.filter { it !in currentIds }.forEach { id -> eventJobs.remove(id)?.cancel() }
+        currentIds.filterNot { eventJobs.containsKey(it) }.forEach { id ->
+            eventJobs[id] = viewModelScope.launch {
+                vaultEventSocket.events(id).collect { event ->
+                    val updated = event.vault ?: return@collect
+                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        eventJobs.values.forEach { it.cancel() }
+        eventJobs.clear()
     }
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
