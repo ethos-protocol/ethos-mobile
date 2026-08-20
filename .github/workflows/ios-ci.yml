@@ -193,6 +193,24 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -skipMacroValidation
 
+      # NotificationServiceHostedTests actually reads back UNUserNotificationCenter's
+      # pending requests (not just "doesn't throw"), which requires notification
+      # authorization to already be granted — a simulator never prompts for that (no user
+      # to tap Allow), so requests silently never land unless it's pre-granted here.
+      # Boot a specific simulator by UDID (rather than letting xcodebuild pick one by
+      # name/OS below) so the grant below and the test run below are guaranteed to target
+      # the same device.
+      - name: Boot simulator and grant notification permission (Hosted tests)
+        run: |
+          UDID=$(xcrun simctl list devices available \
+            | grep "iPhone 17 (" \
+            | grep -oE '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}' \
+            | tail -1)
+          echo "Using simulator $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl privacy "$UDID" grant notifications com.ethosprotocol
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+
       # Runs hosted tests that require a real app process (Keychain, UNUserNotificationCenter).
       # These tests are in EthosProtocolTests target within the Xcode project, not in the SPM
       # test bundle, because they need TEST_HOST (real app host entitlements/process).
@@ -202,5 +220,5 @@ jobs:
           xcodebuild test \
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocolTests \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
             -skipMacroValidation

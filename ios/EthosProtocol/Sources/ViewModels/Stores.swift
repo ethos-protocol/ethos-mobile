@@ -119,6 +119,11 @@ final class AuthStore: ObservableObject {
             KeychainService.shared.deletePushToken()
         }
         KeychainService.shared.deleteToken()
+        // The passkey credential ID and its iCloud-synced vault association both belong to
+        // this account — a subsequent user signing in on the same device must not inherit
+        // them.
+        KeychainService.shared.deleteCredentialID()
+        ICloudSyncService.shared.clearLocalAssociations()
         // Ties into #10: a subsequent user signing in on the same device must never be served
         // the previous user's cached vault data while offline.
         OfflineCache.shared.clearAll()
