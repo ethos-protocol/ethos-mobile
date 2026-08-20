@@ -277,7 +277,11 @@ final class VaultStore: ObservableObject {
 
     func checkIn(vault: Vault) async {
         do {
-            try await APIClient.shared.checkIn(vaultID: vault.id)
+            // `checkIn(vaultID:)` is ambiguous between APIClient's original throwing/Void
+            // signature and the CheckInSyncTask.APIClientProtocol conformance's overload —
+            // pin the reference to the original before calling it.
+            let performCheckIn: (String) async throws -> Void = APIClient.shared.checkIn(vaultID:)
+            try await performCheckIn(vault.id)
             if !Task.isCancelled { await load() }
         } catch APIError.networkUnavailable {
             // Offline: queue the check-in durably so it is retried when connectivity

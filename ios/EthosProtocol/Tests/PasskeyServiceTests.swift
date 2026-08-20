@@ -114,6 +114,7 @@ final class PasskeyServiceRegistrationAtomicityTests: XCTestCase {
 
 // MARK: - #8 Excluded Credentials Tests
 
+@available(iOS 17.4, *)
 final class PasskeyServiceExcludedCredentialsTests: XCTestCase {
 
     func test_excludedCredentialDescriptors_mapsEachIDToADescriptor() {

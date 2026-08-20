@@ -116,7 +116,11 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let vaultID = response.notification.request.content.userInfo["vault_id"] as? String
         if response.actionIdentifier == "CHECK_IN_ACTION", let id = vaultID {
-            Task { try? await APIClient.shared.checkIn(vaultID: id) }
+            // `checkIn(vaultID:)` is ambiguous between APIClient's original throwing/Void
+            // signature and the CheckInSyncTask.APIClientProtocol conformance's overload —
+            // pin the reference to the original before calling it.
+            let performCheckIn: (String) async throws -> Void = APIClient.shared.checkIn(vaultID:)
+            Task { try? await performCheckIn(id) }
         }
         completionHandler()
     }

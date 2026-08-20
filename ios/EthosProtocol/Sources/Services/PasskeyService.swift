@@ -105,7 +105,11 @@ final class PasskeyService: NSObject {
         // Without this, a user (or anyone with physical access) can register a second,
         // independent passkey for an account that already has one on this device — the
         // system stays silent instead of warning that a credential already exists.
-        request.excludedCredentials = Self.excludedCredentialDescriptors(from: challenge.existingCredentialIds)
+        // `excludedCredentials` needs iOS 17.4+; below that (down to this app's 17.0 floor)
+        // registration still works, it just can't proactively warn about a duplicate passkey.
+        if #available(iOS 17.4, *) {
+            request.excludedCredentials = Self.excludedCredentialDescriptors(from: challenge.existingCredentialIds)
+        }
         let credential: ASAuthorizationCredential
         do {
             credential = try await performRequest(request)
@@ -125,6 +129,7 @@ final class PasskeyService: NSObject {
         )
     }
 
+    @available(iOS 17.4, *)
     static func excludedCredentialDescriptors(from credentialIDs: [String]) -> [ASAuthorizationPlatformPublicKeyCredentialDescriptor] {
         credentialIDs.compactMap { id in
             guard let data = Data(base64URLEncoded: id) else { return nil }
