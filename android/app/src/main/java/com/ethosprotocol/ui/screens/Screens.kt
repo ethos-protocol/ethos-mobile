@@ -716,6 +716,7 @@ fun VaultDeepLinkScreen(
         actionLabel = actionLabel,
         isProcessing = isProcessing,
         actionEnabled = !isProcessing && (action != VaultDeepLinkAction.CHECK_IN || vault != null),
+        isLoading = state.isLoading,
         onAction = {
             when (action) {
                 VaultDeepLinkAction.CHECK_IN -> {
@@ -792,6 +793,7 @@ fun VaultDeepLinkScreenContent(
     actionLabel: String,
     isProcessing: Boolean,
     actionEnabled: Boolean,
+    isLoading: Boolean = false,
     onAction: () -> Unit,
     onDone: () -> Unit
 ) {
@@ -805,6 +807,12 @@ fun VaultDeepLinkScreenContent(
         Spacer(Modifier.height(8.dp))
         Text(description, style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (isLoading) {
+            Spacer(Modifier.height(16.dp))
+            CircularProgressIndicator(
+                Modifier.align(Alignment.CenterHorizontally).testTag("loading")
+            )
+        }
         error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
