@@ -57,12 +57,27 @@ final class MockURLProtocol: URLProtocol {
 
 // MARK: - APIClient Extension for Testing
 
+/// Always reports connected, with no dependency on the real network stack — the mocked
+/// URLSession in these tests never makes a real request either way, so the only thing that
+/// matters is that APIClient.execute()'s `guard networkMonitor.isConnected` never gates a
+/// request on the host machine/simulator's actual (and, right at process launch, possibly
+/// not-yet-settled) network state.
+private struct AlwaysConnectedPathProvider: NetworkPathProvider {
+    let isCurrentlySatisfied = true
+    func startMonitoring(_ handler: @escaping (Bool) -> Void) {}
+}
+
 extension APIClient {
     /// Creates a test instance of APIClient with a mocked URLSession, via the
-    /// `init(baseURL:session:retryPolicy:)` designated initializer APIClient.swift exposes
-    /// as `internal` specifically for this purpose (see the comment on that initializer).
+    /// `init(baseURL:session:retryPolicy:networkMonitor:)` designated initializer
+    /// APIClient.swift exposes as `internal` specifically for this purpose (see the
+    /// comment on that initializer).
     static func makeTestInstance(session: URLSession) -> APIClient {
-        APIClient(baseURL: URL(string: "https://api.ethos-protocol.app/v1")!, session: session)
+        APIClient(
+            baseURL: URL(string: "https://api.ethos-protocol.app/v1")!,
+            session: session,
+            networkMonitor: NetworkMonitor(provider: AlwaysConnectedPathProvider())
+        )
     }
 }
 

@@ -68,6 +68,7 @@ public final class APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let retryPolicy: RetryPolicy
+    private let networkMonitor: NetworkMonitor
 
     private convenience init() {
         let urlString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
@@ -91,10 +92,11 @@ public final class APIClient {
     // `internal` (not `private`): lets tests construct an APIClient with a mock
     // URLSession / RetryPolicy via `@testable import`. `.shared` remains the only
     // production entry point.
-    init(baseURL: URL, session: URLSession, retryPolicy: RetryPolicy = .networkDefault) {
+    init(baseURL: URL, session: URLSession, retryPolicy: RetryPolicy = .networkDefault, networkMonitor: NetworkMonitor = .shared) {
         self.baseURL = baseURL
         self.session = session
         self.retryPolicy = retryPolicy
+        self.networkMonitor = networkMonitor
         decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .iso8601
@@ -363,7 +365,7 @@ public final class APIClient {
         // that never actually reached the server, which is unacceptable for this app.
         let isCacheableRead = request.httpMethod == "GET"
 
-        guard NetworkMonitor.shared.isConnected else {
+        guard networkMonitor.isConnected else {
             if isCacheableRead, let cached = OfflineCache.shared.load(for: request.url?.absoluteString ?? "") {
                 // No real HTTP response exists for a cache hit — synthesize a bare 200 with
                 // no headers, so e.g. listVaults()'s pagination-cursor header lookup just
