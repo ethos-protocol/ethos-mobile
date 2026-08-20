@@ -141,7 +141,12 @@ final class PasskeyDelegateRetentionTests: XCTestCase {
     // flight at once must each keep their own delegate alive and release only their own
     // entry when they complete, never the other's.
     func test_concurrentPerformRequests_dontClobberEachOthersDelegate() async throws {
+        // PasskeyService.shared is a process-wide singleton, so its retainedDelegates dict
+        // isn't necessarily empty when this test starts (other tests / parallel test workers
+        // may be exercising it too) — assert against the baseline observed here plus a delta,
+        // not an absolute count.
         let service = PasskeyService.shared
+        let baseline = service.activeDelegateCount
         let controllerA = makeAssertionController(challengeByte: 0x01)
         let controllerB = makeAssertionController(challengeByte: 0x02)
 
@@ -162,11 +167,11 @@ final class PasskeyDelegateRetentionTests: XCTestCase {
         // instead of a single fixed sleep — a contended CI runner can take longer than a short
         // sleep to actually schedule both Tasks, which isn't the race this test is regression-
         // testing for.
-        for _ in 0..<50 {
-            if service.activeDelegateCount == 2 { break }
+        for _ in 0..<250 {
+            if service.activeDelegateCount == baseline + 2 { break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        XCTAssertEqual(service.activeDelegateCount, 2, "Both concurrent requests should retain their own delegate")
+        XCTAssertEqual(service.activeDelegateCount, baseline + 2, "Both concurrent requests should retain their own delegate")
 
         // Simulate the system callback for A only — B's delegate/continuation must survive.
         (controllerA.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerA, didCompleteWithError: DummyError.simulatedFailure)
@@ -176,7 +181,7 @@ final class PasskeyDelegateRetentionTests: XCTestCase {
         } catch is DummyError {
             // expected
         }
-        XCTAssertEqual(service.activeDelegateCount, 1, "Completing A's request must release only A's delegate")
+        XCTAssertEqual(service.activeDelegateCount, baseline + 1, "Completing A's request must release only A's delegate")
 
         (controllerB.delegate as? PasskeyDelegate)?.authorizationController(controller: controllerB, didCompleteWithError: DummyError.simulatedFailure)
         do {
@@ -185,7 +190,7 @@ final class PasskeyDelegateRetentionTests: XCTestCase {
         } catch is DummyError {
             // expected
         }
-        XCTAssertEqual(service.activeDelegateCount, 0, "Completing B's request should release its delegate")
+        XCTAssertEqual(service.activeDelegateCount, baseline, "Completing B's request should release its delegate")
     }
 }
 

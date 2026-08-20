@@ -30,7 +30,7 @@ import org.robolectric.annotation.Config
  * - Network unavailable / API error → returns success without touching the widget
  * - Empty vault list → returns success without touching the widget
  * - Single vault → saveVaultData and refreshAll called with correct values (#79 fix)
- * - Multiple vaults → firstOrNull() selects the first vault in the list (#79 selection logic)
+ * - Multiple vaults → the most urgent (lowest ttlRemaining) vault is selected (#79)
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE)
@@ -211,36 +211,31 @@ class VaultWidgetUpdateWorkerTest {
     }
 
     // ---------------------------------------------------------------------------
-    // 5. Multiple vaults → firstOrNull() selects the first vault (#79 fix)
-    //
-    // The current implementation uses result.data.firstOrNull().  #79 documents that
-    // this selection logic needs to be fixed (e.g. select the vault expiring soonest).
-    // These tests assert the CURRENT firstOrNull() behaviour so that once #79 is
-    // implemented the tests will fail visibly, making the change deliberate.
+    // 5. Multiple vaults → the most urgent (lowest ttlRemaining) vault is selected (#79)
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `multiple vaults selects the first vault in the list (pre-79 behaviour)`() = runBlocking {
+    fun `multiple vaults selects the most urgent vault by ttlRemaining`() = runBlocking {
         val first = vault("first-vault", ttlRemaining = 100_000L)
         val second = vault("second-vault", ttlRemaining = 50_000L)
         coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(first, second))
 
         buildWorker().doWork()
 
-        // Only the first vault's id should appear in the widget data (#79: update this
-        // once the "most urgent vault" selection logic replaces firstOrNull()).
-        val expectedLastCheckIn = VaultStatusWidget.formatLastCheckIn(first.lastCheckIn)
+        // second-vault has the lower ttlRemaining (more urgent), so it — not the first vault
+        // in the list — should appear in the widget data.
+        val expectedLastCheckIn = VaultStatusWidget.formatLastCheckIn(second.lastCheckIn)
         verify {
             VaultStatusWidget.saveVaultData(
                 context = any(),
                 vaultId = any(),
-                vaultName = "first-vault…",
+                vaultName = "second-vault…",
                 ttlRemaining = any(),
                 lastCheckIn = expectedLastCheckIn
             )
         }
         verify(exactly = 0) {
-            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = "second-vault…", ttlRemaining = any(), lastCheckIn = any())
+            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = "first-vault…", ttlRemaining = any(), lastCheckIn = any())
         }
     }
 

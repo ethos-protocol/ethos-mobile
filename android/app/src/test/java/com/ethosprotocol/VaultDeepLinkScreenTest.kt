@@ -13,15 +13,20 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
  * Tests for issue #64: VaultDeepLinkScreen must show an explicit loading indicator while
  * state.isLoading is true and vault is null, and only show "Vault not found" once loading
  * has completed and the vault genuinely isn't present (preventing false flash of error).
+ *
+ * Unlike this module's other Robolectric tests, this one deliberately does NOT use
+ * @Config(manifest = Config.NONE): createComposeRule() hosts the composition in a real
+ * androidx.activity.ComponentActivity under the hood (even though this isn't
+ * createAndroidComposeRule), and Robolectric can't resolve/launch that activity without a
+ * real manifest to establish the app's package/component context
+ * (see https://github.com/robolectric/robolectric/pull/4736).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(manifest = Config.NONE)
 class VaultDeepLinkScreenTest {
 
     @get:Rule
