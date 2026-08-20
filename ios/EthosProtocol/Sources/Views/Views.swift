@@ -298,7 +298,7 @@ struct RecoverAccessView: View {
                         .autocorrectionDisabled()
                 }
                 if let error = authStore.error {
-                    Section { Text(error).foregroundStyle(.red).font(.caption) }
+                    Section { Text(error.message).foregroundStyle(.red).font(.caption) }
                 }
             }
             .navigationTitle("Recover Access")
@@ -339,26 +339,24 @@ struct VaultListView: View {
                     ErrorActionView(error: error, retry: { Task { await vaultStore.load() } })
                         .padding()
                 }
-                Group {
-                    if vaultStore.isLoading && vaultStore.vaults.isEmpty {
-                        ProgressView("Loading vaults…")
-                    } else if vaultStore.vaults.isEmpty {
-                        ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
-                    } else {
-                        List {
-                            ForEach(vaultStore.vaults) { vault in
-                                NavigationLink(destination: VaultDetailView(vault: vault)) {
-                                    VaultRowView(vault: vault)
-                                }
-                            }
-                            if vaultStore.hasMorePages {
-                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
-                                    Task { await vaultStore.loadMore() }
-                                }
+                if vaultStore.isLoading && vaultStore.vaults.isEmpty {
+                    ProgressView("Loading vaults…")
+                } else if vaultStore.vaults.isEmpty {
+                    ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
+                } else {
+                    List {
+                        ForEach(vaultStore.vaults) { vault in
+                            NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                VaultRowView(vault: vault)
                             }
                         }
-                        .refreshable { await vaultStore.load() }
+                        if vaultStore.hasMorePages {
+                            LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                Task { await vaultStore.loadMore() }
+                            }
+                        }
                     }
+                    .refreshable { await vaultStore.load() }
                 }
             }
             .navigationTitle("My Vaults")
