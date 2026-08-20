@@ -45,7 +45,7 @@ class VaultDeepLinkScreenTest {
         composeTestRule.setContent {
             VaultDeepLinkScreen(
                 vaultId = "vault-123",
-                actionPath = "view",
+                actionPath = "view-details",
                 onDone = {},
                 vm = vm
             )
@@ -70,7 +70,7 @@ class VaultDeepLinkScreenTest {
         composeTestRule.setContent {
             VaultDeepLinkScreen(
                 vaultId = "vault-404",
-                actionPath = "view",
+                actionPath = "view-details",
                 onDone = {},
                 vm = vm
             )
@@ -105,7 +105,7 @@ class VaultDeepLinkScreenTest {
         composeTestRule.setContent {
             VaultDeepLinkScreen(
                 vaultId = "vault-999",
-                actionPath = "view",
+                actionPath = "view-details",
                 onDone = {},
                 vm = vm
             )

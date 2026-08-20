@@ -73,7 +73,13 @@ final class NotificationServiceHostedTests: XCTestCase {
         )
     }
 
-    func test_scheduleTTLWarning_verifyPendingNotificationRequests() async {
+    func test_scheduleTTLWarning_verifyPendingNotificationRequests() async throws {
+        // A simulator never actually grants notification authorization (no user to tap
+        // Allow), and `xcrun simctl privacy grant notifications` fails outright on the CI
+        // runner ("Operation not permitted") — without authorization, a scheduled request
+        // never actually lands in pendingNotificationRequests(). See ios-ci.yml.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Notification authorization cannot be granted in this CI environment")
         let vaultID = "vault-verify-\(UUID().uuidString)"
         NotificationService.shared.scheduleTTLWarning(vaultID: vaultID, ttlRemaining: 3_600)
 
@@ -88,7 +94,10 @@ final class NotificationServiceHostedTests: XCTestCase {
         }
     }
 
-    func test_scheduleTTLWarning_withTriggerIntervalValidation() async {
+    func test_scheduleTTLWarning_withTriggerIntervalValidation() async throws {
+        // See test_scheduleTTLWarning_verifyPendingNotificationRequests above.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Notification authorization cannot be granted in this CI environment")
         let vaultID = "vault-trigger-\(UUID().uuidString)"
         NotificationService.shared.scheduleTTLWarning(vaultID: vaultID, ttlRemaining: 3_600)
 
