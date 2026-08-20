@@ -38,10 +38,16 @@ public final class IntegrityService {
     }
     var forkChecker: () -> Bool = {
         // On a jailbroken device the sandbox is typically weakened and fork() succeeds.
-        // On a stock device fork() returns -1 immediately. Swift's `fork()` overlay is
-        // marked unavailable on this platform (compile-time only — the syscall itself
-        // still exists), so invoke it directly via its raw syscall number instead.
-        let pid = syscall(SYS_fork)
+        // On a stock device fork() returns -1 immediately. Both Swift's `fork()` overlay
+        // and the variadic `syscall()` are marked unavailable on this platform — a
+        // compile-time-only restriction, the underlying libc symbols still exist — so
+        // resolve and call the real `fork` via dlsym instead of the Swift declaration.
+        typealias ForkFn = @convention(c) () -> pid_t
+        guard let handle = dlopen(nil, RTLD_NOW),
+              let sym = dlsym(handle, "fork") else {
+            return false
+        }
+        let pid = unsafeBitCast(sym, to: ForkFn.self)()
         if pid == 0 {
             // Child process — shouldn't happen in a healthy sandbox
             exit(0)
