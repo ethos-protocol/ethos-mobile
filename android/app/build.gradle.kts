@@ -40,6 +40,18 @@ android {
 
     buildFeatures { compose = true; buildConfig = true }
 
+    // Without this, Robolectric's unit-test runtime falls back to a synthetic manifest
+    // with no registered activities (package "org.robolectric.default") instead of this
+    // module's real merged manifest/resources — anything that needs to actually launch an
+    // activity (ActivityScenarioRule, and transitively Compose's createComposeRule(), which
+    // hosts its composition in a real activity even though it isn't createAndroidComposeRule)
+    // fails with "Unable to resolve activity" (see robolectric/robolectric#4736).
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+
     signingConfigs {
         if (hasReleaseSigningConfig) {
             create("release") {
