@@ -158,8 +158,14 @@ final class PasskeyDelegateRetentionTests: XCTestCase {
             }
         }
 
-        // Give both tasks a chance to register their delegate before either completes.
-        try await Task.sleep(nanoseconds: 20_000_000)
+        // Give both tasks a chance to register their delegate before either completes. Poll
+        // instead of a single fixed sleep — a contended CI runner can take longer than a short
+        // sleep to actually schedule both Tasks, which isn't the race this test is regression-
+        // testing for.
+        for _ in 0..<50 {
+            if service.activeDelegateCount == 2 { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
         XCTAssertEqual(service.activeDelegateCount, 2, "Both concurrent requests should retain their own delegate")
 
         // Simulate the system callback for A only — B's delegate/continuation must survive.

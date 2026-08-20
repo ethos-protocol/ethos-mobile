@@ -50,6 +50,9 @@ class VaultWidgetUpdateWorkerTest {
         mockkObject(VaultStatusWidget)
         every { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) } just Runs
         every { VaultStatusWidget.refreshAll(any()) } just Runs
+        // mockkObject() replaces every Companion function, including formatLastCheckIn — tests
+        // below call it directly to compute expected values, so let it run for real.
+        every { VaultStatusWidget.formatLastCheckIn(any(), any()) } answers { callOriginal() }
     }
 
     @After
@@ -147,7 +150,7 @@ class VaultWidgetUpdateWorkerTest {
                 vaultId = any(),
                 vaultName = "GABCDEFGHIJK…",
                 ttlRemaining = "2d 0h",
-                lastCheckIn = v.lastCheckIn
+                lastCheckIn = VaultStatusWidget.formatLastCheckIn(v.lastCheckIn)
             )
         }
     }
@@ -229,7 +232,7 @@ class VaultWidgetUpdateWorkerTest {
                 vaultId = any(),
                 vaultName = "first-vault…",
                 ttlRemaining = any(),
-                lastCheckIn = first.lastCheckIn
+                lastCheckIn = VaultStatusWidget.formatLastCheckIn(first.lastCheckIn)
             )
         }
         verify(exactly = 0) {

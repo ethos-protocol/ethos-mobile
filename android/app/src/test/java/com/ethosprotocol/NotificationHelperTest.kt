@@ -1,5 +1,6 @@
 package com.ethosprotocol
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.SharedPreferences
 import com.ethosprotocol.services.NotificationHelper
@@ -19,6 +20,10 @@ class NotificationHelperTest {
     fun setup() {
         val context: Context = mockk(relaxed = true)
         every { context.getSharedPreferences(any<String>(), any()) } returns fakeSharedPreferences()
+        // NotificationHelper's init block calls createChannel(), which calls
+        // context.getSystemService(NotificationManager::class.java) — a relaxed Context mock
+        // returns a generic relaxed Any for that without this stub, which fails to cast.
+        every { context.getSystemService(NotificationManager::class.java) } returns mockk(relaxed = true)
         helper = NotificationHelper(context)
     }
 

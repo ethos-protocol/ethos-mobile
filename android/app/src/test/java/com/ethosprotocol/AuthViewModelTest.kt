@@ -110,6 +110,7 @@ class AuthViewModelTest {
     @Test
     fun `signOut deletes all pending actions`() = runTest {
         vm.signOut()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         coVerify { pendingActionDao.deleteAll() }
     }
@@ -117,6 +118,7 @@ class AuthViewModelTest {
     @Test
     fun `signOut cancels queued action notification`() = runTest {
         vm.signOut()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         verify { notificationHelper.cancelQueuedActions() }
     }
@@ -130,6 +132,7 @@ class AuthViewModelTest {
         coEvery { pendingActionDao.getAll() } returns items
 
         vm.signOut()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         coVerify(exactly = 1) { pendingActionDao.deleteAll() }
         verify(exactly = 1) { notificationHelper.cancelQueuedActions() }
@@ -170,10 +173,18 @@ class AuthViewModelTest {
     fun `cooldown escalates exponentially with further failures`() = runTest {
         coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
 
-        repeat(4) { vm.signIn(activity) }
+        // signIn() is a no-op while a cooldown is active (verified separately), so each
+        // further failure needs its predecessor's cooldown to actually finish counting down
+        // first — otherwise the call never reaches passkeyService.authenticate() at all.
+        repeat(3) { vm.signIn(activity) }
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+
+        vm.signIn(activity)
         assertEquals(4, vm.state.value.cooldownRemainingSeconds)
 
-        repeat(1) { vm.signIn(activity) }
+        testDispatcher.scheduler.advanceUntilIdle()
+        vm.signIn(activity)
         assertEquals(8, vm.state.value.cooldownRemainingSeconds)
     }
 
@@ -181,7 +192,12 @@ class AuthViewModelTest {
     fun `cooldown is clamped to max`() = runTest {
         coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
 
-        repeat(10) { vm.signIn(activity) }
+        // signIn() is a no-op while a cooldown is active, so each iteration's failure only
+        // actually registers once the previous cooldown has fully counted down.
+        repeat(10) {
+            testDispatcher.scheduler.advanceUntilIdle()
+            vm.signIn(activity)
+        }
 
         assertEquals(60, vm.state.value.cooldownRemainingSeconds)
     }
@@ -220,6 +236,7 @@ class AuthViewModelTest {
         assertEquals(2, vm.state.value.cooldownRemainingSeconds)
 
         vm.signOut()
+        testDispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(0, vm.state.value.cooldownRemainingSeconds)
     }

@@ -29,7 +29,7 @@ class BeneficiaryAcceptanceTest {
 
         // Use reflection to call private method for testing
         val method = MainActivity::class.java.getDeclaredMethod(
-            "extractBeneficiaryAcceptParams",
+            "extractBeneficiaryAccept",
             Intent::class.java
         )
         method.isAccessible = true
@@ -47,7 +47,7 @@ class BeneficiaryAcceptanceTest {
         every { intent.data } returns uri
 
         val method = MainActivity::class.java.getDeclaredMethod(
-            "extractBeneficiaryAcceptParams",
+            "extractBeneficiaryAccept",
             Intent::class.java
         )
         method.isAccessible = true
@@ -65,7 +65,7 @@ class BeneficiaryAcceptanceTest {
         every { intent.data } returns uri
 
         val method = MainActivity::class.java.getDeclaredMethod(
-            "extractBeneficiaryAcceptParams",
+            "extractBeneficiaryAccept",
             Intent::class.java
         )
         method.isAccessible = true
@@ -85,7 +85,7 @@ class BeneficiaryAcceptanceTest {
         every { com.ethosprotocol.services.VaultDeepLinkParser.isValidVaultId("vault-456") } returns true
 
         val method = MainActivity::class.java.getDeclaredMethod(
-            "extractBeneficiaryAcceptParams",
+            "extractBeneficiaryAccept",
             Intent::class.java
         )
         method.isAccessible = true
@@ -107,7 +107,7 @@ class BeneficiaryAcceptanceTest {
         every { intent.data } returns uri
 
         val method = MainActivity::class.java.getDeclaredMethod(
-            "extractBeneficiaryAcceptParams",
+            "extractBeneficiaryAccept",
             Intent::class.java
         )
         method.isAccessible = true

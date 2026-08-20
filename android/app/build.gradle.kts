@@ -78,14 +78,17 @@ android {
     }
 }
 
-// JUnit pulls in org.hamcrest:hamcrest-core:1.3, a separate, older artifact from the
-// org.hamcrest:hamcrest:2.x that espresso-core (transitively required by
-// compose-ui-test-junit4's Robolectric idling support) needs — Gradle's conflict
-// resolution doesn't dedupe them since they're different artifact IDs, so whichever
-// classloads first wins, and 1.3's org.hamcrest.core.AllOf lacks overloads 2.x added
-// ("NoSuchMethodError: AllOf.allOf(Matcher, Matcher)"). Exclude the old one everywhere.
+// JUnit pulls in org.hamcrest:hamcrest-core:1.3, an older, separate artifact from the
+// org.hamcrest:hamcrest(-core):2.x that espresso-core (transitively required by
+// compose-ui-test-junit4's Robolectric idling support) needs. Both org.hamcrest:hamcrest-core
+// and org.hamcrest:hamcrest exist at 2.x, so a plain exclude of one module risks dropping an
+// artifact something else actually resolves through — force every hamcrest artifact to a
+// single 2.x version instead, so whichever org.hamcrest.core.AllOf class loads has the
+// 2-arg allOf(Matcher, Matcher) overload 1.3 doesn't ("NoSuchMethodError: AllOf.allOf").
 configurations.all {
-    exclude(group = "org.hamcrest", module = "hamcrest-core")
+    resolutionStrategy {
+        force("org.hamcrest:hamcrest-core:2.2", "org.hamcrest:hamcrest:2.2")
+    }
 }
 
 dependencies {
