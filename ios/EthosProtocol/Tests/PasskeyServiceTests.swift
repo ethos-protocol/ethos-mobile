@@ -156,6 +156,7 @@ final class PasskeyErrorMappingTests: XCTestCase {
     }
 
     func test_matchedExcludedCredential_mapsToCredentialAlreadyExists() {
+        guard #available(iOS 18.0, *) else { return }
         let mapped = PasskeyError.map(ASAuthorizationError(.matchedExcludedCredential), fallback: .registrationFailed)
         XCTAssertEqual(mapped, .credentialAlreadyExists)
     }
@@ -210,12 +211,13 @@ private func cborText(_ value: String) -> Data {
 
 /// Builds a synthetic COSE_Key (ES256/EC2) CBOR map: {1: 2, 3: -7, -1: 1, -2: x, -3: y}.
 private func cborES256COSEKey(x: Data, y: Data) -> Data {
-    cborHeader(5, 5)
-        + cborUInt(1) + cborUInt(2)     // kty: EC2
-        + cborUInt(3) + cborNegInt(-7)  // alg: ES256
-        + cborNegInt(-1) + cborUInt(1)  // crv: P-256
-        + cborNegInt(-2) + cborBytes(x)
-        + cborNegInt(-3) + cborBytes(y)
+    var result = cborHeader(5, 5)
+    result += cborUInt(1) + cborUInt(2)     // kty: EC2
+    result += cborUInt(3) + cborNegInt(-7)  // alg: ES256
+    result += cborNegInt(-1) + cborUInt(1)  // crv: P-256
+    result += cborNegInt(-2) + cborBytes(x)
+    result += cborNegInt(-3) + cborBytes(y)
+    return result
 }
 
 /// Builds a synthetic authData blob (WebAuthn §6.1) containing attested credential data,

@@ -138,7 +138,7 @@ final class VaultEventSocket {
 
     /// Builds `wss://<host>/<path>/ws?vault_id=<id>` from an `https://` (or
     /// `ws(s)://`) base API URL — split out from openSocket() for testability.
-    static func webSocketURL(baseURL: URL, vaultID: String) -> URL? {
+    nonisolated static func webSocketURL(baseURL: URL, vaultID: String) -> URL? {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else { return nil }
         switch components.scheme {
         case "https": components.scheme = "wss"
