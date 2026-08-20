@@ -11,7 +11,10 @@ defaults:
     working-directory: android
 
 jobs:
-  build-and-test:
+  # Kept in its own job (like instrumented-tests below) so an unrelated outage
+  # of the hosted assetlinks.json does not block build/lint/unit-test signal
+  # on every push and PR.
+  verify-asset-links:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +22,11 @@ jobs:
       - name: Verify Digital Asset Links (assetlinks.json)
         working-directory: ${{ github.workspace }}
         run: python3 .github/scripts/verify_asset_links.py
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
