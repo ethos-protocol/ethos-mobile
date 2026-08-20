@@ -8,6 +8,7 @@ import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PendingActionDatabase
 import com.ethosprotocol.services.PendingActionDao
 import dagger.Module
