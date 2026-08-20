@@ -49,7 +49,7 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     // unpredictable; this only needs to be accurate for the current process's lifetime.
     private val accessOrder = Collections.synchronizedMap(
         object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.Entry<String, Unit>) = false
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>) = false
         }
     )
 

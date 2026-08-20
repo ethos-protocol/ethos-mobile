@@ -30,7 +30,7 @@ import CryptoKit
 /// `PinningDelegate` calls the completion handler with
 /// `.cancelAuthenticationChallenge` and logs the mismatch (debug builds only).
 /// The network call then fails with a URLError.
-public final class PinningDelegate: NSObject, URLSessionDelegate {
+public class PinningDelegate: NSObject, URLSessionDelegate {
 
     // MARK: - State
 
