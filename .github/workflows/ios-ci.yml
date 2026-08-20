@@ -98,9 +98,12 @@ jobs:
             exit 1
           fi
 
+  # Not gated on verify-universal-links: that job depends on the hosted AASA
+  # file at ethos-protocol.app, and an unrelated outage there should not block
+  # build/test signal on every push and PR (mirrors Android CI's separation of
+  # verify-asset-links from build-and-test).
   build-and-test:
     runs-on: macos-latest
-    needs: verify-universal-links
     steps:
       - uses: actions/checkout@v4
 

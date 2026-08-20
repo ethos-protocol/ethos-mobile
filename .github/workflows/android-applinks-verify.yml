@@ -22,6 +22,11 @@ jobs:
   verify-assetlinks:
     name: Verify assetlinks.json (Android App Links / autoVerify)
     runs-on: ubuntu-latest
+    # The "Alert on failure" step below files a GitHub issue on scheduled-run
+    # failures, which needs issues:write — the default GITHUB_TOKEN is
+    # read-only, so without this the alert itself fails with a 403.
+    permissions:
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
