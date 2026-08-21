@@ -3,13 +3,13 @@ import Foundation
 /// Provides random numbers for jitter in exponential backoff calculations.
 /// Injected into RetryPolicy to allow deterministic testing while production
 /// code uses the default system random source.
-public protocol RandomSourceProvider {
+public protocol RandomSourceProvider: AnyObject {
     /// Returns a random value in [0, 1).
     func randomDouble() -> Double
 }
 
 /// System random source for production use.
-public struct SystemRandomSource: RandomSourceProvider {
+public final class SystemRandomSource: RandomSourceProvider {
     public init() {}
     
     public func randomDouble() -> Double {

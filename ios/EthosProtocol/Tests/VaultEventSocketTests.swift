@@ -48,7 +48,7 @@ private func waitUntil(timeout: TimeInterval = 2.0, _ condition: () -> Bool) asy
 // MARK: - Deterministic Random Source for Testing
 
 /// Deterministic random source for testing: returns a fixed sequence of values.
-private struct DeterministicRandomSource: RandomSourceProvider {
+private final class DeterministicRandomSource: RandomSourceProvider {
     private var sequence: [Double]
     private var index = 0
 
@@ -56,7 +56,7 @@ private struct DeterministicRandomSource: RandomSourceProvider {
         self.sequence = values
     }
 
-    mutating func randomDouble() -> Double {
+    func randomDouble() -> Double {
         defer { index += 1 }
         guard index < sequence.count else { return 0.0 }
         return sequence[index]
