@@ -118,10 +118,53 @@ android {
 // subsumes hamcrest-core/hamcrest-library under the same org.hamcrest.core.* packages).
 // Excluding hamcrest-core entirely and forcing hamcrest itself to 2.2 leaves exactly one
 // org.hamcrest.core.AllOf implementation on the classpath: the unified artifact's.
+//
+// Security patch forces — keep transitive pulls of vulnerable libraries at known-safe versions:
+//
+//   Netty 4.1.93.Final is pulled in transitively by Ktor's CIO engine and gRPC. All 4.1.x
+//   versions before 4.1.109.Final carry a long list of CVEs (e.g. CVE-2025-24970,
+//   CVE-2023-44487). Forcing the whole io.netty group to 4.1.109.Final ensures every Netty
+//   module on the classpath is at the patched version.
+//
+//   commons-io 2.13.0 is a transitive pull from Android build tooling. CVE-2024-47554
+//   (XmlStreamReader CPU exhaustion) is fixed in 2.14.0+; 2.22.0 is the current latest.
+//
+//   protobuf-java 3.22.3 arrives transitively from Firebase and other Google libraries.
+//   CVE-2024-7254 (StackOverflow via nested unknown fields) is fixed in 3.25.x+.
+//
+//   guava 28.1-jre arrives transitively from build-time test tooling (android-device-
+//   provider-local). CVE-2023-2976 / CVE-2020-8908 (insecure temp-file creation) are fixed
+//   in 32.0.0+. We force both -jre and -android variants so whichever is resolved wins.
 configurations.all {
     exclude(group = "org.hamcrest", module = "hamcrest-core")
     resolutionStrategy {
         force("org.hamcrest:hamcrest:2.2")
+
+        // Netty: force entire group to patched 4.1.109.Final (CVE-2025-24970, CVE-2023-44487, etc.)
+        force("io.netty:netty-buffer:4.1.109.Final")
+        force("io.netty:netty-codec:4.1.109.Final")
+        force("io.netty:netty-codec-http:4.1.109.Final")
+        force("io.netty:netty-codec-http2:4.1.109.Final")
+        force("io.netty:netty-codec-socks:4.1.109.Final")
+        force("io.netty:netty-common:4.1.109.Final")
+        force("io.netty:netty-handler:4.1.109.Final")
+        force("io.netty:netty-handler-proxy:4.1.109.Final")
+        force("io.netty:netty-resolver:4.1.109.Final")
+        force("io.netty:netty-transport:4.1.109.Final")
+        force("io.netty:netty-transport-native-unix-common:4.1.109.Final")
+        force("io.netty:netty-transport-native-epoll:4.1.109.Final")
+        force("io.netty:netty-transport-native-kqueue:4.1.109.Final")
+
+        // commons-io: patched for CVE-2024-47554 (XmlStreamReader CPU exhaustion)
+        force("commons-io:commons-io:2.22.0")
+
+        // protobuf-java: patched for CVE-2024-7254 (StackOverflow via nested fields)
+        force("com.google.protobuf:protobuf-java:3.25.5")
+        force("com.google.protobuf:protobuf-java-util:3.25.5")
+
+        // guava: patched for CVE-2023-2976 / CVE-2020-8908 (insecure temp-file creation)
+        force("com.google.guava:guava:33.6.0-jre")
+        force("com.google.guava:guava:33.6.0-android")
     }
 }
 
