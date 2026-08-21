@@ -21,10 +21,10 @@ struct SystemRandomSource: RandomSourceProvider {
 struct RetryPolicy {
     let maxAttempts: Int
     let baseDelay: TimeInterval
-    let sleep: (TimeInterval) async throws -> Void
     /// Random source for jitter computation in delay calculations. Injected
     /// to allow deterministic testing; defaults to SystemRandomSource in production.
     let randomSource: RandomSourceProvider
+    let sleep: (TimeInterval) async throws -> Void
 
     static let networkDefault = RetryPolicy(
         maxAttempts: 3,

@@ -18,10 +18,10 @@ extension URLSessionWebSocketTask: WebSocketTasking {}
 struct ReconnectBackoff {
     let baseDelay: TimeInterval
     let maxDelay: TimeInterval
-    let sleep: (TimeInterval) async throws -> Void
     /// Random source for jitter computation. Injected to allow deterministic testing;
     /// defaults to SystemRandomSource in production.
     let randomSource: RandomSourceProvider
+    let sleep: (TimeInterval) async throws -> Void
 
     static let socketDefault = ReconnectBackoff(
         baseDelay: 1.0,
