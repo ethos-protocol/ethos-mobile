@@ -3,14 +3,16 @@ import Foundation
 /// Provides random numbers for jitter in exponential backoff calculations.
 /// Injected into RetryPolicy to allow deterministic testing while production
 /// code uses the default system random source.
-protocol RandomSourceProvider {
+public protocol RandomSourceProvider {
     /// Returns a random value in [0, 1).
     func randomDouble() -> Double
 }
 
 /// System random source for production use.
-struct SystemRandomSource: RandomSourceProvider {
-    func randomDouble() -> Double {
+public struct SystemRandomSource: RandomSourceProvider {
+    public init() {}
+    
+    public func randomDouble() -> Double {
         Double.random(in: 0.0..<1.0)
     }
 }
@@ -18,7 +20,7 @@ struct SystemRandomSource: RandomSourceProvider {
 // Retry configuration for idempotent network calls. APIClient applies this only
 // to GET requests — POST/DELETE must never be retried automatically, since a
 // retried mutation (check-in, withdrawal, 2FA disable, ...) could double-submit.
-struct RetryPolicy {
+public struct RetryPolicy {
     let maxAttempts: Int
     let baseDelay: TimeInterval
     /// Random source for jitter computation in delay calculations. Injected
@@ -26,7 +28,7 @@ struct RetryPolicy {
     let randomSource: RandomSourceProvider
     let sleep: (TimeInterval) async throws -> Void
 
-    static let networkDefault = RetryPolicy(
+    public static let networkDefault = RetryPolicy(
         maxAttempts: 3,
         baseDelay: 0.5,
         randomSource: SystemRandomSource(),
@@ -34,6 +36,13 @@ struct RetryPolicy {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         }
     )
+    
+    public init(maxAttempts: Int, baseDelay: TimeInterval, randomSource: RandomSourceProvider, sleep: @escaping (TimeInterval) async throws -> Void) {
+        self.maxAttempts = maxAttempts
+        self.baseDelay = baseDelay
+        self.randomSource = randomSource
+        self.sleep = sleep
+    }
 }
 
 /// Retries `operation` with exponential backoff (`baseDelay * 2^attempt`) plus
@@ -43,7 +52,7 @@ struct RetryPolicy {
 /// Jitter is applied to reduce synchronized retry storms: two concurrent retries at the
 /// same attempt count will compute different delays (unless they share the same random source,
 /// as in tests).
-func withRetry<T>(
+public func withRetry<T>(
     _ policy: RetryPolicy,
     isRetryable: (Error) -> Bool,
     operation: () async throws -> T
