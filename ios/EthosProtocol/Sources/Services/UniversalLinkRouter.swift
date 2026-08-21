@@ -37,7 +37,12 @@ final class UniversalLinkRouter {
             return link
         }
 
-        guard url.host == "ethos-protocol.app" else { return nil }
+        // Require both scheme and host to match — host alone is insufficient because the
+        // custom ethosprotocol:// scheme can be invoked by any app with no domain-ownership
+        // verification, unlike https:// Universal Links whose routing is gated by iOS's
+        // AASA verification. Matching Android's extractBeneficiaryAccept check in
+        // MainActivity.kt (uri.scheme != "https" || uri.host != "ethos-protocol.app").
+        guard url.scheme == "https", url.host == "ethos-protocol.app" else { return nil }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let parts = url.pathComponents.filter { $0 != "/" }
 
