@@ -45,21 +45,109 @@ private func waitUntil(timeout: TimeInterval = 2.0, _ condition: () -> Bool) asy
     return condition()
 }
 
+// MARK: - Deterministic Random Source for Testing
+
+/// Deterministic random source for testing: returns a fixed sequence of values.
+private final class DeterministicRandomSource: RandomSourceProvider {
+    private var sequence: [Double]
+    private var index = 0
+
+    init(_ values: [Double]) {
+        self.sequence = values
+    }
+
+    func randomDouble() -> Double {
+        defer { index += 1 }
+        guard index < sequence.count else { return 0.0 }
+        return sequence[index]
+    }
+}
+
 // MARK: - #20 ReconnectBackoff Tests
 
 final class ReconnectBackoffTests: XCTestCase {
 
-    func test_delay_doublesWithEachAttempt() {
-        let backoff = ReconnectBackoff(baseDelay: 1.0, maxDelay: 100.0, sleep: { _ in })
+    func test_delay_doublesWithEachAttempt_withoutJitter() {
+        var randomSource = DeterministicRandomSource([1.0, 1.0, 1.0, 1.0]) // No jitter
+        let backoff = ReconnectBackoff(
+            baseDelay: 1.0,
+            maxDelay: 100.0,
+            randomSource: randomSource,
+            sleep: { _ in }
+        )
         XCTAssertEqual(backoff.delay(forAttempt: 1), 1.0)
         XCTAssertEqual(backoff.delay(forAttempt: 2), 2.0)
         XCTAssertEqual(backoff.delay(forAttempt: 3), 4.0)
         XCTAssertEqual(backoff.delay(forAttempt: 4), 8.0)
     }
 
-    func test_delay_capsAtMaxDelay() {
-        let backoff = ReconnectBackoff(baseDelay: 1.0, maxDelay: 5.0, sleep: { _ in })
+    func test_delay_capsAtMaxDelay_withoutJitter() {
+        var randomSource = DeterministicRandomSource([1.0, 1.0, 1.0])
+        let backoff = ReconnectBackoff(
+            baseDelay: 1.0,
+            maxDelay: 5.0,
+            randomSource: randomSource,
+            sleep: { _ in }
+        )
         XCTAssertEqual(backoff.delay(forAttempt: 10), 5.0)
+    }
+
+    /// Test: Two backoff.delay(forAttempt:) calls for the same attempt, given
+    /// different random sources, produce different delay values.
+    func test_delay_producesVariedDelaysWithDifferentRandomSources() {
+        var randomSource1 = DeterministicRandomSource([0.25])
+        let backoff1 = ReconnectBackoff(
+            baseDelay: 1.0,
+            maxDelay: 100.0,
+            randomSource: randomSource1,
+            sleep: { _ in }
+        )
+
+        var randomSource2 = DeterministicRandomSource([0.75])
+        let backoff2 = ReconnectBackoff(
+            baseDelay: 1.0,
+            maxDelay: 100.0,
+            randomSource: randomSource2,
+            sleep: { _ in }
+        )
+
+        let delay1 = backoff1.delay(forAttempt: 3)
+        let delay2 = backoff2.delay(forAttempt: 3)
+
+        // Both should compute from (1.0 * 2^2 = 4.0) * jitter
+        // delay1: 4.0 * 0.25 = 1.0
+        // delay2: 4.0 * 0.75 = 3.0
+        XCTAssertEqual(delay1, 1.0)
+        XCTAssertEqual(delay2, 3.0)
+        XCTAssertNotEqual(delay1, delay2)
+    }
+
+    /// Test: The jittered delay for any attempt stays within documented bounds
+    /// (never exceeds the pre-jitter exponential value, never negative).
+    func test_delay_staysWithinBounds_acrossAttemptRange() {
+        let baseDelay = 1.0
+        let maxDelay = 30.0
+
+        // Test across a range of attempt numbers with various jitter values
+        for attempt in 1...10 {
+            let preJitterDelay = min(maxDelay, baseDelay * pow(2.0, Double(attempt - 1)))
+
+            // Test with jitter values at the extremes: 0.0, 0.5, 0.999
+            for jitterFactor in [0.0, 0.5, 0.999] {
+                var randomSource = DeterministicRandomSource([jitterFactor])
+                let backoff = ReconnectBackoff(
+                    baseDelay: baseDelay,
+                    maxDelay: maxDelay,
+                    randomSource: randomSource,
+                    sleep: { _ in }
+                )
+
+                let delay = backoff.delay(forAttempt: attempt)
+
+                XCTAssertGreaterThanOrEqual(delay, 0.0, "Delay should never be negative for attempt \(attempt) with jitter \(jitterFactor)")
+                XCTAssertLessThanOrEqual(delay, preJitterDelay, "Jittered delay should not exceed pre-jitter value for attempt \(attempt) with jitter \(jitterFactor)")
+            }
+        }
     }
 }
 
@@ -97,10 +185,11 @@ final class VaultEventSocketTests: XCTestCase {
 
     func test_connectionDrop_reconnectsWithNewTask_andResetsAttemptCountOnSuccess() async {
         var tasks: [MockWebSocketTask] = []
+        var randomSource = DeterministicRandomSource([1.0])
         let socket = VaultEventSocket(
             baseURL: URL(string: "https://api.example.com/v1")!,
             maxReconnectAttempts: 5,
-            backoff: ReconnectBackoff(baseDelay: 1, maxDelay: 30, sleep: { _ in }),
+            backoff: ReconnectBackoff(baseDelay: 1, maxDelay: 30, randomSource: randomSource, sleep: { _ in }),
             makeTask: { _ in
                 let task = MockWebSocketTask()
                 tasks.append(task)
@@ -128,10 +217,11 @@ final class VaultEventSocketTests: XCTestCase {
 
     func test_repeatedFailures_exceedingMaxAttempts_fallsBackToPolling() async {
         var tasks: [MockWebSocketTask] = []
+        var randomSource = DeterministicRandomSource([1.0, 1.0, 1.0])
         let socket = VaultEventSocket(
             baseURL: URL(string: "https://api.example.com/v1")!,
             maxReconnectAttempts: 3,
-            backoff: ReconnectBackoff(baseDelay: 1, maxDelay: 30, sleep: { _ in }),
+            backoff: ReconnectBackoff(baseDelay: 1, maxDelay: 30, randomSource: randomSource, sleep: { _ in }),
             makeTask: { _ in
                 let task = MockWebSocketTask()
                 tasks.append(task)
@@ -168,7 +258,8 @@ final class VaultEventSocketTests: XCTestCase {
     func test_stop_cancelsTaskAndPendingReconnect() async {
         var tasks: [MockWebSocketTask] = []
         let suspendedSleep = SuspendedSleep()
-        let blockingBackoff = ReconnectBackoff(baseDelay: 1, maxDelay: 30, sleep: { _ in
+        var randomSource = DeterministicRandomSource([1.0])
+        let blockingBackoff = ReconnectBackoff(baseDelay: 1, maxDelay: 30, randomSource: randomSource, sleep: { _ in
             await withCheckedContinuation { suspendedSleep.continuation = $0 }
         })
         let socket = VaultEventSocket(
