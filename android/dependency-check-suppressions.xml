@@ -342,23 +342,4 @@
     <cve>CVE-2026-53914</cve>
   </suppress>
 
-  <!-- ======================================================================
-       CVE-2025-29904: Ktor HTTP Request Smuggling (fixed in Ktor 3.1.1+)
-       ======================================================================
-       Our declared Ktor version is 3.5.2 (libs.versions.toml).  Any ktor-*-3.0.3.jar
-       entries that appear in the scan are from a stale Gradle dependency cache and do
-       not reflect the version actually compiled into the app.  Belt-and-suspenders
-       suppression while caches refresh; remove once all cached 3.0.3 jars are gone.
-  -->
-  <suppress>
-    <notes>
-      CVE-2025-29904 (HTTP Request Smuggling in Ktor) is fixed in Ktor 3.1.1+.
-      Our declared Ktor version is 3.5.2.  Any ktor-*-3.0.3.jar findings come from
-      a stale build cache and do not represent what is actually linked into the app.
-      Remove this suppression once the build cache has fully refreshed to 3.5.2.
-    </notes>
-    <gav regex="true">^io\.ktor:.*:3\.0\.3$</gav>
-    <cve>CVE-2025-29904</cve>
-  </suppress>
-
 </suppressions>
