@@ -38,10 +38,10 @@ jobs:
         # If it is disabled the action errors with "not supported on this
         # repository" — treat that as advisory rather than a hard gate so the
         # rest of the build-and-test job still runs.
-        continue-on-error: true
         with:
           fail-on-severity: high
           license-check: false
+        continue-on-error: true
 
       # Runs the existing EthosProtocolTests XCTest target against the SPM
       # package (Package.swift) — deliberately BEFORE the Xcode project is
