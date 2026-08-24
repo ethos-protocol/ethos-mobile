@@ -65,7 +65,19 @@ final class VaultEventSocket {
     }
 
     enum VaultEvent: Equatable {
+        /// Server-side vault state changed (TTL refresh, check-in, deposit, withdrawal,
+        /// beneficiary change, status transition). The full updated `Vault` is embedded.
         case vaultUpdated(Vault)
+        /// Vault has transitioned to `expired` status.
+        case vaultExpired(vaultID: String, expiredAt: Date)
+        /// Funds released to the beneficiary.
+        case vaultReleased(vaultID: String, releasedAt: Date, amount: Int64)
+        /// Server keepalive — no action required; clients may reply with `pong`.
+        case ping
+        /// Server signals a recoverable error (e.g. invalid vault_id on connect).
+        case error(code: String, message: String)
+        /// Unrecognised message type — ignored per api-contract.md §WebSocket
+        /// ("clients should ignore unrecognized values instead of erroring").
         case unknown
     }
 
@@ -197,8 +209,29 @@ final class VaultEventSocket {
         case .string(let s): data = Data(s.utf8)
         default: data = nil
         }
-        guard let data, let wireEvent = try? decoder.decode(WireEvent.self, from: data) else { return }
-        onEvent?(wireEvent.vaultEvent)
+        guard let data,
+              let envelope = try? decoder.decode(WireEnvelope.self, from: data) else { return }
+        let event: VaultEvent
+        switch envelope.type {
+        case "vault_updated":
+            guard let msg = try? decoder.decode(WireVaultUpdated.self, from: data) else { return }
+            event = .vaultUpdated(msg.vault)
+        case "vault_expired":
+            guard let msg = try? decoder.decode(WireVaultExpired.self, from: data) else { return }
+            event = .vaultExpired(vaultID: msg.vaultID, expiredAt: msg.expiredAt)
+        case "vault_released":
+            guard let msg = try? decoder.decode(WireVaultReleased.self, from: data) else { return }
+            event = .vaultReleased(vaultID: msg.vaultID, releasedAt: msg.releasedAt, amount: msg.amount)
+        case "ping":
+            event = .ping
+        case "error":
+            guard let msg = try? decoder.decode(WireError.self, from: data) else { return }
+            event = .error(code: msg.code, message: msg.message)
+        default:
+            // api-contract.md: "clients should ignore unrecognized values instead of erroring"
+            event = .unknown
+        }
+        onEvent?(event)
     }
 
     private func handleFailure() {
@@ -221,13 +254,39 @@ final class VaultEventSocket {
         }
     }
 
-    private struct WireEvent: Decodable {
-        let type: String
-        let vault: Vault?
+    // MARK: - Wire message decoders (internal, one per server→client type)
 
-        var vaultEvent: VaultEvent {
-            if type == "vault_updated", let vault { return .vaultUpdated(vault) }
-            return .unknown
+    /// Top-level discriminator — always present in every server frame.
+    private struct WireEnvelope: Decodable {
+        let type: String
+    }
+
+    private struct WireVaultUpdated: Decodable {
+        let vault: Vault
+    }
+
+    private struct WireVaultExpired: Decodable {
+        let vaultID: String
+        let expiredAt: Date
+        enum CodingKeys: String, CodingKey {
+            case vaultID = "vault_id"
+            case expiredAt = "expired_at"
         }
+    }
+
+    private struct WireVaultReleased: Decodable {
+        let vaultID: String
+        let releasedAt: Date
+        let amount: Int64
+        enum CodingKeys: String, CodingKey {
+            case vaultID = "vault_id"
+            case releasedAt = "released_at"
+            case amount
+        }
+    }
+
+    private struct WireError: Decodable {
+        let code: String
+        let message: String
     }
 }

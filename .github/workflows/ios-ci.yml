@@ -77,6 +77,17 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
             -skipMacroValidation
 
+      - name: Assert VaultWebSocketClient stub is gone (#179)
+        # Fails the build if any Swift source file still references the deleted
+        # VaultWebSocketClient stub (class name or its event type). This is a
+        # dead-code guard: if the stub is accidentally re-introduced or a new
+        # reference is added, CI catches it immediately.
+        run: |
+          if grep -r "VaultWebSocketClient" --include="*.swift" .; then
+            echo "ERROR: VaultWebSocketClient found in Swift sources — the stub was removed in #179 and must not be re-introduced."
+            exit 1
+          fi
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
