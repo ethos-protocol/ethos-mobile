@@ -365,6 +365,61 @@ final class UniversalLinkRouterTests: XCTestCase {
         XCTAssertTrue(a === b)
     }
 
+    // MARK: - Scheme-gate security tests (custom-scheme bypass fix)
+
+    // Regression test: before the fix, ethosprotocol://ethos-protocol.app/vaults/X/accept?token=Y
+    // matched the host guard and returned a non-nil .beneficiaryAcceptance result, letting any
+    // third-party app fabricate an acceptance link with no AASA / domain-ownership verification.
+    // After the fix the scheme guard must reject it.
+    func test_parse_customSchemeAcceptURL_returnsNil() {
+        let url = URL(string: "ethosprotocol://ethos-protocol.app/vaults/vault-sec-test/accept?token=tok-sec-test")!
+        XCTAssertNil(router.parse(url: url),
+                     "Custom-scheme acceptance URL must be rejected — only https:// Universal Links are trusted")
+    }
+
+    // Regression test: before the fix, ethosprotocol://ethos-protocol.app/vaults/X/invite
+    // also matched the host guard and returned a non-nil .vaultInvitation result.
+    func test_parse_customSchemeInviteURL_returnsNil() {
+        let url = URL(string: "ethosprotocol://ethos-protocol.app/vaults/vault-sec-test/invite")!
+        XCTAssertNil(router.parse(url: url),
+                     "Custom-scheme invitation URL must be rejected — only https:// Universal Links are trusted")
+    }
+
+    // Verify the legitimate Universal Link acceptance path is unaffected by the scheme gate.
+    func test_parse_httpsAcceptURL_returnsAcceptanceLink() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-sec-test/accept?token=tok-sec-test")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .beneficiaryAcceptance(vaultID: "vault-sec-test", token: "tok-sec-test"),
+                       "Legitimate https:// acceptance Universal Link must still parse correctly")
+    }
+
+    // Verify the legitimate Universal Link invitation path is unaffected by the scheme gate.
+    func test_parse_httpsInviteURL_returnsInvitationLink() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-sec-test/invite")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .vaultInvitation(vaultID: "vault-sec-test"),
+                       "Legitimate https:// invitation Universal Link must still parse correctly")
+    }
+
+    // Confirm the ethosprotocol://vault/{id}/{action} branch is unaffected — it already
+    // requires url.scheme == "ethosprotocol" explicitly and is outside the patched guard.
+    func test_parse_customSchemeVaultAction_unaffected() {
+        let url = URL(string: "ethosprotocol://vault/vault-sec-test/check-in")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .vaultAction(vaultID: "vault-sec-test", action: .checkIn),
+                       "ethosprotocol://vault/{id}/{action} deep-links must continue to work unchanged")
+    }
+
+    // Confirm that a missing token on a legitimate https:// accept link still routes to the
+    // acceptance screen with an empty token (not silently dropped), preserving the existing
+    // "missing token → explicit error screen" behavior documented in UniversalLinkRouter.swift.
+    func test_parse_httpsAcceptURL_missingToken_preservesMissingTokenBehavior() {
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-sec-test/accept")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .beneficiaryAcceptance(vaultID: "vault-sec-test", token: ""),
+                       "Missing token on a legitimate https:// accept link must still route to acceptance screen with empty token")
+    }
+
     // MARK: - #37 Validation Tests (Security)
 
     func test_parse_vaultInvitation_withPathTraversal_returnsNil() {

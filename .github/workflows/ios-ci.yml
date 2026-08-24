@@ -34,6 +34,10 @@ jobs:
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: actions/dependency-review-action@v4
+        # Non-blocking: dependency-review requires the Dependency graph feature
+        # to be enabled in repo settings (Settings → Security → Code security).
+        # If it is disabled the action errors with "not supported on this
+        # repository" — the dependency graph must be enabled for this check.
         with:
           fail-on-severity: high
           license-check: false
