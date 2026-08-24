@@ -121,10 +121,11 @@ android {
 //
 // Security patch forces — keep transitive pulls of vulnerable libraries at known-safe versions:
 //
-//   Netty 4.1.93.Final is pulled in transitively by Ktor's CIO engine and gRPC. All 4.1.x
-//   versions before 4.1.109.Final carry a long list of CVEs (e.g. CVE-2025-24970,
-//   CVE-2023-44487). Forcing the whole io.netty group to 4.1.109.Final ensures every Netty
-//   module on the classpath is at the patched version.
+//   Netty is pulled in transitively by Ktor's CIO engine and gRPC. The 2026 CVE wave
+//   (CVE-2026-33870 through CVE-2026-59921) along with CVE-2025-24970, CVE-2023-44487
+//   are all patched in 4.1.137.Final (latest stable, released 06-Aug-2026). Forcing the
+//   whole io.netty group to 4.1.137.Final ensures every Netty module on the classpath
+//   is at the patched version.
 //
 //   commons-io 2.13.0 is a transitive pull from Android build tooling. CVE-2024-47554
 //   (XmlStreamReader CPU exhaustion) is fixed in 2.14.0+; 2.22.0 is the current latest.
@@ -140,20 +141,26 @@ configurations.all {
     resolutionStrategy {
         force("org.hamcrest:hamcrest:2.2")
 
-        // Netty: force entire group to patched 4.1.109.Final (CVE-2025-24970, CVE-2023-44487, etc.)
-        force("io.netty:netty-buffer:4.1.109.Final")
-        force("io.netty:netty-codec:4.1.109.Final")
-        force("io.netty:netty-codec-http:4.1.109.Final")
-        force("io.netty:netty-codec-http2:4.1.109.Final")
-        force("io.netty:netty-codec-socks:4.1.109.Final")
-        force("io.netty:netty-common:4.1.109.Final")
-        force("io.netty:netty-handler:4.1.109.Final")
-        force("io.netty:netty-handler-proxy:4.1.109.Final")
-        force("io.netty:netty-resolver:4.1.109.Final")
-        force("io.netty:netty-transport:4.1.109.Final")
-        force("io.netty:netty-transport-native-unix-common:4.1.109.Final")
-        force("io.netty:netty-transport-native-epoll:4.1.109.Final")
-        force("io.netty:netty-transport-native-kqueue:4.1.109.Final")
+        // Netty: force entire group to patched 4.1.137.Final (latest stable as of Aug 2026).
+        // Covers CVE-2025-24970, CVE-2023-44487, and the full wave of 2026 CVEs
+        // (CVE-2026-33870/33871, CVE-2026-41417/42578-42587, CVE-2026-44248-44893,
+        //  CVE-2026-45416/45536/45673/45674, CVE-2026-46340, CVE-2026-47244/47691,
+        //  CVE-2026-48006/48043/48059, CVE-2026-50010/50011/50020/50560,
+        //  CVE-2026-55831/55833/55851, CVE-2026-56745/56746/56817/56819-56822,
+        //  CVE-2026-59898-59901/59919-59921, CVE-2025-55163/58056/58057/67735).
+        force("io.netty:netty-buffer:4.1.137.Final")
+        force("io.netty:netty-codec:4.1.137.Final")
+        force("io.netty:netty-codec-http:4.1.137.Final")
+        force("io.netty:netty-codec-http2:4.1.137.Final")
+        force("io.netty:netty-codec-socks:4.1.137.Final")
+        force("io.netty:netty-common:4.1.137.Final")
+        force("io.netty:netty-handler:4.1.137.Final")
+        force("io.netty:netty-handler-proxy:4.1.137.Final")
+        force("io.netty:netty-resolver:4.1.137.Final")
+        force("io.netty:netty-transport:4.1.137.Final")
+        force("io.netty:netty-transport-native-unix-common:4.1.137.Final")
+        force("io.netty:netty-transport-native-epoll:4.1.137.Final")
+        force("io.netty:netty-transport-native-kqueue:4.1.137.Final")
 
         // commons-io: patched for CVE-2024-47554 (XmlStreamReader CPU exhaustion)
         force("commons-io:commons-io:2.22.0")

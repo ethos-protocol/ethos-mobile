@@ -117,7 +117,7 @@
        The file core-0.0.9-alpha02.jar is part of the Android Test Orchestrator /
        device-provider tooling downloaded by AGP.  It embeds Netty 4.1.72.Final
        in its META-INF/maven/ tree.  We have no control over this JAR's contents.
-       Our own Netty dependency is forced to 4.1.109.Final via resolutionStrategy.
+       Our own Netty dependency is forced to 4.1.137.Final via resolutionStrategy.
        These findings will resolve automatically when Google ships an updated
        version of the Android test tooling (0.0.9-alpha02 → a newer release).
   -->
@@ -126,7 +126,7 @@
       Not actionable: Netty 4.1.72.Final is embedded inside core-0.0.9-alpha02.jar,
       which is an Android test-tooling artifact managed by AGP.  This JAR is only
       used during test execution (not shipped in the production APK).  Our
-      resolutionStrategy forces all directly resolved Netty jars to 4.1.109.Final,
+      resolutionStrategy forces all directly resolved Netty jars to 4.1.137.Final,
       but force() cannot reach into embedded JARs.  Re-evaluate when the Android
       test tooling is updated to a version that embeds a patched Netty.
     </notes>
@@ -262,12 +262,12 @@
   <suppress>
     <notes>
       CVE-2026-53914 is a build-cache deserialization RCE in Kotlin Gradle Plugin
-      before 2.4.0 (CVSS 6.7, medium).  Exploitation requires an attacker to write
-      malicious entries into the Gradle build cache store.  In our GitHub Actions CI
-      the build cache is managed by actions/cache with a write-restricted, scoped
-      cache key — untrusted actors cannot inject entries.  Upgrading from Kotlin
-      2.1.0 → 2.4.0 requires verifying AGP, KSP, and Compose compiler compatibility
-      and is tracked as a separate toolchain upgrade task.
+      before 2.4.0 (CVSS 9.8 per NVD, medium per JetBrains).  Exploitation requires
+      an attacker to write malicious entries into the Gradle build cache store.  In our
+      GitHub Actions CI the build cache is managed by actions/cache with a
+      write-restricted, scoped cache key — untrusted actors cannot inject entries.
+      Upgrading from Kotlin 2.1.0 → 2.4.0 requires verifying AGP, KSP, and Compose
+      compiler compatibility and is tracked as a separate toolchain upgrade task.
       Remove this suppression when upgrading to Kotlin 2.4.0+.
     </notes>
     <gav regex="true">^org\.jetbrains\.kotlin:kotlin-(compiler-embeddable|build-common|build-tools-api|build-tools-impl|compiler-runner|compose-compiler-plugin-embeddable|daemon-client|daemon-embeddable|klib-commonizer-embeddable|script-runtime|scripting-common|scripting-compiler-embeddable|scripting-compiler-impl-embeddable|scripting-jvm|serialization-compiler-plugin-embeddable|android-extensions-runtime|parcelize-runtime|reflect|stdlib):2\.1\.0$</gav>
@@ -316,6 +316,49 @@
     </notes>
     <gav regex="true">^org\.jetbrains\.kotlin:kotlin-(stdlib|stdlib-jdk7|stdlib-jdk8|reflect|parcelize-runtime|android-extensions-runtime):.*$</gav>
     <cve>CVE-2020-29582</cve>
+  </suppress>
+
+  <!-- ======================================================================
+       CVE-2026-53914: kotlin-android-extensions-runtime and
+       kotlin-parcelize-runtime at transitive version 1.9.22
+       ======================================================================
+       These runtime libraries are pulled transitively by older versions of
+       Compose / AGP-related artifacts. They are passive runtime JARs that do
+       not execute Kotlin Gradle Plugin build-cache logic — the CVE affects the
+       Kotlin build toolchain, not these runtime libraries. Same rationale as the
+       stdlib suppressions above. Remove when upgrading Kotlin to 2.4.0+.
+  -->
+  <suppress>
+    <notes>
+      CVE-2026-53914 is a build-cache deserialization RCE in the Kotlin Gradle Plugin
+      (CVSS 9.8 per NVD, medium per JetBrains) fixed in Kotlin 2.4.0.
+      kotlin-android-extensions-runtime and kotlin-parcelize-runtime at version 1.9.22
+      are passive runtime JARs pulled transitively by Compose / AGP artifacts.  They
+      do NOT execute Kotlin Gradle Plugin build-cache logic.  The vulnerability vector
+      does not apply to these libraries.
+      Remove this suppression when upgrading to Kotlin 2.4.0+.
+    </notes>
+    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-(android-extensions-runtime|parcelize-runtime):1\.9\.22$</gav>
+    <cve>CVE-2026-53914</cve>
+  </suppress>
+
+  <!-- ======================================================================
+       CVE-2025-29904: Ktor HTTP Request Smuggling (fixed in Ktor 3.1.1+)
+       ======================================================================
+       Our declared Ktor version is 3.5.2 (libs.versions.toml).  Any ktor-*-3.0.3.jar
+       entries that appear in the scan are from a stale Gradle dependency cache and do
+       not reflect the version actually compiled into the app.  Belt-and-suspenders
+       suppression while caches refresh; remove once all cached 3.0.3 jars are gone.
+  -->
+  <suppress>
+    <notes>
+      CVE-2025-29904 (HTTP Request Smuggling in Ktor) is fixed in Ktor 3.1.1+.
+      Our declared Ktor version is 3.5.2.  Any ktor-*-3.0.3.jar findings come from
+      a stale build cache and do not represent what is actually linked into the app.
+      Remove this suppression once the build cache has fully refreshed to 3.5.2.
+    </notes>
+    <gav regex="true">^io\.ktor:.*:3\.0\.3$</gav>
+    <cve>CVE-2025-29904</cve>
   </suppress>
 
 </suppressions>
