@@ -135,6 +135,18 @@ jobs:
           path: android/app/build/outputs/mapping/release/mapping.txt
           if-no-files-found: warn
 
+      # #178: VaultWebSocketClient was a dead stub duplicating the real, wired
+      # VaultEventSocket client and was removed. Fail fast if it (or its
+      # VaultWebSocketEvent sealed class) is ever reintroduced.
+      - name: Verify VaultWebSocketClient stub is not reintroduced
+        run: |
+          if grep -rl "VaultWebSocketClient\|VaultWebSocketEvent" app/src; then
+            echo "ERROR: found a reference to the removed VaultWebSocketClient stub (#178)."
+            echo "VaultEventSocket (app/src/main/java/com/ethosprotocol/services/VaultEventSocket.kt) is the real, wired client — use that instead."
+            exit 1
+          fi
+          echo "No references to the removed VaultWebSocketClient stub found."
+
       - name: Run lint
         run: ./gradlew lint
 
