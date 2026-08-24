@@ -1,10 +1,10 @@
 [versions]
 agp = "8.7.3"
-kotlin = "2.1.0"
+kotlin = "2.3.20"
 kotlinx-serialization-json = "1.7.3"
 biometric = "1.2.0-alpha05"
 compose-bom = "2024.12.01"
-hilt = "2.53"
+hilt = "2.59.2"
 hilt-androidx = "1.2.0"
 ktor = "3.5.2"
 lifecycle = "2.8.7"
@@ -74,6 +74,6 @@ kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
-ksp = { id = "com.google.devtools.ksp", version = "2.1.0-1.0.29" }
+ksp = { id = "com.google.devtools.ksp", version = "2.3.11" }
 paparazzi = { id = "app.cash.paparazzi", version.ref = "paparazzi" }
 dependency-check = { id = "org.owasp.dependencycheck", version.ref = "dependency-check" }
