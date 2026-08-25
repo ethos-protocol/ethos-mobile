@@ -329,6 +329,101 @@ final class VaultEventSocketTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 20_000_000)
         XCTAssertNil(receivedEvent)
     }
+
+    // MARK: - #179 Ported event cases (vault_expired, vault_released, ping, error)
+
+    func test_vaultExpiredMessage_decodesAndFiresOnEvent() async {
+        let mockTask = MockWebSocketTask()
+        let socket = VaultEventSocket(baseURL: URL(string: "https://api.example.com/v1")!, makeTask: { _ in mockTask })
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-1")
+
+        let json = #"{"type": "vault_expired", "vault_id": "vault-1", "expired_at": "2026-06-01T12:00:00Z"}"#
+        mockTask.simulateMessage(.string(json))
+
+        let received = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(received, "vault_expired message should fire onEvent")
+        guard case .vaultExpired(let id, let expiredAt) = receivedEvent else {
+            return XCTFail("expected .vaultExpired, got \(String(describing: receivedEvent))")
+        }
+        XCTAssertEqual(id, "vault-1")
+        // ISO8601: 2026-06-01T12:00:00Z
+        XCTAssertEqual(expiredAt.timeIntervalSince1970, 1_748_779_200, accuracy: 1.0)
+    }
+
+    func test_vaultReleasedMessage_decodesAndFiresOnEvent() async {
+        let mockTask = MockWebSocketTask()
+        let socket = VaultEventSocket(baseURL: URL(string: "https://api.example.com/v1")!, makeTask: { _ in mockTask })
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-2")
+
+        let json = #"{"type": "vault_released", "vault_id": "vault-2", "released_at": "2026-06-01T12:00:00Z", "amount": 5000000}"#
+        mockTask.simulateMessage(.string(json))
+
+        let received = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(received, "vault_released message should fire onEvent")
+        guard case .vaultReleased(let id, _, let amount) = receivedEvent else {
+            return XCTFail("expected .vaultReleased, got \(String(describing: receivedEvent))")
+        }
+        XCTAssertEqual(id, "vault-2")
+        XCTAssertEqual(amount, 5_000_000)
+    }
+
+    func test_pingMessage_firesOnEvent() async {
+        let mockTask = MockWebSocketTask()
+        let socket = VaultEventSocket(baseURL: URL(string: "https://api.example.com/v1")!, makeTask: { _ in mockTask })
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-1")
+
+        mockTask.simulateMessage(.string(#"{"type": "ping"}"#))
+
+        let received = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(received, "ping message should fire onEvent")
+        XCTAssertEqual(receivedEvent, .ping)
+    }
+
+    func test_errorMessage_decodesAndFiresOnEvent() async {
+        let mockTask = MockWebSocketTask()
+        let socket = VaultEventSocket(baseURL: URL(string: "https://api.example.com/v1")!, makeTask: { _ in mockTask })
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-1")
+
+        let json = #"{"type": "error", "code": "invalid_vault_id", "message": "Vault not found"}"#
+        mockTask.simulateMessage(.string(json))
+
+        let received = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(received, "error message should fire onEvent")
+        guard case .error(let code, let message) = receivedEvent else {
+            return XCTFail("expected .error, got \(String(describing: receivedEvent))")
+        }
+        XCTAssertEqual(code, "invalid_vault_id")
+        XCTAssertEqual(message, "Vault not found")
+    }
+
+    func test_unknownMessageType_firesUnknownEvent() async {
+        // api-contract.md: "clients should ignore unrecognized values instead of erroring"
+        // VaultEventSocket fires .unknown so callers can no-op cleanly.
+        let mockTask = MockWebSocketTask()
+        let socket = VaultEventSocket(baseURL: URL(string: "https://api.example.com/v1")!, makeTask: { _ in mockTask })
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-1")
+
+        mockTask.simulateMessage(.string(#"{"type": "future_event_type"}"#))
+
+        let received = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(received, "unrecognized type should still fire onEvent with .unknown")
+        XCTAssertEqual(receivedEvent, .unknown)
+    }
 }
 
 // MARK: - #20 VaultStore Real-Time Event Wiring Tests

@@ -244,9 +244,12 @@
       the stdlib runtime JAR.  These older kotlin-stdlib jars are pulled in
       transitively by third-party libraries; they sit passively on the classpath and
       do not execute build-cache logic.  The vulnerability vector does not apply.
+      Covers 1.x.x transitive pulls, 2.0.x, and 2.1.x patch releases (e.g. 2.1.20
+      pulled transitively when a dependency requires a newer 2.1 patch than our
+      declared toolchain version).  None of these reach 2.4.0 where the fix landed.
       Remove this suppression when upgrading to Kotlin 2.4.0+.
     </notes>
-    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-stdlib.*:(1\.[0-9]+\.[0-9]+.*|2\.0\.0-Beta5)$</gav>
+    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-stdlib.*:(1\.[0-9]+\.[0-9]+.*|2\.0\.[0-9]+.*|2\.0\.0-Beta5|2\.1\.[0-9]+.*)$</gav>
     <cve>CVE-2026-53914</cve>
   </suppress>
   <suppress>
@@ -258,7 +261,7 @@
     <cve>CVE-2026-53914</cve>
   </suppress>
 
-  <!-- (B) Kotlin 2.1.0 build-tools — build cache requires attacker write access to cache store -->
+  <!-- (B) Kotlin 2.1.x build-tools — build cache requires attacker write access to cache store -->
   <suppress>
     <notes>
       CVE-2026-53914 is a build-cache deserialization RCE in Kotlin Gradle Plugin
@@ -266,20 +269,25 @@
       an attacker to write malicious entries into the Gradle build cache store.  In our
       GitHub Actions CI the build cache is managed by actions/cache with a
       write-restricted, scoped cache key — untrusted actors cannot inject entries.
-      Upgrading from Kotlin 2.1.0 → 2.4.0 requires verifying AGP, KSP, and Compose
+      Covers the full 2.1.x patch series (2.1.0, 2.1.10, 2.1.20, etc.) — Gradle or
+      transitive dependencies may resolve a newer 2.1.x patch than the declared
+      toolchain version; all 2.1.x releases predate the 2.4.0 fix.
+      Upgrading from Kotlin 2.1.x → 2.4.0 requires verifying AGP, KSP, and Compose
       compiler compatibility and is tracked as a separate toolchain upgrade task.
       Remove this suppression when upgrading to Kotlin 2.4.0+.
     </notes>
-    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-(compiler-embeddable|build-common|build-tools-api|build-tools-impl|compiler-runner|compose-compiler-plugin-embeddable|daemon-client|daemon-embeddable|klib-commonizer-embeddable|script-runtime|scripting-common|scripting-compiler-embeddable|scripting-compiler-impl-embeddable|scripting-jvm|serialization-compiler-plugin-embeddable|android-extensions-runtime|parcelize-runtime|reflect|stdlib):2\.1\.0$</gav>
+    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-(compiler-embeddable|build-common|build-tools-api|build-tools-impl|compiler-runner|compose-compiler-plugin-embeddable|daemon-client|daemon-embeddable|klib-commonizer-embeddable|script-runtime|scripting-common|scripting-compiler-embeddable|scripting-compiler-impl-embeddable|scripting-jvm|serialization-compiler-plugin-embeddable|android-extensions-runtime|parcelize-runtime|reflect|stdlib):2\.1\.[0-9]+.*$</gav>
     <cve>CVE-2026-53914</cve>
   </suppress>
 
-  <!-- Kotlin 2.1.0 stdlib (all variant) -->
+  <!-- Kotlin 2.1.x stdlib (all variant) -->
   <suppress>
     <notes>
-      See kotlin-compiler-embeddable 2.1.0 suppression note above.
+      See kotlin-compiler-embeddable 2.1.x suppression note above.
+      Covers the -all classifier variant (kotlin-stdlib-2.1.20-all.jar) and
+      any other 2.1.x patch release that Gradle resolves transitively.
     </notes>
-    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-stdlib:2\.1\.0$</gav>
+    <gav regex="true">^org\.jetbrains\.kotlin:kotlin-stdlib:2\.1\.[0-9]+.*$</gav>
     <cve>CVE-2026-53914</cve>
   </suppress>
 
