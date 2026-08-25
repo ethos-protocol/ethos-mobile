@@ -79,9 +79,10 @@ mobile/
 3. Open `ios/EthosProtocol/Xcode/EthosProtocol.xcodeproj` in Xcode 15+
 4. Set your Apple Developer Team in signing settings for both the `EthosProtocol` and `TTLWidget` targets (`project.yml` leaves `DEVELOPMENT_TEAM` blank on purpose — bundle IDs `com.ethosprotocol` / `com.ethosprotocol.TTLWidget` are already set)
 5. `API_BASE_URL` is already set in `EthosProtocol/Info.plist` and `TTLWidget/Info.plist`; edit both (they're separate bundles, read independently at runtime) if you need to point at a different environment
-6. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`, listing this app's App ID under both `applinks` (Universal Links) and `webcredentials` (platform passkeys)
-7. In the Apple Developer portal, enable Push Notifications, Associated Domains, iCloud (Key-Value storage), and Keychain Sharing capabilities for the `com.ethosprotocol` App ID, and Keychain Sharing for `com.ethosprotocol.TTLWidget` — matching `EthosProtocol/EthosProtocol.entitlements` / `TTLWidget/TTLWidget.entitlements`. Set up an APNs key in App Store Connect for push.
-8. Re-run `mkdir -p Xcode && xcodegen generate --project Xcode` any time `project.yml` changes; the generated `Xcode/` directory is disposable and shouldn't be committed
+6. Both `Info.plist`s must also carry a non-empty `TLS_PUBLIC_KEY_PINS` array (Base64-encoded SPKI SHA-256 hashes — see `Sources/Services/CertificatePinning.swift` for the rotation strategy) before shipping a Release build. `ios-ci.yml`'s `build-and-test` job runs `.github/scripts/check_tls_pinning.py --configuration Release` against both files and fails the build if either is missing or empty; Debug builds are exempt (`PinningDelegate` intentionally treats an empty pin set as "pinning disabled" for local dev)
+7. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`, listing this app's App ID under both `applinks` (Universal Links) and `webcredentials` (platform passkeys)
+8. In the Apple Developer portal, enable Push Notifications, Associated Domains, iCloud (Key-Value storage), and Keychain Sharing capabilities for the `com.ethosprotocol` App ID, and Keychain Sharing for `com.ethosprotocol.TTLWidget` — matching `EthosProtocol/EthosProtocol.entitlements` / `TTLWidget/TTLWidget.entitlements`. Set up an APNs key in App Store Connect for push.
+9. Re-run `mkdir -p Xcode && xcodegen generate --project Xcode` any time `project.yml` changes; the generated `Xcode/` directory is disposable and shouldn't be committed
 
 ### Android
 1. Open `android` in Android Studio Hedgehog+

@@ -16,6 +16,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Runs before any Xcode toolchain/build work: this only needs the
+      # checked-out sources (the script itself + the target Info.plists),
+      # not a live certificate or a build product, so it fails fast and
+      # cheaply if it's going to fail at all.
+      - name: Test TLS pinning check script
+        working-directory: ${{ github.workspace }}
+        run: python3 -m unittest discover -s .github/scripts/tests -p "test_*.py" -v
+
+      # Guards against #117's TLS_PUBLIC_KEY_PINS regressing to absent/empty
+      # (silently disabling certificate pinning) in a Release build, or a new
+      # target being added without it. EthosProtocol and TTLWidget each read
+      # Bundle.main independently (an app extension does not inherit its host
+      # app's Info.plist — see project.yml), so both are checked. This is
+      # deliberately scoped to the Release configuration only — Debug is left
+      # untouched, matching PinningDelegate's documented "empty pins disables
+      # pinning for local dev" design (see check_tls_pinning.py).
+      - name: Verify TLS certificate pinning is configured (Release)
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_tls_pinning.py" \
+            --configuration Release \
+            --target "EthosProtocol:EthosProtocol/Info.plist" \
+            --target "TTLWidget:TTLWidget/Info.plist"
+
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app
 
