@@ -11,67 +11,11 @@ defaults:
     working-directory: android
 
 jobs:
-  # Kept out of build-and-test: the OWASP dependency-check task calls the NVD
-  # API, which has no key configured here and rate-limits (HTTP 429) under
-  # normal use — a scan flake should not block build/lint/unit-test signal on
-  # every push and PR.
-  dependency-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - id: date
-        run: echo "week=$(date +%Y-W%U)" >> "$GITHUB_OUTPUT"
-
-      # Without an NVD API key, a from-scratch NVD database sync is what makes this
-      # job slow (heavy rate-limiting on the unkeyed feed). Caching the data
-      # directory (pinned in build.gradle.kts) across runs means most runs only
-      # fetch the incremental delta. Keyed by week so the cache still refreshes
-      # regularly rather than growing stale indefinitely.
-      - name: Cache OWASP dependency-check database
-        uses: actions/cache@v4
-        with:
-          path: android/dependency-check-data
-          key: dependency-check-data-${{ steps.date.outputs.week }}
-          restore-keys: |
-            dependency-check-data-
-
-      # Without an NVD API key, the unkeyed feed rate-limits (HTTP 429) often
-      # enough that a from-scratch or degraded database update aborts the whole
-      # task instead of falling back to cached/local data as its own log message
-      # claims it will. That's an external infra limit, not a finding about this
-      # repo's dependencies, so it's treated as a soft warning rather than a hard
-      # failure — anything else (a real CVSS >= 7.0 finding, or any other error)
-      # still fails the job.
-      - name: Scan dependencies for high severity vulnerabilities
-        run: |
-          set +e
-          ./gradlew dependencyCheckAggregate 2>&1 | tee dependency-check-output.log
-          STATUS=${PIPESTATUS[0]}
-          set -e
-
-          if [ "$STATUS" -eq 0 ]; then
-            exit 0
-          fi
-
-          if grep -qE "NVD Returned Status Code: 429|NvdApiException|Unable to continue dependency-check analysis" dependency-check-output.log; then
-            echo "::warning::dependency-check could not complete because the NVD API rate-limited this run (no API key configured). Treating as non-blocking rather than a real finding."
-            exit 0
-          fi
-
-          exit "$STATUS"
+  # dependency-check moved to android-dependency-check.yml (#178): without an
+  # NVD API key it's too slow/unreliable (rate-limits, or a from-scratch sync
+  # that can run over an hour and get killed by the runner) to run on every
+  # push and PR — it's now path-filtered to actual dependency changes plus a
+  # weekly schedule instead.
 
   build-and-test:
     runs-on: ubuntu-latest
