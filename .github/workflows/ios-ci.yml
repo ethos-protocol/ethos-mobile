@@ -27,6 +27,32 @@ jobs:
       - name: Resolve package dependencies
         run: xcodebuild -resolvePackageDependencies
 
+      # A hard-coded `name=<device>,OS=latest` destination breaks whenever the runner image
+      # changes: `OS=latest` can resolve to a runtime that is not installed, and a device
+      # model can disappear from the image entirely — both produce "Unable to find a device
+      # matching the provided destination specifier" with no code change on our side.
+      # Resolving the newest available iPhone simulator to a concrete UDID pins the test
+      # steps below to a device that actually exists on whatever `macos-latest` is today.
+      # `simctl` lists runtimes in ascending version order, so the last iPhone entry belongs
+      # to the newest installed iOS runtime.
+      - name: Select iOS Simulator destination
+        id: simulator
+        run: |
+          SIMULATOR=$(xcrun simctl list devices available \
+            | sed -n '/^-- iOS/,$p' \
+            | grep -E '^ +iPhone' \
+            | tail -1)
+          UDID=$(echo "$SIMULATOR" | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator found on this runner image."
+            xcrun simctl list devices available
+            exit 1
+          fi
+
+          echo "Using simulator:$SIMULATOR"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
       - name: Show SwiftPM dependency graph
         run: swift package show-dependencies
 
@@ -78,7 +104,7 @@ jobs:
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             -skipMacroValidation
 
       - name: Assert VaultWebSocketClient stub is gone (#179)
@@ -134,5 +160,5 @@ jobs:
           TEST_RUNNER_CI=true xcodebuild test \
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocolTests \
-            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             -skipMacroValidation
