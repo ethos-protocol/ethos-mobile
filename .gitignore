@@ -1,0 +1,4 @@
+
+# Byte-compiled CI helper scripts
+__pycache__/
+*.pyc

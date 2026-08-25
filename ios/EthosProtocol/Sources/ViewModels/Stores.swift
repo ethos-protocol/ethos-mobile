@@ -404,6 +404,15 @@ final class VaultStore: ObservableObject {
             switch event {
             case .vaultUpdated(let updated):
                 self.applyUpdate(updated)
+            case .vaultExpired, .vaultReleased:
+                // Neither payload carries the full vault, and both change status (and, for
+                // a release, the balance) — refetch rather than patching fields locally.
+                Task { await self.load() }
+            case .ping:
+                // Server keepalive — no state change.
+                break
+            case .error(let code, let message):
+                self.error = ErrorPresentation(message: "Vault event stream error (\(code)): \(message)")
             case .unknown:
                 break
             }
