@@ -12,6 +12,15 @@ dependencyCheck {
     failBuildOnCVSS = 7.0F
     formats = listOf("HTML", "JSON")
 
+    // Without this, dependencyCheckAggregate scans every resolvable configuration
+    // in the build, including build-tooling that never ships in the app (the
+    // Kotlin compiler/daemon pulled in via kotlinCompilerClasspath, KSP's
+    // annotation-processor classpath, and the emulator/UTP test-orchestration
+    // jars behind androidTestUtil — which drag in unrelated netty/grpc/protobuf
+    // findings). Scoping to the app module's release runtime classpath restricts
+    // the scan to what actually ends up in the shipped APK.
+    scanConfigurations = listOf("releaseRuntimeClasspath")
+
     // Without an NVD API key, the default (unkeyed) NVD feed is aggressively
     // rate-limited, so a from-scratch database sync is what makes this job slow.
     // Pinning the data directory to a known path (instead of the plugin's default

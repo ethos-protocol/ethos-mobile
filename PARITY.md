@@ -69,7 +69,7 @@ Last audited: 2026-07-27
 | TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (#TBD) |
 | Widget urgency selection (which vault to surface) | ❌ | ❌ | Both platforms always show the first vault (#TBD) |
 | **WebSocket / real-time** | | | |
-| Live vault updates via WebSocket | ⚠️ | ❌ | iOS: `VaultEventSocket` implemented (#179) — `vault_updated`, `vault_expired`, `vault_released`, `ping`, and `error` decoded; reconnects with exponential backoff. Not yet wired to a production endpoint. Android: not implemented (#TBD) |
+| Live vault updates via WebSocket | ✅ | ✅ | iOS: VaultEventSocket.swift; Android: VaultEventSocket.kt, both wired into their vault store/ViewModel with reconnect backoff |
 | **Background refresh** | | | |
 | Background app refresh (TTL polling) | ✅ | ✅ | iOS: BGAppRefreshTask; Android: WorkManager |
 | **Universal / deep links** | | | |
@@ -99,7 +99,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
-| WebSocket real-time vault updates | Android | #179 / TBD |
 | iCloud / cross-device sync | Android | TBD |
 
 ---
