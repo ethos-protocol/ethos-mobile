@@ -11,24 +11,40 @@ protocol WebSocketTasking: AnyObject {
 
 extension URLSessionWebSocketTask: WebSocketTasking {}
 
-/// Exponential backoff for WebSocket reconnect attempts, capped at `maxDelay`.
+/// Exponential backoff for WebSocket reconnect attempts, capped at `maxDelay`,
+/// with randomized jitter to reduce synchronized reconnect storms.
 /// Distinct from RetryPolicy (APIClient's bounded GET retry): that retries a
 /// single request a few times, while this backs off an indefinite reconnect loop.
-struct ReconnectBackoff {
+public struct ReconnectBackoff {
     let baseDelay: TimeInterval
     let maxDelay: TimeInterval
+    /// Random source for jitter computation. Injected to allow deterministic testing;
+    /// defaults to SystemRandomSource in production.
+    let randomSource: RandomSourceProvider
     let sleep: (TimeInterval) async throws -> Void
 
-    static let socketDefault = ReconnectBackoff(
+    public static let socketDefault = ReconnectBackoff(
         baseDelay: 1.0,
         maxDelay: 30.0,
+        randomSource: SystemRandomSource(),
         sleep: { seconds in try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
     )
+    
+    public init(baseDelay: TimeInterval, maxDelay: TimeInterval, randomSource: RandomSourceProvider, sleep: @escaping (TimeInterval) async throws -> Void) {
+        self.baseDelay = baseDelay
+        self.maxDelay = maxDelay
+        self.randomSource = randomSource
+        self.sleep = sleep
+    }
 
-    /// Delay before reconnect attempt number `attempt` (1-based): doubles from
-    /// `baseDelay`, capped at `maxDelay`.
-    func delay(forAttempt attempt: Int) -> TimeInterval {
-        min(maxDelay, baseDelay * pow(2.0, Double(max(0, attempt - 1))))
+    /// Delay before reconnect attempt number `attempt` (1-based): exponential backoff
+    /// `baseDelay * 2^(attempt-1)` capped at `maxDelay`, with randomized jitter applied
+    /// (multiply by a random factor in [0, 1)) to reduce synchronized reconnect storms.
+    /// The resulting delay is always ≥ 0 and ≤ the pre-jitter exponential value.
+    public func delay(forAttempt attempt: Int) -> TimeInterval {
+        let baseBackoff = min(maxDelay, baseDelay * pow(2.0, Double(max(0, attempt - 1))))
+        let jitter = randomSource.randomDouble()
+        return baseBackoff * jitter
     }
 }
 

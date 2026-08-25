@@ -30,6 +30,11 @@ dependencyCheck {
         directory = "${rootProject.projectDir}/dependency-check-data"
     }
 
+    // Suppress false-positive CPE matches and findings in test-tooling JARs that
+    // we have no control over.  See the suppression file for detailed per-entry
+    // justifications.
+    suppressionFile = "${rootProject.projectDir}/dependency-check-suppressions.xml"
+
     // This is a Kotlin/Android project only — skip analyzers for other ecosystems
     // that don't apply here, since the plugin runs them by default whenever it
     // finds any file that even loosely matches (e.g. any *.txt, *.md).
