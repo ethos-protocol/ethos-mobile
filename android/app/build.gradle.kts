@@ -16,6 +16,14 @@ fun signingProp(envName: String, propName: String): String? =
     System.getenv(envName)?.takeIf { it.isNotBlank() }
         ?: (project.findProperty(propName) as String?)?.takeIf { it.isNotBlank() }
 
+// #173: Certificate pins that will be compiled into a release build. Supplied out of band
+// (CI secret / local gradle.properties) so rotating a pin never needs a source change, and
+// verified before release artifacts ship by .github/scripts/verify_cert_pins.py. When it is
+// blank, CertificatePinner falls back to its compiled-in PLACEHOLDER_PINS.
+val releaseCertPins = System.getenv("ETHOS_CERT_PINS")?.takeIf { it.isNotBlank() }
+    ?: (project.findProperty("ethos.certPins") as String?)?.takeIf { it.isNotBlank() }
+    ?: ""
+
 val releaseKeystorePath = signingProp("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PATH")
 val releaseKeystorePassword = signingProp("ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEYSTORE_PASSWORD")
 val releaseKeyAlias = signingProp("ANDROID_KEY_ALIAS", "ANDROID_KEY_ALIAS")
@@ -36,6 +44,9 @@ android {
         versionCode = 1
         versionName = "1.0.0"
         buildConfigField("String", "API_BASE_URL", "\"https://api.ethos-protocol.app/v1\"")
+        // Empty by default: an empty pin set disables pinning, which is what debug builds
+        // pointing at a local/dev host want. Only the release build type is gated (#173).
+        buildConfigField("String", "CERT_PINS", "\"\"")
     }
 
     buildFeatures { compose = true; buildConfig = true }
@@ -84,6 +95,7 @@ android {
 
     buildTypes {
         release {
+            buildConfigField("String", "CERT_PINS", "\"$releaseCertPins\"")
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseSigningConfig) {

@@ -88,6 +88,12 @@ mobile/
 2. Add `google-services.json` from Firebase Console
 3. Configure `assetlinks.json` at `https://ethos-protocol.app/.well-known/assetlinks.json`
 4. Set `API_BASE_URL` in `build.gradle.kts` `buildConfigField`
+5. Configure the certificate pins for release builds by setting `ETHOS_CERT_PINS` (environment variable) or `ethos.certPins` (in `~/.gradle/gradle.properties`, never committed) to a comma-separated list of Base64 SHA-256 SPKI digests — the current certificate's pin plus a backup for the next one. When unset, release builds fall back to the placeholder pins in `CertificatePinner` and CI's `Verify release certificate pins are not placeholders` step reports them (#173) — shipping placeholder pins would make every request fail for every user. That step fails the build outright once the pins are configured but wrong, or once release signing is configured (i.e. the artifact is actually shippable). Debug builds are not gated, since an empty pin set disables pinning for local/dev hosts. Compute a pin with:
+   ```bash
+   openssl s_client -connect api.ethos-protocol.app:443 2>/dev/null \
+     | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
+     | openssl dgst -sha256 -binary | openssl enc -base64
+   ```
 
 ## Testing
 
