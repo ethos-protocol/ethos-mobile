@@ -3,6 +3,7 @@ package com.ethosprotocol.ui
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ethosprotocol.BuildConfig
@@ -176,13 +177,35 @@ data class TwoFactorUiState(
 
 @HiltViewModel
 class TwoFactorViewModel @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    /**
+     * #172: OTP rate-limiting state lives here rather than only in [_state] so it survives
+     * process death, exactly as [DeepLinkViewModel] does for pending deep links. A plain
+     * ViewModel field is cleared when the system reclaims the process, which would reset
+     * the failure count to zero and hand an attacker unlimited extra guesses.
+     *
+     * Defaulted so existing call sites that only need the API client (tests) stay valid;
+     * Hilt always supplies a real handle for the ViewModel it creates.
+     */
+    private val savedStateHandle: SavedStateHandle = SavedStateHandle()
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TwoFactorUiState())
     val state = _state.asStateFlow()
 
     private var cooldownJob: kotlinx.coroutines.Job? = null
+
+    init {
+        // Rehydrate the rate-limiting state saved by a previous instance of this ViewModel.
+        // The cooldown is persisted as an absolute deadline, so the remaining seconds are
+        // recomputed against the current wall clock however long the process was dead.
+        val failures = savedStateHandle.readNumber(KEY_OTP_FAILURE_COUNT)?.toInt() ?: 0
+        val remaining = remainingCooldownSeconds()
+        if (failures > 0 || remaining > 0) {
+            _state.update { it.copy(otpFailureCount = failures, otpCooldownSeconds = remaining) }
+        }
+        if (remaining > 0) startCooldownTicker(remaining)
+    }
 
     fun loadStatus(vaultId: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
@@ -209,13 +232,15 @@ class TwoFactorViewModel @Inject constructor(
         val req = Verify2FARequest(otp = otp)
         when (val result = apiClient.verify2FA(vaultId, req)) {
             is ApiResult.Success -> {
-                // #119: Reset rate-limiting state on success
+                // #119: Reset rate-limiting state on success (#172: including the persisted copy)
                 cancelCooldown()
+                clearPersistedRateLimitState()
                 _state.update { it.copy(verified = true, isLoading = false,
                     otpFailureCount = 0, otpCooldownSeconds = 0) }
             }
             is ApiResult.Error -> {
                 val newCount = _state.value.otpFailureCount + 1
+                savedStateHandle[KEY_OTP_FAILURE_COUNT] = newCount
                 val cooldown = otpCooldownSeconds(newCount)
                 _state.update { it.copy(isLoading = false, error = result.message, otpFailureCount = newCount) }
                 if (cooldown > 0) startCooldown(cooldown)
@@ -259,20 +284,57 @@ class TwoFactorViewModel @Inject constructor(
 
     private fun startCooldown(seconds: Int) {
         cancelCooldown()
+        // Persist when the cooldown ends, not how long is left: a countdown value would be
+        // meaningless after the process is killed and restarted (#172).
+        savedStateHandle[KEY_OTP_COOLDOWN_UNTIL] = System.currentTimeMillis() + seconds * 1_000L
         _state.update { it.copy(otpCooldownSeconds = seconds) }
+        startCooldownTicker(seconds)
+    }
+
+    /** Ticks [TwoFactorUiState.otpCooldownSeconds] down to 0, driven by the persisted deadline. */
+    private fun startCooldownTicker(seconds: Int) {
+        cancelCooldown()
         cooldownJob = viewModelScope.launch {
-            var remaining = seconds
-            while (remaining > 0) {
+            repeat(seconds) {
                 kotlinx.coroutines.delay(1_000)
-                remaining--
+                val remaining = remainingCooldownSeconds()
                 _state.update { it.copy(otpCooldownSeconds = remaining) }
+                if (remaining <= 0) return@launch
             }
+            _state.update { it.copy(otpCooldownSeconds = remainingCooldownSeconds()) }
         }
     }
+
+    /** Seconds left until the persisted cooldown deadline, or 0 when none is pending. */
+    private fun remainingCooldownSeconds(): Int {
+        val deadline = savedStateHandle.readNumber(KEY_OTP_COOLDOWN_UNTIL) ?: return 0
+        val remainingMillis = deadline.toLong() - System.currentTimeMillis()
+        if (remainingMillis <= 0) return 0
+        return ((remainingMillis + 999) / 1_000).toInt()
+    }
+
+    private fun clearPersistedRateLimitState() {
+        savedStateHandle.remove<Any>(KEY_OTP_FAILURE_COUNT)
+        savedStateHandle.remove<Any>(KEY_OTP_COOLDOWN_UNTIL)
+    }
+
+    /**
+     * Reads a numeric value without assuming which box it comes back in: a value that has
+     * been through a [SavedStateHandle] save/restore round-trip is not guaranteed to keep
+     * the exact `Int`/`Long` type it was written with, and a typed `get<Int>` would then
+     * fail with a [ClassCastException] on exactly the process-death path this state exists
+     * to survive.
+     */
+    private fun SavedStateHandle.readNumber(key: String): Number? = get<Any>(key) as? Number
 
     private fun cancelCooldown() {
         cooldownJob?.cancel()
         cooldownJob = null
+    }
+
+    companion object {
+        internal const val KEY_OTP_FAILURE_COUNT = "otp_failure_count"
+        internal const val KEY_OTP_COOLDOWN_UNTIL = "otp_cooldown_until_millis"
     }
 
     override fun onCleared() {

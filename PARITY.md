@@ -53,6 +53,7 @@ Last audited: 2026-07-27
 | Correct copy: TOTP re-verify (no provisioning data) | ✅ | 🚧 | Fixed in #115; Android was showing "Scan URI" with no URI |
 | Correct copy: SMS — "code sent to phone" | ✅ | ✅ | |
 | Correct copy: Email — "code sent to email" | ✅ | ✅ | |
+| OTP cooldown survives process death | ❌ | ✅ | Android persists the failure count and an absolute cooldown deadline in `SavedStateHandle` (#172); iOS `OTPRateLimiter` is still in-memory only |
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
 | TTL expiry warning notification | ✅ | ✅ | |
