@@ -8,6 +8,7 @@ import javax.net.ssl.SSLSession
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import android.util.Base64
+import com.ethosprotocol.BuildConfig
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
@@ -81,6 +82,22 @@ open class CertificatePinner(
         const val PINNED_HOST = "api.ethos-protocol.app"
 
         /**
+         * Pins configured for this build type via `BuildConfig.CERT_PINS` (#173).
+         *
+         * Release builds take their pins from the `ETHOS_CERT_PINS` environment variable /
+         * `ethos.certPins` Gradle property, so a certificate rotation is a configuration
+         * change rather than a source change. When nothing is configured the compiled-in
+         * [PLACEHOLDER_PINS] are used — a combination CI rejects for release builds.
+         */
+        val DEFAULT_PINS: Set<String>
+            get() = BuildConfig.CERT_PINS
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+                .ifEmpty { PLACEHOLDER_PINS }
+
+        /**
          * Placeholder pins — replace with real SPKI SHA-256 hashes before
          * shipping to production.
          *
@@ -94,7 +111,7 @@ open class CertificatePinner(
          * Two entries are required: the current certificate pin and a backup
          * pin for the next certificate (rotation strategy — see class docs).
          */
-        val DEFAULT_PINS: Set<String> = setOf(
+        val PLACEHOLDER_PINS: Set<String> = setOf(
             // Current certificate SPKI SHA-256 (replace with real value)
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             // Backup certificate SPKI SHA-256 (replace with real value)

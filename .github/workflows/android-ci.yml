@@ -101,7 +101,37 @@ jobs:
         run: ./gradlew verifyPaparazziDebug
 
       - name: Assemble release APK (R8/shrinking smoke check)
+        env:
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
         run: ./gradlew assembleRelease
+
+      # task #173: A release build must never ship placeholder certificate pins — the
+      # failure mode is silent until every user hits a connection failure in production.
+      # This inspects the pin value actually compiled into the release BuildConfig (falling
+      # back to the compiled-in defaults, exactly as CertificatePinner does at runtime) and
+      # fails this job with a ::error:: annotation naming the offending value. Debug builds
+      # are not gated: an empty pin set legitimately disables pinning there.
+      #
+      # A configured pin set (ETHOS_CERT_PINS) is always gated hard, as is any release build
+      # that is actually shippable (release signing configured). When neither is present the
+      # step is running against the unsigned R8 smoke build above, which cannot reach users,
+      # so the placeholder is reported as a warning instead of blocking the PR.
+      - name: Verify release certificate pins are not placeholders
+        env:
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+          ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_PATH }}
+        run: |
+          python3 ../.github/scripts/test_verify_cert_pins.py
+
+          ARGS=""
+          if [ -z "$ETHOS_CERT_PINS" ] && [ -z "$ANDROID_KEYSTORE_PATH" ]; then
+            ARGS="--warn-if-unconfigured"
+          fi
+
+          python3 ../.github/scripts/verify_cert_pins.py \
+            --build-type release $ARGS \
+            --build-config app/build/generated/source/buildConfig/release/com/ethosprotocol/BuildConfig.java \
+            --source app/src/main/java/com/ethosprotocol/api/CertificatePinning.kt
 
       # task #123: Confirm that R8 produced a mapping file (i.e. minification/obfuscation
       # actually ran) and spot-check that sensitive model classes are NOT left fully open
