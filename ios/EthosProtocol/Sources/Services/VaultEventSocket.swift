@@ -218,10 +218,10 @@ final class VaultEventSocket {
             event = .vaultUpdated(msg.vault)
         case "vault_expired":
             guard let msg = try? decoder.decode(WireVaultExpired.self, from: data) else { return }
-            event = .vaultExpired(vaultID: msg.vaultID, expiredAt: msg.expiredAt)
+            event = .vaultExpired(vaultID: msg.vaultId, expiredAt: msg.expiredAt)
         case "vault_released":
             guard let msg = try? decoder.decode(WireVaultReleased.self, from: data) else { return }
-            event = .vaultReleased(vaultID: msg.vaultID, releasedAt: msg.releasedAt, amount: msg.amount)
+            event = .vaultReleased(vaultID: msg.vaultId, releasedAt: msg.releasedAt, amount: msg.amount)
         case "ping":
             event = .ping
         case "error":
@@ -265,24 +265,20 @@ final class VaultEventSocket {
         let vault: Vault
     }
 
+    // No explicit CodingKeys here: `decoder` applies `.convertFromSnakeCase`, which rewrites
+    // the incoming key *before* it is matched, so "vault_id" arrives as "vaultId". Snake-case
+    // CodingKeys would never match it, and neither would a `vaultID` property — the strategy
+    // capitalises only the first letter of each component. Matching the converted spelling is
+    // what every other decoded type here does (see `Vault.checkInInterval` ← "check_in_interval").
     private struct WireVaultExpired: Decodable {
-        let vaultID: String
+        let vaultId: String
         let expiredAt: Date
-        enum CodingKeys: String, CodingKey {
-            case vaultID = "vault_id"
-            case expiredAt = "expired_at"
-        }
     }
 
     private struct WireVaultReleased: Decodable {
-        let vaultID: String
+        let vaultId: String
         let releasedAt: Date
         let amount: Int64
-        enum CodingKeys: String, CodingKey {
-            case vaultID = "vault_id"
-            case releasedAt = "released_at"
-            case amount
-        }
     }
 
     private struct WireError: Decodable {
