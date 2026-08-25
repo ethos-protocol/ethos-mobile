@@ -74,7 +74,7 @@ jobs:
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
             -skipMacroValidation
 
       - name: Assert VaultWebSocketClient stub is gone (#179)
@@ -130,5 +130,5 @@ jobs:
           TEST_RUNNER_CI=true xcodebuild test \
             -project Xcode/EthosProtocol.xcodeproj \
             -scheme EthosProtocolTests \
-            -destination 'platform=iOS Simulator,name=iPhone 17,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
             -skipMacroValidation
