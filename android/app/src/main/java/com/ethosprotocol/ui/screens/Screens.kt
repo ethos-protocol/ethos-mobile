@@ -31,8 +31,10 @@ import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
+import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import com.ethosprotocol.services.NotificationDeliveryLog
 
 // MARK: - Auth Screen
 
@@ -199,6 +201,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onDebugLogClick: (() -> Unit)? = null,
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -261,6 +264,12 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                // #235: debug/QA-only entry to the notification delivery log — never
+                // shown in a release build (onDebugLogClick is only non-null when
+                // MainActivity's nav graph wires it in under BuildConfig.DEBUG).
+                onDebugLogClick?.let { onClick ->
+                    IconButton(onClick = onClick) { Icon(Icons.Default.BugReport, "Notification log") }
+                }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -1490,6 +1499,75 @@ fun VaultDetailScreen(
                 }
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Notification Debug Log (#235)
+
+/**
+ * Debug-only screen listing the local notification delivery log, for
+ * QA/support to answer "did this notification actually get scheduled,
+ * delivered, or suppressed?" without backend log correlation. Never shows
+ * anything beyond vault ID / event type / timestamp — see
+ * [NotificationDeliveryLog]'s doc comment for what
+ * is deliberately excluded. Only reachable when [com.ethosprotocol.BuildConfig.DEBUG].
+ */
+@Composable
+fun NotificationDebugScreen(
+    onBack: () -> Unit,
+    vm: NotificationDebugViewModel = hiltViewModel()
+) {
+    val deliveryLog = vm.deliveryLog
+    var events by remember {
+        mutableStateOf(deliveryLog.recentEvents())
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Notification Log") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        deliveryLog.clear()
+                        events = deliveryLog.recentEvents()
+                    }) { Icon(Icons.Default.Delete, "Clear") }
+                }
+            )
+        }
+    ) { padding ->
+        if (events.isEmpty()) {
+            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No notification events logged yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(Modifier.padding(padding)) {
+                items(events) { event ->
+                    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(
+                                event.kind.name.lowercase().replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(event.source.name.lowercase(), style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(event.eventType, style = MaterialTheme.typography.bodyMedium)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(event.vaultId.take(12) + "…", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                java.text.DateFormat.getTimeInstance().format(java.util.Date(event.timestampMillis)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    HorizontalDivider()
                 }
             }
         }

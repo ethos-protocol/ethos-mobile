@@ -26,17 +26,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ethosprotocol.BuildConfig
 import com.ethosprotocol.services.BiometricHelper
+import com.ethosprotocol.services.PushTokenRegistrar
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
 import com.ethosprotocol.ui.screens.DepositScreen
+import com.ethosprotocol.ui.screens.NotificationDebugScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
 import com.ethosprotocol.ui.screens.WithdrawScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
@@ -54,6 +58,16 @@ class MainActivity : FragmentActivity() {
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* result handled gracefully — denial does not break the app */ }
+
+    @Inject lateinit var pushTokenRegistrar: PushTokenRegistrar
+
+    // #234: retry a push-token registration that failed even after
+    // PushTokenRegistrar's initial retries, rather than waiting indefinitely
+    // for Firebase to redeliver the token.
+    override fun onResume() {
+        super.onResume()
+        pushTokenRegistrar.retryPendingIfNeeded()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -220,7 +234,17 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(
+                    onVaultClick = { /* navigate to detail */ },
+                    onDebugLogClick = if (BuildConfig.DEBUG) {
+                        { navController.navigate("debug/notifications") }
+                    } else null
+                )
+            }
+            if (BuildConfig.DEBUG) {
+                composable("debug/notifications") {
+                    NotificationDebugScreen(onBack = { navController.popBackStack() })
+                }
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

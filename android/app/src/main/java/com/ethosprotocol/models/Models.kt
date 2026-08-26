@@ -19,12 +19,15 @@ data class Vault(
 }
 
 // A single real-time event delivered over the `wss://.../ws?vault_id={id}` socket
-// (see shared/api-contract.md). `vault` carries the full updated Vault so consumers
-// can update state in place without an extra round trip.
+// (see shared/api-contract.md). `vault` carries the full updated Vault for
+// "vault_updated" so consumers can update state in place without an extra round
+// trip; "vault_expired"/"vault_released" instead carry only `vaultId` (#232), since
+// the contract's payload for those two types has no embedded vault object.
 @Serializable
 data class VaultEvent(
     val type: String,
-    val vault: Vault? = null
+    val vault: Vault? = null,
+    @kotlinx.serialization.SerialName("vault_id") val vaultId: String? = null
 )
 
 @Serializable

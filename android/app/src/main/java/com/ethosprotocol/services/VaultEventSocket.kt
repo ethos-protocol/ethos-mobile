@@ -20,6 +20,14 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 
+// Mirrors ApiClient's ktor Json config (ignoreUnknownKeys = true). A `vault_expired`/
+// `vault_released` payload carries fields VaultEvent doesn't model (`expired_at`,
+// `released_at`, `amount`) — without this, the plain `Json` default throws on those
+// unrecognized keys, silently dropping the frame (caught by the `runCatching` below with
+// no `.onFailure`), which defeated #232's dedup before it could even see these event types.
+// api-contract.md explicitly requires tolerating unrecognized fields/types.
+private val eventJson = Json { ignoreUnknownKeys = true }
+
 // Reconnect/backoff schedule for VaultEventSocket. Unlike RetryPolicy (bounded
 // attempts for a single request), a dropped socket should keep retrying
 // indefinitely with the delay capped so a long outage doesn't leave the client
@@ -73,7 +81,7 @@ class VaultEventSocket(
                 attempt = 0
                 for (frame in session.incoming) {
                     if (frame is Frame.Text) {
-                        runCatching { Json.decodeFromString<VaultEvent>(frame.readText()) }
+                        runCatching { eventJson.decodeFromString<VaultEvent>(frame.readText()) }
                             .onSuccess { emit(it) }
                     }
                 }

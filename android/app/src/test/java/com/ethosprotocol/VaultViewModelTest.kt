@@ -8,6 +8,7 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.services.NotificationDeliveryLog
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -35,6 +36,7 @@ class VaultViewModelTest {
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private val vaultEventSocket: VaultEventSocket = mockk()
+    private val notificationDeliveryLog: NotificationDeliveryLog = mockk(relaxed = true)
     private val context: Context = mockk(relaxed = true)
     private lateinit var vm: VaultViewModel
 
@@ -44,7 +46,7 @@ class VaultViewModelTest {
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
         every { vaultEventSocket.events(any()) } returns emptyFlow()
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
+        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, notificationDeliveryLog, context)
     }
 
     @After
@@ -330,6 +332,59 @@ class VaultViewModelTest {
         vm.updateBeneficiary("v1", "GNEW")
 
         assertNotNull(vm.state.value.error)
+    }
+
+    // #232: vault_expired/vault_released carry no vault object (see VaultEvent's
+    // doc comment) — they refetch the single vault and record a WebSocket
+    // delivery so a same-instant push doesn't also show a duplicate banner.
+    @Test
+    fun `vault_expired socket event refreshes the vault and records a websocket delivery`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        val expired = v1.copy(status = VaultStatus.expired)
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(expired)
+
+        eventsFlow.emit(VaultEvent(type = "vault_expired", vaultId = "v1"))
+
+        assertEquals(VaultStatus.expired, vm.state.value.vaults.first { it.id == "v1" }.status)
+        verify {
+            notificationDeliveryLog.record(
+                NotificationDeliveryLog.Kind.DELIVERED,
+                NotificationDeliveryLog.Source.WEBSOCKET,
+                "vault_expired",
+                "v1"
+            )
+        }
+    }
+
+    @Test
+    fun `vault_released socket event refreshes the vault and records a websocket delivery`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        val released = v1.copy(status = VaultStatus.released, balance = 0)
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(released)
+
+        eventsFlow.emit(VaultEvent(type = "vault_released", vaultId = "v1"))
+
+        assertEquals(VaultStatus.released, vm.state.value.vaults.first { it.id == "v1" }.status)
+        verify {
+            notificationDeliveryLog.record(
+                NotificationDeliveryLog.Kind.DELIVERED,
+                NotificationDeliveryLog.Source.WEBSOCKET,
+                "vault_released",
+                "v1"
+            )
+        }
     }
 
     private fun makeVault(id: String) = Vault(

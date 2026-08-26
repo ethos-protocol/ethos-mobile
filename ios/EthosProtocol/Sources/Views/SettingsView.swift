@@ -33,6 +33,14 @@ struct SettingsView: View {
             } header: {
                 Text("Privacy")
             }
+
+            #if DEBUG
+            Section {
+                NavigationLink("Notification Log", destination: NotificationDebugView())
+            } header: {
+                Text("Debug")
+            }
+            #endif
         }
         .navigationTitle("Settings")
     }

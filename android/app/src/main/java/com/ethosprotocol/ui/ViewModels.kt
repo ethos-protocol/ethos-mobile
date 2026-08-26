@@ -20,6 +20,7 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.services.NotificationDeliveryLog
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingAction
@@ -363,6 +364,7 @@ class VaultViewModel @Inject constructor(
     private val notificationHelper: NotificationHelper,
     private val pendingActionDao: PendingActionDao,
     private val vaultEventSocket: VaultEventSocket,
+    private val notificationDeliveryLog: NotificationDeliveryLog,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -467,8 +469,27 @@ class VaultViewModel @Inject constructor(
         currentIds.filterNot { eventJobs.containsKey(it) }.forEach { id ->
             eventJobs[id] = viewModelScope.launch {
                 vaultEventSocket.events(id).collect { event ->
-                    val updated = event.vault ?: return@collect
-                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    when (event.type) {
+                        "vault_updated" -> {
+                            val updated = event.vault ?: return@collect
+                            _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                        }
+                        "vault_expired", "vault_released" -> {
+                            // Neither payload carries the full vault, and both change status
+                            // (and, for a release, the balance) — refetch rather than patching
+                            // fields locally.
+                            val vaultId = event.vaultId ?: return@collect
+                            // Recorded before the refetch so a same-instant push (#232) sees it.
+                            notificationDeliveryLog.record(
+                                NotificationDeliveryLog.Kind.DELIVERED,
+                                NotificationDeliveryLog.Source.WEBSOCKET,
+                                event.type,
+                                vaultId
+                            )
+                            refreshSingle(vaultId)
+                        }
+                        else -> Unit // ping / error / unrecognized — no state change here.
+                    }
                 }
             }
         }
@@ -678,3 +699,12 @@ class WithdrawViewModel @Inject constructor(
         return stroops.toLong()
     }
 }
+
+// #235: thin ViewModel wrapper so NotificationDebugScreen can reach the
+// Hilt-injected NotificationDeliveryLog singleton the same way every other
+// screen reaches its dependencies (`vm: XyzViewModel = hiltViewModel()`),
+// debug/QA use only.
+@HiltViewModel
+class NotificationDebugViewModel @Inject constructor(
+    val deliveryLog: NotificationDeliveryLog
+) : ViewModel()

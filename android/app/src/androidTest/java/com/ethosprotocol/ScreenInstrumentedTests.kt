@@ -12,6 +12,7 @@ import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.screens.*
+import com.ethosprotocol.services.NotificationDeliveryLog
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingActionDao
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -409,6 +410,7 @@ class VaultDeepLinkScreenTest {
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
     private val vaultEventSocket: VaultEventSocket = mockk(relaxed = true)
+    private val notificationDeliveryLog: NotificationDeliveryLog = mockk(relaxed = true)
     private val context: Context = ApplicationProvider.getApplicationContext()
     private lateinit var vm: VaultViewModel
 
@@ -417,7 +419,7 @@ class VaultDeepLinkScreenTest {
         hiltRule.inject()
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
+        vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, notificationDeliveryLog, context)
     }
 
     private fun makeVault(id: String) = Vault(
