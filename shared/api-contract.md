@@ -178,6 +178,27 @@ deposit, withdrawal, beneficiary change, status transition).
   (do not full-reload from REST).
 - On `vault_expired` / `vault_released`, trigger a local notification if the app is backgrounded.
 
+#### Reconciling a poll/push disagreement (#223)
+
+The `Vault` object carries no per-field update timestamp, so a client cannot tell
+whether a `vault_updated` push or a concurrent `GET /vaults/{id}` poll response
+reflects newer server state — both are reads of the same server-side row, taken
+at slightly different moments. The rule both clients implement is **last-applied-wins**:
+whichever of the two (poll response or push) is *received* last simply overwrites
+the in-memory vault in place, with no comparison against what was there before.
+
+This falls directly out of §WebSocket's framing of the stream as "a latency
+optimization, not the source of truth": a push is not treated as more or less
+authoritative than a poll, it is just another delivery of the same kind of data,
+applied whenever it arrives. Concretely:
+- A poll response and a push are merged through the exact same code path
+  (iOS: `VaultStore.applyUpdate`; Android: `VaultViewModel.updateVaultInPlace`).
+- Neither implementation buffers, timestamps, or compares values before merging —
+  the most recently *received* update is always what's displayed.
+- This applies to every field on `Vault`, including `ttl_remaining` — see
+  `TTLCountdown`/`TtlCountdown`'s reconciliation logic (#221), which is likewise
+  indifferent to whether the fresh value came from a poll or a push.
+
 ---
 
 ## Beneficiary Acceptance (#109)
@@ -294,9 +315,19 @@ GET /vaults?limit={n}&after={cursor}
   "check_in_interval": 0,
   "last_check_in": "ISO8601",
   "ttl_remaining": 0,
-  "status": "active|expired|released|paused"
+  "status": "active|expired|released|paused",
+  "asset_code": "XLM",
+  "asset_issuer": "string | null"
 }
 ```
+`asset_code`/`asset_issuer` (#222) identify which Stellar asset `balance` is
+denominated in, the same way `ACCEPTED_ASSETS` entries do elsewhere in this API:
+`asset_code` alone (native XLM) or `asset_code` + `asset_issuer` (any other
+asset). Both fields are optional and absent responses default to native XLM
+(`asset_code: "XLM"`, `asset_issuer: null`) — every vault today holds XLM, so
+this is purely preparatory: it lets a future non-XLM vault be represented
+without a breaking schema change, and both clients already decode it
+defensively for exactly that reason.
 
 ### VaultPage (#112 — paginated list response)
 ```json

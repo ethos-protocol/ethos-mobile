@@ -468,7 +468,10 @@ class VaultViewModel @Inject constructor(
             eventJobs[id] = viewModelScope.launch {
                 vaultEventSocket.events(id).collect { event ->
                     val updated = event.vault ?: return@collect
-                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    // Same merge path as a poll response (updateVaultInPlace) — see the
+                    // "Reconciling a poll/push disagreement" rule in api-contract.md (#223):
+                    // whichever one is received last simply overwrites in place.
+                    updateVaultInPlace(updated)
                 }
             }
         }
@@ -503,6 +506,9 @@ class VaultViewModel @Inject constructor(
         }
     }
 
+    // Shared merge point for both a poll response (refreshSingle) and a `vault_updated`
+    // push (subscribeToEvents) — see the "Reconciling a poll/push disagreement" rule in
+    // api-contract.md (#223): whichever is received last always overwrites in place.
     private fun updateVaultInPlace(vault: Vault) {
         _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
     }

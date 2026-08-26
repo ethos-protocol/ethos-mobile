@@ -332,6 +332,49 @@ class VaultViewModelTest {
         assertNotNull(vm.state.value.error)
     }
 
+    // #223: a poll (refreshSingle, via getVault) and a `vault_updated` push (the
+    // vaultEventSocket flow) both funnel through updateVaultInPlace. Whichever is
+    // applied last always wins outright — see the "Reconciling a poll/push
+    // disagreement" rule in shared/api-contract.md.
+
+    @Test
+    fun `poll then push disagreement, push wins when applied last`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        // A poll response lands first.
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(v1.copy(balance = 20_000_000L))
+        vm.refreshSingle("v1")
+
+        // A `vault_updated` push disagrees and arrives after.
+        eventsFlow.emit(VaultEvent(type = "vault_updated", vault = v1.copy(balance = 30_000_000L)))
+
+        assertEquals(30_000_000L, vm.state.value.vaults.first { it.id == "v1" }.balance)
+    }
+
+    @Test
+    fun `push then poll disagreement, poll wins when applied last`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        // A `vault_updated` push lands first.
+        eventsFlow.emit(VaultEvent(type = "vault_updated", vault = v1.copy(balance = 30_000_000L)))
+
+        // A poll response disagrees and arrives after.
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(v1.copy(balance = 20_000_000L))
+        vm.refreshSingle("v1")
+
+        assertEquals(20_000_000L, vm.state.value.vaults.first { it.id == "v1" }.balance)
+    }
+
     private fun makeVault(id: String) = Vault(
         id = id, owner = "GABC", beneficiary = "GXYZ",
         balance = 10_000_000L, checkInInterval = 2_592_000L,

@@ -525,7 +525,11 @@ struct VaultDetailView: View {
     @State private var showDeposit = false
     @State private var showWithdraw = false
     @State private var showManageBeneficiary = false
-    /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
+    /// Server-anchored TTL baseline, reconciled on every poll and `vault_updated`
+    /// push (#221, #223); the server value always wins on conflict.
+    @State private var ttlCountdown: TTLCountdown? = nil
+    /// Locally ticked display value, updated every second by `tickTTLLocally`
+    /// between the (up to 60 s apart) reconciliations above.
     @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
@@ -615,7 +619,18 @@ struct VaultDetailView: View {
         .task {
             vaultStore.subscribeToEvents(vaultID: vault.id, socket: VaultEventSocket(baseURL: APIClient.shared.baseURL))
             defer { vaultStore.unsubscribeFromEvents() }
-            await refreshTTLPeriodically()
+            async let polling: () = refreshTTLPeriodically()
+            async let ticking: () = tickTTLLocally()
+            _ = await (polling, ticking)
+        }
+        // The socket delivers `vault_updated` into `vaultStore.vaults` (see
+        // subscribeToEvents), not directly to this view's local TTL state — pick
+        // it up here so a push reconciles the countdown exactly like a poll does,
+        // per the shared rule in shared/api-contract.md (#223).
+        .onChange(of: vaultStore.vaults) { _, updated in
+            if let ttl = updated.first(where: { $0.id == vault.id })?.ttlRemaining {
+                reconcileTTL(ttl)
+            }
         }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
@@ -655,17 +670,41 @@ struct VaultDetailView: View {
 
     private func refreshTTL() async {
         guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
-        ifNotCancelled { ttlRemaining = ttl }
+        ifNotCancelled { reconcileTTL(ttl) }
     }
 
     /// Polls the server TTL every 60 s for as long as the view is on screen.
     /// The `.task` modifier that calls this cancels it automatically on disappear.
     private func refreshTTLPeriodically() async {
-        ttlRemaining = vault.ttlRemaining   // seed with value from vault list
+        if let seed = vault.ttlRemaining { reconcileTTL(seed) }   // seed with value from vault list
         while !Task.isCancelled {
             await refreshTTL()
             try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
+    }
+
+    /// Ticks the displayed TTL down once a second between server reconciliations,
+    /// so the countdown never visibly freezes while waiting on the next 60 s poll
+    /// or `vault_updated` push (#221).
+    private func tickTTLLocally() async {
+        while !Task.isCancelled {
+            if let countdown = ttlCountdown {
+                ifNotCancelled { ttlRemaining = countdown.remaining() }
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    /// Applies a fresh server TTL value — from either a poll or a `vault_updated`
+    /// push — as the new countdown baseline. The server value always wins over
+    /// whatever the local tick had drifted to (#221, #223).
+    private func reconcileTTL(_ serverValue: UInt64) {
+        if ttlCountdown == nil {
+            ttlCountdown = TTLCountdown(serverValue: serverValue)
+        } else {
+            ttlCountdown?.reconcile(serverValue: serverValue)
+        }
+        ttlRemaining = serverValue
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
@@ -705,8 +744,15 @@ struct VaultDetailView: View {
     private func formatDuration(_ seconds: UInt64) -> String {
         let days = seconds / 86_400
         let hours = (seconds % 86_400) / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let secs = seconds % 60
         if days > 0 { return "\(days)d \(hours)h" }
-        return "\(hours)h"
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        // Below an hour, show seconds so the per-second local tick (#221) is
+        // actually visible rather than appearing frozen at "0h". Cast to Int:
+        // %d expects a 32-bit-sized argument, and these UInt64 values are
+        // always small (< 3600) so the cast is lossless.
+        return String(format: "%d:%02d", Int(minutes), Int(secs))
     }
 }
 
@@ -987,6 +1033,60 @@ struct ManageBeneficiaryView: View {
             }
             isUpdating = false
         }
+    }
+}
+
+// MARK: - Destructive Confirmation (#220)
+
+/// Shared confirmation UI for any irreversible, destructive vault action
+/// (delete, archive, …) on either platform. The confirm button stays disabled
+/// until the user types `requiredText` (typically the vault's own name/ID)
+/// exactly — a plain Yes/No tap is not enough given the financial and
+/// beneficiary implications of getting this wrong. `onConfirm` is only ever
+/// invoked once `DestructiveConfirmation.isConfirmed` is true.
+struct DestructiveConfirmationView: View {
+    let title: String
+    let message: String
+    let requiredText: String
+    var confirmTitle: String = "Delete"
+    let onConfirm: () -> Void
+
+    @State private var confirmation: DestructiveConfirmation
+
+    init(title: String, message: String, requiredText: String,
+         confirmTitle: String = "Delete", onConfirm: @escaping () -> Void) {
+        self.title = title
+        self.message = message
+        self.requiredText = requiredText
+        self.confirmTitle = confirmTitle
+        self.onConfirm = onConfirm
+        _confirmation = State(initialValue: DestructiveConfirmation(requiredText: requiredText))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("Type \"\(requiredText)\" to confirm.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(requiredText, text: $confirmation.enteredText)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button(confirmTitle, role: .destructive) {
+                // Guarded via confirmIfMatched, not just `.disabled` below — `.disabled`
+                // only stops a tap from reaching this closure through the button's own
+                // gesture recognizer; it is not what makes this safe.
+                confirmation.confirmIfMatched(onConfirm)
+            }
+            .disabled(!confirmation.isConfirmed)
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+        }
+        .padding()
     }
 }
 

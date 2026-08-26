@@ -386,6 +386,12 @@ final class VaultStore: ObservableObject {
     /// Replaces the vault matching `updated.id` in place (preserving list order), or
     /// appends it if it isn't currently in `vaults` — e.g. a vault created from another
     /// device that this session hasn't loaded yet.
+    ///
+    /// Called for a `vault_updated` push (`subscribeToEvents`). `load`/`loadAll` achieve
+    /// the same outcome for a poll by replacing `vaults` wholesale — either way, whichever
+    /// of a poll or a push is *received* last simply overwrites what was there, with no
+    /// comparison against it. See the "Reconciling a poll/push disagreement" rule in
+    /// api-contract.md (#223).
     func applyUpdate(_ updated: Vault) {
         if let index = vaults.firstIndex(where: { $0.id == updated.id }) {
             vaults[index] = updated

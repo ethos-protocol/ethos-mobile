@@ -46,14 +46,59 @@ final class VaultModelTests: XCTestCase {
         XCTAssertEqual(vault.id, "vault-1")
         XCTAssertEqual(vault.status, .active)
         XCTAssertEqual(vault.balance, 50_000_000)
+        // #222: absent on the wire (every response today) defaults to native XLM.
+        XCTAssertEqual(vault.assetCode, "XLM")
+        XCTAssertNil(vault.assetIssuer)
+    }
+
+    // #222: assetCode/assetIssuer are preparation for a non-XLM vault — decoded
+    // when present, defaulted to native XLM when absent (every response today).
+    func test_formattedBalance_usesAssetCodeDefaultOfXLM_whenUnset() {
+        let vault = makeVault(balance: 10_000_000)
+        XCTAssertEqual(vault.assetCode, "XLM")
+        XCTAssertNil(vault.assetIssuer)
+    }
+
+    func test_formattedBalance_formatsNonXLMAssetAmountCorrectly() {
+        let vault = makeVault(
+            balance: 500_000_000,
+            assetCode: "USDC",
+            assetIssuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        )
+        XCTAssertEqual(vault.formattedBalance, "50.0000000 USDC")
+    }
+
+    func test_vaultDecoding_withAssetCodeAndIssuer() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 500000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active",
+          "asset_code": "USDC",
+          "asset_issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertEqual(vault.assetCode, "USDC")
+        XCTAssertEqual(vault.assetIssuer, "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
     }
 
     // MARK: - Helpers
 
-    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil) -> Vault {
+    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil,
+                            assetCode: String = "XLM", assetIssuer: String? = nil) -> Vault {
         Vault(id: "v1", owner: "GABC", beneficiary: "GXYZ",
               balance: balance, checkInInterval: 2_592_000,
-              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active)
+              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active,
+              assetCode: assetCode, assetIssuer: assetIssuer)
     }
 }
 
@@ -1315,6 +1360,38 @@ final class VaultStoreTests: XCTestCase {
         XCTAssertTrue(store.vaults.contains { $0.id == "vault-new" })
     }
 
+    // MARK: - #223 Poll/push disagreement
+    //
+    // A poll (a full `vaults` replacement, mirroring VaultStore.load) and a
+    // `vault_updated` push (applyUpdate) both funnel through the same in-place
+    // merge for a given vault ID. Per the "Reconciling a poll/push disagreement"
+    // rule in api-contract.md, whichever is applied last always wins outright —
+    // there is no comparison against the previous value.
+
+    func test_pollThenPush_pushWins_whenAppliedLast() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a", balance: 10_000_000)]
+
+        // A poll response lands first (simulated as a wholesale list replacement).
+        store.vaults = [makeVault(id: "vault-a", balance: 20_000_000)]
+        // A `vault_updated` push disagrees and arrives after.
+        store.applyUpdate(makeVault(id: "vault-a", balance: 30_000_000))
+
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-a" }?.balance, 30_000_000)
+    }
+
+    func test_pushThenPoll_pollWins_whenAppliedLast() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a", balance: 10_000_000)]
+
+        // A `vault_updated` push lands first.
+        store.applyUpdate(makeVault(id: "vault-a", balance: 30_000_000))
+        // A poll response disagrees and arrives after.
+        store.vaults = [makeVault(id: "vault-a", balance: 20_000_000)]
+
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-a" }?.balance, 20_000_000)
+    }
+
     private func makeVault(id: String, balance: Int64 = 0) -> Vault {
         Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: balance,
               checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: 100_000, status: .active)
@@ -1494,6 +1571,64 @@ final class UsernameValidationTests: XCTestCase {
 }
 
 // MARK: - #121 Anti-Replay Header Tests
+
+// MARK: - #220 Destructive Confirmation Tests
+
+final class DestructiveConfirmationTests: XCTestCase {
+
+    func test_isConfirmed_false_whenEnteredTextEmpty() {
+        let confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenEnteredTextDoesNotMatch() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vaul"
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenCaseDiffers() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "My-Vault"
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_true_whenEnteredTextMatchesExactly() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault"
+        XCTAssertTrue(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenRequiredTextEmpty() {
+        // An empty required text (e.g. a vault with no name) must never be
+        // satisfiable by an empty entry — there is nothing to type either way.
+        let confirmation = DestructiveConfirmation(requiredText: "")
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_confirmIfMatched_doesNotFireAction_whenUnconfirmed() {
+        let confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertFalse(actionFired, "The destructive action must never fire without a matching confirmation")
+    }
+
+    func test_confirmIfMatched_doesNotFireAction_forPartialMatch() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault-extra"
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertFalse(actionFired)
+    }
+
+    func test_confirmIfMatched_firesAction_whenConfirmed() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault"
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertTrue(actionFired)
+    }
+}
 
 final class AntiReplayHeaderTests: XCTestCase {
 
