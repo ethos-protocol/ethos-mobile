@@ -199,6 +199,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onDebug: () -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -261,6 +262,7 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                IconButton(onClick = onDebug) { Icon(Icons.Default.Info, "Debug info") }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -282,14 +284,32 @@ fun VaultListScreen(
                         modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
                     ) {
                         LazyColumn {
-                            if (state.isOffline) item {
-                                OfflineBanner()
+                            if (state.isOffline || state.cachedAt != null) item {
+                                OfflineBanner(cachedAt = state.cachedAt)
                             }
                             val errorMsg = biometricError ?: state.error
                             errorMsg?.let { err ->
                                 item {
                                     Text(err, color = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.padding(16.dp))
+                                }
+                            }
+                            if (state.queuedActionCount > 0) item {
+                                Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            "${state.queuedActionCount} action${if (state.queuedActionCount == 1) "" else "s"} queued",
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        TextButton(onClick = { vm.retryNow() }) {
+                                            Text("Retry Now")
+                                        }
+                                    }
                                 }
                             }
                             items(state.vaults, key = { it.id }) { vault ->
@@ -1491,6 +1511,54 @@ fun VaultDetailScreen(
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Debug Screen
+
+@Composable
+fun DebugScreen(onBack: () -> Unit) {
+    val telemetry = remember { com.ethosprotocol.api.CacheTelemetry.snapshot() }
+    val context = LocalContext.current
+    val syncDiag = remember { com.ethosprotocol.services.PendingActionSyncWorker.lastSyncDiagnostics(context) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Debug / Support") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Cache Telemetry", style = MaterialTheme.typography.titleMedium)
+            Text("Hits: ${telemetry.hits}")
+            Text("Misses: ${telemetry.misses}")
+            Text("Stale served: ${telemetry.staleServed}")
+
+            Spacer(Modifier.height(8.dp))
+            Text("Last Sync", style = MaterialTheme.typography.titleMedium)
+            if (syncDiag != null) {
+                Text("At: ${syncDiag.lastSyncAt}")
+                Text("Succeeded: ${syncDiag.succeeded}")
+                Text("Failed: ${syncDiag.failed}")
+                Text("Retrying: ${syncDiag.isRetrying}")
+            } else {
+                Text("No sync run yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = {
+                com.ethosprotocol.api.CacheTelemetry.reset()
+            }, modifier = Modifier.fillMaxWidth()) {
+                Text("Reset Counters")
             }
         }
     }

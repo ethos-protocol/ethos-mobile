@@ -33,7 +33,37 @@ struct SettingsView: View {
             } header: {
                 Text("Privacy")
             }
+
+            Section {
+                NavigationLink(destination: SupportDebugView()) {
+                    Label("Debug / Support", systemImage: "wrench.and.screwdriver")
+                }
+            } header: {
+                Text("Advanced")
+            }
         }
         .navigationTitle("Settings")
+    }
+}
+
+// MARK: - SupportDebugView
+
+/// Shows cache telemetry counters for debug and support use (#242).
+struct SupportDebugView: View {
+    @State private var telemetry = CacheTelemetry.shared.snapshot()
+
+    var body: some View {
+        Form {
+            Section("Cache Telemetry") {
+                LabeledContent("Hits", value: "\(telemetry.hits)")
+                LabeledContent("Misses", value: "\(telemetry.misses)")
+                LabeledContent("Stale (refused)", value: "\(telemetry.staleServed)")
+                Button("Reset Counters") {
+                    CacheTelemetry.shared.reset()
+                    telemetry = CacheTelemetry.shared.snapshot()
+                }
+            }
+        }
+        .navigationTitle("Debug / Support")
     }
 }

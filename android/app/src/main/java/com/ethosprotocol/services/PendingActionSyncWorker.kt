@@ -9,6 +9,8 @@ import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.models.CreateVaultRequest
+import com.ethosprotocol.services.DepositPayload
+import com.ethosprotocol.services.WithdrawPayload
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.serialization.json.Json
@@ -56,6 +58,14 @@ class PendingActionSyncWorker @AssistedInject constructor(
                 PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!)
                 PendingActionType.CREATE_VAULT ->
                     apiClient.createVault(Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!))
+                PendingActionType.DEPOSIT -> {
+                    val req = Json.decodeFromString<DepositPayload>(item.payloadJson!!)
+                    apiClient.deposit(req.vaultId, req.amount)
+                }
+                PendingActionType.WITHDRAW -> {
+                    val req = Json.decodeFromString<WithdrawPayload>(item.payloadJson!!)
+                    apiClient.withdraw(req.vaultId, req.amount)
+                }
             }
             when (result) {
                 is ApiResult.Success -> {
@@ -142,6 +152,26 @@ class PendingActionSyncWorker @AssistedInject constructor(
             WorkManager.getInstance(context).enqueueUniqueWork(
                 WORK_NAME,
                 ExistingWorkPolicy.KEEP,
+                request
+            )
+        }
+
+        /**
+         * Enqueues an immediate (foreground-priority, no backoff) sync run.
+         * Called from the "Retry Now" UI button when the user manually forces a drain.
+         * Uses REPLACE so it pre-empts any currently-scheduled retrying run.
+         */
+        fun scheduleImmediate(context: Context) {
+            val request = OneTimeWorkRequestBuilder<PendingActionSyncWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                WORK_NAME,
+                ExistingWorkPolicy.REPLACE,
                 request
             )
         }

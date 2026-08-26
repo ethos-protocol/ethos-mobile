@@ -245,9 +245,9 @@ final class VaultStore: ObservableObject {
     /// How long ago the currently-displayed `vaults` were fetched, when served from the
     /// offline cache (APIClient.vaultsCacheAge()) rather than a fresh network response.
     @Published var vaultsCacheAge: TimeInterval?
-    /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
-    /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
-    @Published private(set) var queuedCheckInCount = 0
+    /// Mirrors PendingActionStore's count while the app is foregrounded — drives the
+    /// in-app "N actions queued" banner alongside NotificationService's queued indicator.
+    @Published private(set) var queuedActionCount = 0
 
     private var eventSocket: VaultEventSocket?
 
@@ -255,7 +255,7 @@ final class VaultStore: ObservableObject {
     var hasMorePages: Bool { nextCursor != nil }
 
     private func updateQueuedIndicator() {
-        queuedCheckInCount = PendingCheckInStore.shared.count
+        queuedActionCount = PendingActionStore.shared.count
     }
 
     func load() async {
@@ -325,22 +325,22 @@ final class VaultStore: ObservableObject {
     func checkIn(vault: Vault) async {
         do {
             // `checkIn(vaultID:)` is ambiguous between APIClient's original throwing/Void
-            // signature and the CheckInSyncTask.APIClientProtocol conformance's overload —
+            // signature and the APIClientProtocol conformance's overload —
             // pin the reference to the original before calling it.
             let performCheckIn: (String) async throws -> Void = APIClient.shared.checkIn(vaultID:)
             try await performCheckIn(vault.id)
             if !Task.isCancelled { await load() }
         } catch APIError.networkUnavailable {
             // Offline: queue the check-in durably so it is retried when connectivity
-            // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
-            // + CheckInSyncWorker pattern.
-            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
-            PendingCheckInStore.shared.insert(item)
-            let count = PendingCheckInStore.shared.count
+            // returns, mirroring Android's VaultViewModel.checkIn → PendingActionDao
+            // + PendingActionSyncWorker pattern.
+            let item = PendingAction(id: UUID().uuidString, type: .checkIn, vaultId: vault.id, amount: nil, queuedAt: Date())
+            PendingActionStore.shared.insert(item)
+            let count = PendingActionStore.shared.count
             NotificationService.shared.showQueuedCheckIn(count: count)
             CheckInSyncTask.shared.scheduleSync()
             ifNotCancelled {
-                queuedCheckInCount = count
+                queuedActionCount = count
                 self.error = ErrorPresentation(message: "Offline — check-in queued and will retry automatically")
             }
         } catch {
@@ -349,11 +349,22 @@ final class VaultStore: ObservableObject {
     }
 
     /// Deposits `amount` stroops into the vault and reloads the vault list on success.
+    /// When offline, queues the deposit durably and retries when connectivity returns.
     func deposit(vault: Vault, amount: Int64) async {
         error = nil
         do {
             _ = try await APIClient.shared.deposit(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
+        } catch APIError.networkUnavailable {
+            let item = PendingAction(id: UUID().uuidString, type: .deposit, vaultId: vault.id, amount: amount, queuedAt: Date())
+            PendingActionStore.shared.insert(item)
+            let count = PendingActionStore.shared.count
+            NotificationService.shared.showQueuedCheckIn(count: count)
+            CheckInSyncTask.shared.scheduleSync()
+            ifNotCancelled {
+                queuedActionCount = count
+                self.error = ErrorPresentation(message: "Offline — deposit queued and will retry automatically")
+            }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
@@ -361,14 +372,32 @@ final class VaultStore: ObservableObject {
 
     /// Withdraws `amount` stroops from the vault (biometric gate must be called by the UI
     /// before invoking this) and reloads the vault list on success.
+    /// When offline, queues the withdrawal durably and retries when connectivity returns.
     func withdraw(vault: Vault, amount: Int64) async {
         error = nil
         do {
             _ = try await APIClient.shared.withdraw(vaultID: vault.id, amount: amount)
             if !Task.isCancelled { await load() }
+        } catch APIError.networkUnavailable {
+            let item = PendingAction(id: UUID().uuidString, type: .withdraw, vaultId: vault.id, amount: amount, queuedAt: Date())
+            PendingActionStore.shared.insert(item)
+            let count = PendingActionStore.shared.count
+            NotificationService.shared.showQueuedCheckIn(count: count)
+            CheckInSyncTask.shared.scheduleSync()
+            ifNotCancelled {
+                queuedActionCount = count
+                self.error = ErrorPresentation(message: "Offline — withdrawal queued and will retry automatically")
+            }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
+    }
+
+    /// Triggers an immediate foreground drain of the pending action queue.
+    /// Called from the "Retry Now" button in VaultListView.
+    func retryNow() async {
+        await CheckInSyncTask.shared.performSync()
+        updateQueuedIndicator()
     }
 
     /// Updates the beneficiary address for a vault (biometric gate must be called by the UI

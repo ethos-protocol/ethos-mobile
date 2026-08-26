@@ -335,6 +335,25 @@ struct VaultListView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Offline cache age banner (#243) and queued-action retry banner (#240).
+                if vaultStore.vaultsCacheAge != nil || !NetworkMonitor.shared.isConnected {
+                    OfflineCacheBanner(age: vaultStore.vaultsCacheAge)
+                }
+                if vaultStore.queuedActionCount > 0 {
+                    HStack {
+                        Text("\(vaultStore.queuedActionCount) action\(vaultStore.queuedActionCount == 1 ? "" : "s") queued")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Retry Now") {
+                            Task { await vaultStore.retryNow() }
+                        }
+                        .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemFill))
+                }
                 if let error = vaultStore.error {
                     ErrorActionView(error: error, retry: { Task { await vaultStore.load() } })
                         .padding()
@@ -395,7 +414,7 @@ struct VaultListView: View {
         }
     }
 
-    // Surfaces staleness (issue #25) and any check-ins still waiting to sync (issue #28) above
+    // Surfaces staleness (issue #25) and any actions still waiting to sync (issue #28) above
     // the vault list, so both stay visible without blocking the list itself.
     @ViewBuilder
     private var statusBanners: some View {
@@ -405,11 +424,11 @@ struct VaultListView: View {
                 systemImage: "wifi.slash",
                 color: .orange)
         }
-        if vaultStore.queuedCheckInCount > 0 {
+        if vaultStore.queuedActionCount > 0 {
             StatusBannerView(
-                text: vaultStore.queuedCheckInCount == 1
-                    ? "1 check-in queued — will retry when back online"
-                    : "\(vaultStore.queuedCheckInCount) check-ins queued — will retry when back online",
+                text: vaultStore.queuedActionCount == 1
+                    ? "1 action queued — will retry when back online"
+                    : "\(vaultStore.queuedActionCount) actions queued — will retry when back online",
                 systemImage: "clock.arrow.circlepath",
                 color: .blue)
         }
@@ -419,6 +438,44 @@ struct VaultListView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return formatter.localizedString(fromTimeInterval: -interval)
+    }
+}
+
+// MARK: - OfflineCacheBanner
+
+/// Shown in VaultListView when the device is offline and vault data is being served from
+/// the local cache. Displays how long ago the cached data was fetched (#243).
+private struct OfflineCacheBanner: View {
+    let age: TimeInterval?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.slash")
+                .foregroundStyle(.secondary)
+            if let age {
+                Text("Offline — cached data (\(formatAge(age)) ago)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Offline — cached data")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemFill))
+    }
+
+    private func formatAge(_ age: TimeInterval) -> String {
+        let minutes = Int(age / 60)
+        let hours = minutes / 60
+        let days = hours / 24
+        if days > 0 { return "\(days)d" }
+        if hours > 0 { return "\(hours)h" }
+        if minutes > 0 { return "\(minutes)m" }
+        return "a few seconds"
     }
 }
 
@@ -582,8 +639,8 @@ struct VaultDetailView: View {
                 if let error = biometricError {
                     Text(error).foregroundStyle(.red).font(.caption)
                 }
-                if vaultStore.queuedCheckInCount > 0 {
-                    Label("Check-in queued — will retry automatically when back online", systemImage: "clock.arrow.circlepath")
+                if vaultStore.queuedActionCount > 0 {
+                    Label("Action queued — will retry automatically when back online", systemImage: "clock.arrow.circlepath")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }

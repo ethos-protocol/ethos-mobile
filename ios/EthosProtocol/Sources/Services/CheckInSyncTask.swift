@@ -3,11 +3,14 @@ import Foundation
 
 // MARK: - CheckInSyncTask
 
-/// Drains the `PendingCheckInStore` queue whenever the device has connectivity.
+/// Drains the `PendingActionStore` queue whenever the device has connectivity.
 ///
-/// Mirrors the CHECK_IN path of Android's `PendingActionSyncWorker` (PendingActionSyncWorker.kt) exactly:
+/// The class name is preserved for backward-compatibility with the BGTaskScheduler
+/// identifier `"app.ethos-protocol.checkin-sync"` registered in Info.plist. Internally
+/// it now handles all pending action types (checkIn, deposit, withdraw), mirroring
+/// Android's `PendingActionSyncWorker` (PendingActionSyncWorker.kt) exactly:
 /// - Iterates pending items oldest-first.
-/// - On `ApiResult.Success` → delete from queue.
+/// - On success → delete from queue.
 /// - On network unavailable → mark `hasRetryableFailure`, leave item, schedule again.
 /// - On server error with a NON-RETRYABLE code (400/404/410) → delete (vault is gone
 ///   or request is permanently invalid — retrying would never help).
@@ -22,13 +25,13 @@ final class CheckInSyncTask {
     static let shared = CheckInSyncTask()
     static let taskIdentifier = "app.ethos-protocol.checkin-sync"
 
-    // Error codes where the server has definitively rejected the check-in. Matches
+    // Error codes where the server has definitively rejected the action. Matches
     // PendingActionSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
     static let nonRetryableErrorCodes: Set<Int> = [400, 404, 410]
 
     // Injected for testing
     var apiClient: APIClientProtocol = APIClient.shared
-    var store: PendingCheckInStore = .shared
+    var store: PendingActionStore = .shared
 
     private init() {}
 
@@ -58,7 +61,8 @@ final class CheckInSyncTask {
     // MARK: - Sync logic
 
     /// Drain the queue. Called both from the BGProcessingTask handler and directly
-    /// (foreground re-try when `NetworkMonitor` reports connectivity restored).
+    /// (foreground re-try when `NetworkMonitor` reports connectivity restored, or when
+    /// the user taps "Retry Now" via `retryNow()`).
     @discardableResult
     func performSync() async -> SyncResult {
         let pending = store.getAll()
@@ -67,7 +71,29 @@ final class CheckInSyncTask {
         var hasRetryableFailure = false
 
         for item in pending {
-            let result = await apiClient.checkIn(vaultID: item.vaultId)
+            let result: ActionResult
+            switch item.type {
+            case .checkIn:
+                let r = await apiClient.checkIn(vaultID: item.vaultId)
+                result = r.toActionResult()
+            case .deposit:
+                guard let amount = item.amount else {
+                    // Malformed item — no amount for a deposit. Drop it.
+                    store.delete(item)
+                    continue
+                }
+                let r = await apiClient.deposit(vaultID: item.vaultId, amount: amount)
+                result = r.toActionResult()
+            case .withdraw:
+                guard let amount = item.amount else {
+                    // Malformed item — no amount for a withdrawal. Drop it.
+                    store.delete(item)
+                    continue
+                }
+                let r = await apiClient.withdraw(vaultID: item.vaultId, amount: amount)
+                result = r.toActionResult()
+            }
+
             switch result {
             case .success:
                 store.delete(item)
@@ -75,7 +101,7 @@ final class CheckInSyncTask {
                 hasRetryableFailure = true
             case .serverError(let code, _):
                 if Self.nonRetryableErrorCodes.contains(code) {
-                    // Server has permanently rejected this check-in — drop it.
+                    // Server has permanently rejected this action — drop it.
                     store.delete(item)
                 } else {
                     hasRetryableFailure = true
@@ -88,6 +114,14 @@ final class CheckInSyncTask {
         }
 
         return hasRetryableFailure ? .retry : .success
+    }
+
+    /// Triggers an immediate foreground drain of the pending action queue.
+    /// Called from the "Retry Now" UI button when the user manually forces a retry.
+    func retryNow() {
+        Task {
+            await performSync()
+        }
     }
 
     // MARK: - BGProcessingTask handler
@@ -113,12 +147,24 @@ final class CheckInSyncTask {
     }
 }
 
+// MARK: - ActionResult
+
+/// The result of dispatching a single pending action to the server.
+/// Reuses `CheckInResult` so all three action types share a common result vocabulary.
+typealias ActionResult = CheckInResult
+
+private extension CheckInResult {
+    func toActionResult() -> ActionResult { self }
+}
+
 // MARK: - APIClientProtocol
 
 /// Subset of APIClient used by CheckInSyncTask, extracted so tests can inject a stub
 /// without subclassing APIClient. Mirrors how Android tests mock ApiClient via Hilt.
 protocol APIClientProtocol: AnyObject {
     func checkIn(vaultID: String) async -> CheckInResult
+    func deposit(vaultID: String, amount: Int64) async -> CheckInResult
+    func withdraw(vaultID: String, amount: Int64) async -> CheckInResult
 }
 
 enum CheckInResult {
@@ -144,6 +190,44 @@ extension APIClient: APIClientProtocol {
             return .serverError(code: 404, message: "Not found")
         } catch APIError.serverError(let msg) {
             // Parse the numeric code out of messages like "Server error 410"
+            let code = msg.components(separatedBy: " ").last.flatMap(Int.init) ?? 500
+            return .serverError(code: code, message: msg)
+        } catch {
+            return .serverError(code: 500, message: error.localizedDescription)
+        }
+    }
+
+    func deposit(vaultID: String, amount: Int64) async -> CheckInResult {
+        // Disambiguate from the protocol's non-throwing overload by pinning to
+        // APIClient's original throwing signature that returns a Vault.
+        let performDeposit: (String, Int64) async throws -> Vault = deposit(vaultID:amount:)
+        do {
+            _ = try await performDeposit(vaultID, amount)
+            return .success
+        } catch APIError.networkUnavailable {
+            return .networkUnavailable
+        } catch APIError.notFound {
+            return .serverError(code: 404, message: "Not found")
+        } catch APIError.serverError(let msg) {
+            let code = msg.components(separatedBy: " ").last.flatMap(Int.init) ?? 500
+            return .serverError(code: code, message: msg)
+        } catch {
+            return .serverError(code: 500, message: error.localizedDescription)
+        }
+    }
+
+    func withdraw(vaultID: String, amount: Int64) async -> CheckInResult {
+        // Disambiguate from the protocol's non-throwing overload by pinning to
+        // APIClient's original throwing signature that returns a Vault.
+        let performWithdraw: (String, Int64) async throws -> Vault = withdraw(vaultID:amount:)
+        do {
+            _ = try await performWithdraw(vaultID, amount)
+            return .success
+        } catch APIError.networkUnavailable {
+            return .networkUnavailable
+        } catch APIError.notFound {
+            return .serverError(code: 404, message: "Not found")
+        } catch APIError.serverError(let msg) {
             let code = msg.components(separatedBy: " ").last.flatMap(Int.init) ?? 500
             return .serverError(code: code, message: msg)
         } catch {

@@ -26,6 +26,8 @@ import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.DepositPayload
+import com.ethosprotocol.services.WithdrawPayload
 import com.ethosprotocol.services.VaultEventSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -352,7 +354,10 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    /** Non-null when vaults were served from offline cache; epoch millis of the cache write. */
+    val cachedAt: Long? = null,
+    val queuedActionCount: Int = 0
 )
 
 private const val PAGE_SIZE = 20
@@ -372,6 +377,14 @@ class VaultViewModel @Inject constructor(
     private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
 
+    init {
+        viewModelScope.launch {
+            pendingActionDao.observeCount().collect { count ->
+                _state.update { it.copy(queuedActionCount = count) }
+            }
+        }
+    }
+
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
         when (val result = apiClient.listVaults(limit = PAGE_SIZE)) {
@@ -382,7 +395,8 @@ class VaultViewModel @Inject constructor(
                         vaults = result.data.vaults,
                         isLoading = false,
                         isOffline = false,
-                        hasMore = result.data.hasMore
+                        hasMore = result.data.hasMore,
+                        cachedAt = result.cachedAt
                     )
                 }
                 subscribeToEvents(result.data.vaults.map { it.id })
@@ -477,6 +491,10 @@ class VaultViewModel @Inject constructor(
     override fun onCleared() {
         eventJobs.values.forEach { it.cancel() }
         eventJobs.clear()
+    }
+
+    fun retryNow() {
+        PendingActionSyncWorker.scheduleImmediate(context)
     }
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
@@ -587,7 +605,10 @@ data class DepositUiState(
 
 @HiltViewModel
 class DepositViewModel @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val pendingActionDao: PendingActionDao,
+    private val notificationHelper: NotificationHelper,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DepositUiState())
@@ -610,7 +631,21 @@ class DepositViewModel @Inject constructor(
         when (val result = apiClient.deposit(vaultId, stroops)) {
             is ApiResult.Success -> _state.update { it.copy(isLoading = false, isSuccess = true) }
             is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
-            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+            ApiResult.NetworkUnavailable -> {
+                val payload = Json.encodeToString(DepositPayload(vaultId, stroops))
+                val action = PendingAction(
+                    type = PendingActionType.DEPOSIT,
+                    vaultId = vaultId,
+                    payloadJson = payload,
+                    queuedAt = System.currentTimeMillis(),
+                    dedupeKey = "deposit:$vaultId:$stroops"
+                )
+                pendingActionDao.insert(action)
+                val queued = pendingActionDao.getAll()
+                notificationHelper.showQueuedActions(queued.size)
+                PendingActionSyncWorker.schedule(context)
+                _state.update { it.copy(isLoading = false, error = "Offline — deposit queued and will retry automatically") }
+            }
         }
     }
 
@@ -636,7 +671,10 @@ data class WithdrawUiState(
 
 @HiltViewModel
 class WithdrawViewModel @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val pendingActionDao: PendingActionDao,
+    private val notificationHelper: NotificationHelper,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(WithdrawUiState())
@@ -662,7 +700,21 @@ class WithdrawViewModel @Inject constructor(
                 when (val result = apiClient.withdraw(vaultId, stroops)) {
                     is ApiResult.Success -> _state.update { it.copy(isLoading = false, isSuccess = true) }
                     is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
-                    ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+                    ApiResult.NetworkUnavailable -> {
+                        val payload = Json.encodeToString(WithdrawPayload(vaultId, stroops))
+                        val action = PendingAction(
+                            type = PendingActionType.WITHDRAW,
+                            vaultId = vaultId,
+                            payloadJson = payload,
+                            queuedAt = System.currentTimeMillis(),
+                            dedupeKey = "withdraw:$vaultId"
+                        )
+                        pendingActionDao.insert(action)
+                        val queued = pendingActionDao.getAll()
+                        notificationHelper.showQueuedActions(queued.size)
+                        PendingActionSyncWorker.schedule(context)
+                        _state.update { it.copy(isLoading = false, error = "Offline — withdrawal queued and will retry automatically") }
+                    }
                 }
             }
         }

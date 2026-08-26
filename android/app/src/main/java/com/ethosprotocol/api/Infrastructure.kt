@@ -43,6 +43,11 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     // fighting Hilt's @Inject constructor resolution.
     internal var maxCacheBytes: Long = DEFAULT_MAX_CACHE_BYTES
 
+    // Entries older than maxAgeMs are treated as stale by load() — a non-null cachedAt is
+    // still returned by load() but also flagged via the CacheEnvelope so the UI can surface
+    // "last updated N hours ago" instead of silently serving data. -1L means no expiry enforced.
+    internal var maxAgeMs: Long = DEFAULT_MAX_AGE_MS
+
     // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
     // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
     // since its resolution varies across filesystems/devices and would make eviction order
@@ -70,7 +75,16 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
         val envelope = runCatching {
             Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
         }.getOrNull()
-        if (envelope != null) touch(fileName)
+        if (envelope != null) {
+            touch(fileName)
+            if (isCachedAtStale(envelope.timestamp)) {
+                CacheTelemetry.recordStaleServed()
+            } else {
+                CacheTelemetry.recordHit()
+            }
+        } else {
+            CacheTelemetry.recordMiss()
+        }
         return envelope
     }
 
@@ -79,6 +93,12 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     fun clear() {
         dir.listFiles()?.forEach { it.delete() }
         accessOrder.clear()
+    }
+
+    /** Returns true when the given cache timestamp is older than [maxAgeMs]. */
+    fun isCachedAtStale(timestamp: Long): Boolean {
+        if (maxAgeMs < 0) return false
+        return System.currentTimeMillis() - timestamp > maxAgeMs
     }
 
     private fun touch(fileName: String) {
@@ -107,8 +127,30 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
 
     companion object {
         const val DEFAULT_MAX_CACHE_BYTES = 5L * 1024 * 1024 // 5 MB
+        const val DEFAULT_MAX_AGE_MS = 24L * 60 * 60 * 1000 // 24 hours
     }
 }
+
+/** Tracks offline-cache access statistics for debug/support diagnostics. */
+object CacheTelemetry {
+    private val _hits = java.util.concurrent.atomic.AtomicLong(0)
+    private val _misses = java.util.concurrent.atomic.AtomicLong(0)
+    private val _staleServed = java.util.concurrent.atomic.AtomicLong(0)
+
+    val hits: Long get() = _hits.get()
+    val misses: Long get() = _misses.get()
+    val staleServed: Long get() = _staleServed.get()
+
+    fun recordHit() { _hits.incrementAndGet() }
+    fun recordMiss() { _misses.incrementAndGet() }
+    fun recordStaleServed() { _staleServed.incrementAndGet() }
+
+    fun reset() { _hits.set(0); _misses.set(0); _staleServed.set(0) }
+
+    fun snapshot() = CacheTelemetrySnapshot(hits, misses, staleServed)
+}
+
+data class CacheTelemetrySnapshot(val hits: Long, val misses: Long, val staleServed: Long)
 
 /**
  * Abstracted so PasskeyServiceTest can supply an in-memory fake without a real
