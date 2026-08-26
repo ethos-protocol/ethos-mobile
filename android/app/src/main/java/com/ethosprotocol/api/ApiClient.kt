@@ -19,6 +19,9 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.io.IOException
 import java.security.SecureRandom
@@ -242,13 +245,41 @@ class ApiClient(
         }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
+    // Guards ensureFreshToken()'s refresh so concurrent callers near token expiry
+    // (e.g. VaultListScreen firing several parallel loads on resume) share a single
+    // /auth/refresh call instead of each racing their own — see refreshMutex/inFlightRefresh
+    // below.
+    private val refreshMutex = Mutex()
+    private var inFlightRefresh: CompletableDeferred<Unit>? = null
+
     // Best-effort: refreshes the stored token when it's near its expiry so the request
     // about to be made uses a live token instead of one about to be rejected with a 401.
     // A refresh failure just falls through and lets the actual request surface the error.
+    //
+    // Single-flight: if a refresh is already in progress, concurrent callers await that
+    // same result instead of each independently calling refreshToken() — otherwise N
+    // concurrent requests in the expiry window would fire N simultaneous refreshes, and
+    // whichever response lands last (not necessarily the most recent) wins.
     private suspend fun ensureFreshToken() {
         if (tokenProvider.token == null || !tokenProvider.isNearExpiry()) return
-        val result = refreshToken()
-        if (result is ApiResult.Success) tokenProvider.setSession(result.data)
+
+        val (deferred, isLeader) = refreshMutex.withLock {
+            inFlightRefresh?.let { it to false }
+                ?: CompletableDeferred<Unit>().also { inFlightRefresh = it }.let { it to true }
+        }
+
+        if (!isLeader) {
+            deferred.await()
+            return
+        }
+
+        try {
+            val result = refreshToken()
+            if (result is ApiResult.Success) tokenProvider.setSession(result.data)
+        } finally {
+            refreshMutex.withLock { inFlightRefresh = null }
+            deferred.complete(Unit)
+        }
     }
 
     // GET is the only idempotent verb this client issues — retrying POST/DELETE
