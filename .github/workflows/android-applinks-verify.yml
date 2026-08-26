@@ -50,10 +50,20 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const title = "⚠️ assetlinks.json verification failed (scheduled check)";
+
+            const existing = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "${title}"`,
+            });
+            if (existing.data.items.some(issue => issue.title === title)) {
+              console.log("An open alert issue already exists — skipping creation to avoid duplicates.");
+              return;
+            }
+
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo:  context.repo.repo,
-              title: "⚠️ assetlinks.json verification failed (scheduled check)",
+              title,
               body: [
                 "The daily Android App Links verification job failed.",
                 "",
