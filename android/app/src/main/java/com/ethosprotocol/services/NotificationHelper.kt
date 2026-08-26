@@ -35,6 +35,17 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
 
         private const val VAULT_NOTIFICATION_IDS_PREFS = "vault_notification_ids"
 
+        // --- Inline "Check In" action (#198) ---
+
+        internal const val CHECK_IN_ACTION_TITLE = "Check In"
+        // Keeps action request codes clear of the content intent's (0) and of every vault
+        // notification ID, which start at VAULT_NOTIFICATION_ID_RANGE_START.
+        internal const val CHECK_IN_ACTION_REQUEST_CODE_OFFSET = 1_000_000
+
+        /** Deep link that opens the biometric-gated in-app check-in screen for [vaultId]. */
+        internal fun checkInDeepLink(vaultId: String): String =
+            "ethosprotocol://vault/$vaultId/check-in"
+
         // --- Check-in reminder lead-time scaling (ported from iOS
         // NotificationService.scheduleCheckInReminder, #197) ---
 
@@ -99,10 +110,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
     }
 
     fun show(title: String, body: String, vaultId: String?) {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            vaultId?.let { data = android.net.Uri.parse("ethosprotocol://vault/$it/check-in") }
-        }
+        val intent = checkInIntent(vaultId)
         val pi = PendingIntent.getActivity(context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
@@ -117,10 +125,44 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
             // for replace-vs-append behavior.
             .setGroup(vaultId ?: "general")
+            .apply { checkInAction(vaultId)?.let { addAction(it) } }
             .build()
 
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.notify(notificationIdFor(vaultId), notification)
+    }
+
+    /** Intent that opens the biometric-gated check-in screen for [vaultId]. */
+    private fun checkInIntent(vaultId: String?) = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        vaultId?.let { data = android.net.Uri.parse(checkInDeepLink(it)) }
+    }
+
+    /**
+     * Inline "Check In" action for a reminder notification (#198), mirroring iOS's CHECK_IN
+     * notification category.
+     *
+     * The action deliberately reuses the same check-in deep link as the notification body: it
+     * opens [MainActivity] on the check-in screen, which prompts for biometric confirmation
+     * before calling the API. A BroadcastReceiver firing the API call directly would be a
+     * faster tap but would bypass that gate, letting anyone holding the device extend a vault
+     * straight from the lock screen.
+     */
+    private fun checkInAction(vaultId: String?): NotificationCompat.Action? {
+        if (vaultId == null) return null
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            // Distinct from the content intent's request code so the two PendingIntents are not
+            // treated as the same one and collapsed by FLAG_UPDATE_CURRENT.
+            notificationIdFor(vaultId) + CHECK_IN_ACTION_REQUEST_CODE_OFFSET,
+            checkInIntent(vaultId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Action.Builder(
+            android.R.drawable.ic_lock_idle_lock,
+            CHECK_IN_ACTION_TITLE,
+            pendingIntent
+        ).build()
     }
 
     /**

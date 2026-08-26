@@ -58,7 +58,7 @@ Last audited: 2026-07-27
 | APNs / FCM device token registration | ✅ | ✅ | |
 | TTL expiry warning notification | ✅ | ✅ | |
 | Check-in reminder (scaled lead time) | ✅ | ✅ | Lead time is 1/10 of the check-in interval, capped at 24h (#197) |
-| Actionable "Check In" notification action | ✅ | ❌ | Android does not set up a CHECK_IN notification action (#TBD) |
+| Actionable "Check In" notification action | ✅ | ✅ | Action opens the biometric-gated check-in screen (#198) |
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |
 | Offline read cache (SHA-256 keyed) | ✅ | ✅ | |
@@ -94,7 +94,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | TOTP re-verify copy ("Scan URI" shown without URI) | Android | #115 |
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
 | Check-in reminder lead-time scaling | Android | TBD |
-| Actionable push notification action (CHECK_IN) | Android | TBD |
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
