@@ -52,13 +52,27 @@ class PendingActionSyncWorker @AssistedInject constructor(
         var permanentlyFailed = 0
 
         for (item in pending) {
+            if (item.synced) {
+                // The server already confirmed this action on a previous run, but the
+                // process died before the row could be deleted. Finish the cleanup without
+                // resubmitting the request or counting it toward this run's `succeeded`
+                // (it was already counted when it first succeeded).
+                dao.delete(item)
+                Log.i(TAG, "already-synced action cleaned up type=${item.type} vaultId=${item.vaultId}")
+                continue
+            }
+
             val result = when (item.type) {
-                PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!)
+                PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!, item.idempotencyKey)
                 PendingActionType.CREATE_VAULT ->
-                    apiClient.createVault(Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!))
+                    apiClient.createVault(
+                        Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!),
+                        item.idempotencyKey
+                    )
             }
             when (result) {
                 is ApiResult.Success -> {
+                    dao.markSynced(item.id)
                     dao.delete(item)
                     succeeded++
                     Log.i(TAG, "action synced type=${item.type} vaultId=${item.vaultId}")

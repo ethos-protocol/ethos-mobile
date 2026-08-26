@@ -140,12 +140,12 @@ class VaultViewModelTest {
         vm.load()
 
         val refreshedV1 = v1.copy(lastCheckIn = "2026-05-01T00:00:00Z", ttlRemaining = 2_592_000L)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Success(Unit)
         coEvery { apiClient.getVault("v1") } returns ApiResult.Success(refreshedV1)
 
         vm.checkIn("v1")
 
-        coVerify { apiClient.checkIn("v1") }
+        coVerify { apiClient.checkIn("v1", any()) }
         coVerify { apiClient.getVault("v1") }
         coVerify(exactly = 1) { apiClient.listVaults(limit = 20) }
         coVerify(exactly = 0) { apiClient.getVault("v2") }
@@ -154,7 +154,7 @@ class VaultViewModelTest {
 
     @Test
     fun `checkIn network unavailable queues a pending action and schedules sync`() = runTest {
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.NetworkUnavailable
         coEvery { pendingActionDao.getAll() } returns emptyList()
 
         vm.checkIn("v1")
@@ -171,19 +171,19 @@ class VaultViewModelTest {
     @Test
     fun `createVault success reloads vaults`() = runTest {
         val vaults = listOf(makeVault("v1"))
-        coEvery { apiClient.createVault(any()) } returns ApiResult.Success(makeVault("v1"))
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.Success(makeVault("v1"))
         coEvery { apiClient.listVaults(limit = 20) } returns
             ApiResult.Success(VaultPage(vaults, nextCursor = null, hasMore = false))
 
         vm.createVault("GXYZ", 30)
 
-        coVerify { apiClient.createVault(any()) }
+        coVerify { apiClient.createVault(any(), any()) }
         coVerify { apiClient.listVaults(limit = 20) }
     }
 
     @Test
     fun `createVault network unavailable queues a pending action and schedules sync`() = runTest {
-        coEvery { apiClient.createVault(any()) } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.NetworkUnavailable
         coEvery { pendingActionDao.getAll() } returns emptyList()
 
         vm.createVault("GXYZ", 30)

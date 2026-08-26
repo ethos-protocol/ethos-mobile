@@ -136,8 +136,10 @@ class ApiClient(
         return get(path)
     }
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/$id")
-    suspend fun createVault(req: CreateVaultRequest): ApiResult<Vault> = post("/vaults", req)
-    suspend fun checkIn(vaultId: String): ApiResult<Unit> = post("/vaults/$vaultId/checkin", Unit)
+    suspend fun createVault(req: CreateVaultRequest, idempotencyKey: String? = null): ApiResult<Vault> =
+        post("/vaults", req, idempotencyKey = idempotencyKey)
+    suspend fun checkIn(vaultId: String, idempotencyKey: String? = null): ApiResult<Unit> =
+        post("/vaults/$vaultId/checkin", Unit, idempotencyKey = idempotencyKey)
     suspend fun deposit(vaultId: String, amount: Long): ApiResult<Vault> =
         post("/vaults/$vaultId/deposit", mapOf("amount" to amount))
     suspend fun withdraw(vaultId: String, amount: Long): ApiResult<Vault> =
@@ -199,14 +201,15 @@ class ApiClient(
     private suspend inline fun <reified B, reified T> post(
         path: String,
         body: B,
-        skipTokenRefresh: Boolean = false
+        skipTokenRefresh: Boolean = false,
+        idempotencyKey: String? = null
     ): ApiResult<T> {
         if (!skipTokenRefresh) ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
-                antiReplayHeaders()
+                antiReplayHeaders(idempotencyKey)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
@@ -273,12 +276,19 @@ class ApiClient(
     //               where |server_time − timestamp| > 300 s (5-minute window),
     //               limiting the replay window to that duration even if the
     //               nonce store is unavailable.
-    private fun HttpRequestBuilder.antiReplayHeaders() {
+    // idempotencyKey : optional, client-generated identifier that stays the same across
+    //                  retries of the same logical action (e.g. a queued check-in resubmitted
+    //                  by PendingActionSyncWorker after a crash). Unlike X-Nonce, this is
+    //                  intentionally NOT regenerated per attempt, so the server can recognize
+    //                  a resubmission as a duplicate of a specific prior attempt rather than a
+    //                  brand-new request.
+    private fun HttpRequestBuilder.antiReplayHeaders(idempotencyKey: String? = null) {
         val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
             .joinToString("") { "%02x".format(it) }
         val timestamp = System.currentTimeMillis() / 1_000L
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
+        if (idempotencyKey != null) header("X-Idempotency-Key", idempotencyKey)
     }
 }
 

@@ -480,7 +480,11 @@ class VaultViewModel @Inject constructor(
     }
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
-        when (val result = apiClient.checkIn(vaultId)) {
+        // Generated once and reused for both this attempt and any subsequent queued retry, so
+        // a resubmission after a process death is identifiable to the server as a duplicate of
+        // this specific attempt rather than a brand-new check-in.
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
+        when (val result = apiClient.checkIn(vaultId, idempotencyKey)) {
             is ApiResult.Success -> refreshSingle(vaultId)
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> queueAction(
@@ -488,7 +492,8 @@ class VaultViewModel @Inject constructor(
                     type = PendingActionType.CHECK_IN,
                     vaultId = vaultId,
                     queuedAt = System.currentTimeMillis(),
-                    dedupeKey = "check_in:$vaultId"
+                    dedupeKey = "check_in:$vaultId",
+                    idempotencyKey = idempotencyKey
                 )
             )
         }
@@ -528,14 +533,17 @@ class VaultViewModel @Inject constructor(
 
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {
         val req = CreateVaultRequest(beneficiary, intervalDays * 86_400L)
-        when (val result = apiClient.createVault(req)) {
+        // Reused for any queued retry, same rationale as checkIn()'s idempotencyKey.
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
+        when (val result = apiClient.createVault(req, idempotencyKey)) {
             is ApiResult.Success -> load()
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> queueAction(
                 PendingAction(
                     type = PendingActionType.CREATE_VAULT,
                     payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
-                    queuedAt = System.currentTimeMillis()
+                    queuedAt = System.currentTimeMillis(),
+                    idempotencyKey = idempotencyKey
                 )
             )
         }
