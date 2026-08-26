@@ -66,7 +66,7 @@ Last audited: 2026-07-27
 | Offline queue badge / notification | ❌ | ✅ | |
 | **Widget** | | | |
 | Home-screen vault TTL widget | ✅ | ✅ | iOS: WidgetKit TTLWidget; Android: VaultStatusWidget (Glance) |
-| TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (#TBD) |
+| TTL-aware refresh policy | ✅ | ✅ | Refresh interval scales from 60m down to 2m as TTL shrinks (#199) |
 | Widget urgency selection (which vault to surface) | ❌ | ❌ | Both platforms always show the first vault (#TBD) |
 | **WebSocket / real-time** | | | |
 | Live vault updates via WebSocket | ✅ | ✅ | iOS: VaultEventSocket.swift; Android: VaultEventSocket.kt, both wired into their vault store/ViewModel with reconnect backoff |
@@ -95,7 +95,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
 | Check-in reminder lead-time scaling | Android | TBD |
 | Offline check-in queue | iOS | TBD |
-| TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
 | iCloud / cross-device sync | Android | TBD |
 
