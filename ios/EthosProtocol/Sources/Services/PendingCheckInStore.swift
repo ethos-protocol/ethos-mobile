@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 // MARK: - PendingCheckIn
 
@@ -7,6 +8,11 @@ import Foundation
 struct PendingCheckIn: Codable, Equatable {
     let vaultId: String
     let queuedAt: Date
+    // Stable identifier set once when the check-in is first queued (not re-generated on
+    // retry), sent as X-Idempotency-Key so a resubmission after the process is terminated
+    // between the server accepting the request and this entry being deleted is identifiable
+    // to the server as a duplicate of a specific prior attempt, not a brand-new check-in.
+    var idempotencyKey: String = ""
 }
 
 // MARK: - PendingCheckInStore
@@ -25,6 +31,11 @@ final class PendingCheckInStore {
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.ethosprotocol.PendingCheckInStore")
+
+    // True if the most recent load() found a queue file that exists but couldn't be decoded
+    // (e.g. captured mid-write). Exposed so tests can assert corruption is surfaced instead
+    // of being silently swallowed as an empty queue.
+    private(set) var lastLoadWasCorrupted = false
 
     // Injected for unit tests so we don't touch the real filesystem.
     init(fileURL: URL? = nil) {
@@ -77,10 +88,22 @@ final class PendingCheckInStore {
     // MARK: - Private helpers
 
     private func load() -> [PendingCheckIn] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            lastLoadWasCorrupted = false
+            return []
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([PendingCheckIn].self, from: data)) ?? []
+        if let items = try? decoder.decode([PendingCheckIn].self, from: data) {
+            lastLoadWasCorrupted = false
+            return items
+        }
+        // The file exists but couldn't be decoded (e.g. captured mid-write by a process
+        // termination). Surface this rather than silently treating it as "no pending
+        // check-ins" — a still-pending check-in living in that file is about to be dropped.
+        lastLoadWasCorrupted = true
+        os_log("PendingCheckInStore: queue file exists but failed to decode — treating as empty until next successful write", type: .error)
+        return []
     }
 
     private func save(_ items: [PendingCheckIn]) {

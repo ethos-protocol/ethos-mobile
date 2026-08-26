@@ -323,18 +323,22 @@ final class VaultStore: ObservableObject {
     }
 
     func checkIn(vault: Vault) async {
+        // Generated once and reused for both this attempt and any subsequent queued retry, so
+        // a resubmission after a process death is identifiable to the server as a duplicate of
+        // this specific attempt rather than a brand-new check-in.
+        let idempotencyKey = UUID().uuidString
         do {
-            // `checkIn(vaultID:)` is ambiguous between APIClient's original throwing/Void
-            // signature and the CheckInSyncTask.APIClientProtocol conformance's overload —
-            // pin the reference to the original before calling it.
-            let performCheckIn: (String) async throws -> Void = APIClient.shared.checkIn(vaultID:)
-            try await performCheckIn(vault.id)
+            // `checkIn(vaultID:idempotencyKey:)` is ambiguous between APIClient's original
+            // throwing/Void signature and the CheckInSyncTask.APIClientProtocol conformance's
+            // overload — pin the reference to the original before calling it.
+            let performCheckIn: (String, String?) async throws -> Void = APIClient.shared.checkIn(vaultID:idempotencyKey:)
+            try await performCheckIn(vault.id, idempotencyKey)
             if !Task.isCancelled { await load() }
         } catch APIError.networkUnavailable {
             // Offline: queue the check-in durably so it is retried when connectivity
             // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
             // + CheckInSyncWorker pattern.
-            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
+            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date(), idempotencyKey: idempotencyKey)
             PendingCheckInStore.shared.insert(item)
             let count = PendingCheckInStore.shared.count
             NotificationService.shared.showQueuedCheckIn(count: count)

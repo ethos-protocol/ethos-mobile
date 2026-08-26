@@ -213,13 +213,13 @@ public final class APIClient {
         try await get(path: "/vaults/\(id)")
     }
 
-    func createVault(beneficiary: String, checkInInterval: UInt64) async throws -> Vault {
+    func createVault(beneficiary: String, checkInInterval: UInt64, idempotencyKey: String? = nil) async throws -> Vault {
         let body = CreateVaultRequest(beneficiary: beneficiary, checkInInterval: checkInInterval)
-        return try await post(path: "/vaults", body: body)
+        return try await post(path: "/vaults", body: body, idempotencyKey: idempotencyKey)
     }
 
-    func checkIn(vaultID: String) async throws {
-        let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/checkin", body: EmptyBody())
+    func checkIn(vaultID: String, idempotencyKey: String? = nil) async throws {
+        let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/checkin", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
 
     func deposit(vaultID: String, amount: Int64) async throws -> Vault {
@@ -314,13 +314,19 @@ public final class APIClient {
         return try decode(data, path: path)
     }
 
-    private func post<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
+    private func post<B: Encodable, T: Decodable>(path: String, body: B, idempotencyKey: String? = nil) async throws -> T {
         var req = request(path: path)
         req.httpMethod = "POST"
         req.httpBody = try JSONEncoder().encode(body)
         // Anti-replay: add nonce + timestamp to every mutating request (task #121).
         for (field, value) in Self.makeAntiReplayHeaders() {
             req.setValue(value, forHTTPHeaderField: field)
+        }
+        // idempotencyKey stays the same across retries of the same logical action (e.g. a
+        // queued check-in resubmitted by CheckInSyncTask after a crash), unlike X-Nonce which
+        // is intentionally fresh per attempt — see makeAntiReplayHeaders().
+        if let idempotencyKey {
+            req.setValue(idempotencyKey, forHTTPHeaderField: "X-Idempotency-Key")
         }
         let (data, _) = try await execute(req)
         return try decode(data, path: path)

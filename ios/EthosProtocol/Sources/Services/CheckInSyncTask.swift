@@ -67,7 +67,7 @@ final class CheckInSyncTask {
         var hasRetryableFailure = false
 
         for item in pending {
-            let result = await apiClient.checkIn(vaultID: item.vaultId)
+            let result = await apiClient.checkIn(vaultID: item.vaultId, idempotencyKey: item.idempotencyKey)
             switch result {
             case .success:
                 store.delete(item)
@@ -118,7 +118,7 @@ final class CheckInSyncTask {
 /// Subset of APIClient used by CheckInSyncTask, extracted so tests can inject a stub
 /// without subclassing APIClient. Mirrors how Android tests mock ApiClient via Hilt.
 protocol APIClientProtocol: AnyObject {
-    func checkIn(vaultID: String) async -> CheckInResult
+    func checkIn(vaultID: String, idempotencyKey: String?) async -> CheckInResult
 }
 
 enum CheckInResult {
@@ -130,13 +130,13 @@ enum CheckInResult {
 // MARK: - APIClient conformance
 
 extension APIClient: APIClientProtocol {
-    func checkIn(vaultID: String) async -> CheckInResult {
+    func checkIn(vaultID: String, idempotencyKey: String?) async -> CheckInResult {
         // `checkIn(vaultID:)` is ambiguous here — this extension adds a second overload
         // of the same name — so pin the reference to APIClient's original throwing/Void
         // signature via an explicitly-typed variable before calling it.
-        let performCheckIn: (String) async throws -> Void = checkIn(vaultID:)
+        let performCheckIn: (String, String?) async throws -> Void = checkIn(vaultID:idempotencyKey:)
         do {
-            try await performCheckIn(vaultID)
+            try await performCheckIn(vaultID, idempotencyKey)
             return .success
         } catch APIError.networkUnavailable {
             return .networkUnavailable
