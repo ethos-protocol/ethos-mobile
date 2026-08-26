@@ -17,6 +17,16 @@ enum class VaultDeepLinkAction(val pathSegment: String) {
 
 data class VaultDeepLink(val vaultId: String, val action: VaultDeepLinkAction)
 
+/**
+ * A beneficiary-acceptance universal link
+ * (https://ethos-protocol.app/vaults/{vaultId}/accept?token={token}).
+ *
+ * [token] proves the opener is the originally invited party and is required by
+ * POST /vaults/{id}/accept — see shared/api-contract.md. It is parsed here so it can
+ * be forwarded all the way into the API request body (#196).
+ */
+data class BeneficiaryAcceptLink(val vaultId: String, val token: String)
+
 object VaultDeepLinkParser {
     /**
      * Vault IDs are only ever used to build API request paths (e.g. "/vaults/$vaultId/checkin")
@@ -79,6 +89,24 @@ object VaultDeepLinkParser {
         val action = VaultDeepLinkAction.fromPathSegment(segments[1]) ?: return null
         eventLogger.onDeepLinkParsed(action)
         return VaultDeepLink(vaultId = vaultId, action = action)
+    }
+
+    /**
+     * Parses https://ethos-protocol.app/vaults/{vaultId}/accept?token={token}, returning both
+     * the vault ID *and* the acceptance token, or null when the link is not a well-formed
+     * acceptance link. A missing or invalid token yields null: dropping it would produce an
+     * acceptance request the server rejects, which is what made the Android flow silently fail.
+     */
+    fun parseBeneficiaryAccept(uri: Uri): BeneficiaryAcceptLink? {
+        if (uri.scheme != "https" || uri.host != "ethos-protocol.app") return null
+        val segments = uri.pathSegments
+        // Expect /vaults/{vaultId}/accept
+        if (segments.size != 3 || segments[0] != "vaults" || segments[2] != "accept") return null
+        val vaultId = segments[1].takeIf { isValidVaultId(it) } ?: return null
+        // Same allowlist as vault IDs (alphanumerics, dash, underscore): the token is
+        // interpolated into a navigation route before it reaches the API request body.
+        val token = uri.getQueryParameter("token")?.takeIf { isValidVaultId(it) } ?: return null
+        return BeneficiaryAcceptLink(vaultId = vaultId, token = token)
     }
 
     private val URL_PATTERN = Regex("^ethosprotocol://vault/([^/]+)/([^/]+)$")

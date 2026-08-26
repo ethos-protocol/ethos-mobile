@@ -40,8 +40,8 @@ Last audited: 2026-07-27
 | **Beneficiary management** | | | |
 | View beneficiary | ✅ | ✅ | |
 | Update beneficiary | ✅ | ❌ | Android has no ManageBeneficiaryScreen (#87) |
-| Beneficiary acceptance deep link | ✅ | ⚠️ | Android parses the deep link but does not call acceptBeneficiary() (#87/#109) |
-| Beneficiary acceptance token forwarded | ✅ | ❌ | Android AcceptanceViewModel ignores the token param (#109) |
+| Beneficiary acceptance deep link | ✅ | ✅ | |
+| Beneficiary acceptance token forwarded | ✅ | ✅ | VaultDeepLinkParser.parseBeneficiaryAccept forwards the token into POST /accept (#196) |
 | **Stellar address validation** | | | |
 | StrKey / CRC16-XModem checksum | ✅ | 🚧 | Android StellarAddress utility added in #113 |
 | Validated in create-vault flow | ✅ | 🚧 | Android CreateVaultDialog wired in #113 |
@@ -74,7 +74,7 @@ Last audited: 2026-07-27
 | Background app refresh (TTL polling) | ✅ | ✅ | iOS: BGAppRefreshTask; Android: WorkManager |
 | **Universal / deep links** | | | |
 | Vault invitation link | ✅ | ✅ | |
-| Beneficiary acceptance link | ✅ | ⚠️ | See beneficiary token gap above |
+| Beneficiary acceptance link | ✅ | ✅ | |
 | Vault action links (check-in, withdraw, …) | ✅ | ✅ | |
 | Deep-link input validation (path traversal, length) | ✅ | ✅ | |
 | **iCloud / cross-device sync** | | | |
@@ -91,7 +91,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 |-----|--------------------------|---------|
 | Deposit / Withdraw screens | Android | #87 |
 | Manage Beneficiary screen | Android | #87 |
-| Beneficiary acceptance token forwarded in deep link | Android | #87 / #109 |
 | TOTP re-verify copy ("Scan URI" shown without URI) | Android | #115 |
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
 | Check-in reminder lead-time scaling | Android | TBD |
