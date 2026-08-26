@@ -352,7 +352,13 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    // True for the duration of an in-flight createVault() call, so the UI can disable the
+    // submit control and a second tap can't reach the network/queue while the first is
+    // still pending — without this, two rapid taps while offline queue two structurally
+    // identical CREATE_VAULT actions (CREATE_VAULT has no natural dedupeKey) and both get
+    // submitted once connectivity returns, creating two real vaults for one user action.
+    val isCreatingVault: Boolean = false
 )
 
 private const val PAGE_SIZE = 20
@@ -532,20 +538,31 @@ class VaultViewModel @Inject constructor(
     }
 
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {
+        // Guards against a second tap reaching the network/queue while the first createVault()
+        // call is still in flight (see VaultUiState.isCreatingVault).
+        if (_state.value.isCreatingVault) return@launch
+        _state.update { it.copy(isCreatingVault = true) }
+
         val req = CreateVaultRequest(beneficiary, intervalDays * 86_400L)
         // Reused for any queued retry, same rationale as checkIn()'s idempotencyKey.
         val idempotencyKey = java.util.UUID.randomUUID().toString()
         when (val result = apiClient.createVault(req, idempotencyKey)) {
-            is ApiResult.Success -> load()
-            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> queueAction(
-                PendingAction(
-                    type = PendingActionType.CREATE_VAULT,
-                    payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
-                    queuedAt = System.currentTimeMillis(),
-                    idempotencyKey = idempotencyKey
+            is ApiResult.Success -> {
+                _state.update { it.copy(isCreatingVault = false) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isCreatingVault = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> {
+                queueAction(
+                    PendingAction(
+                        type = PendingActionType.CREATE_VAULT,
+                        payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
+                        queuedAt = System.currentTimeMillis(),
+                        idempotencyKey = idempotencyKey
+                    )
                 )
-            )
+                _state.update { it.copy(isCreatingVault = false) }
+            }
         }
     }
 

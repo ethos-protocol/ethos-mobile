@@ -17,6 +17,7 @@ import com.ethosprotocol.services.VaultEventSocket
 import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -179,6 +180,7 @@ class VaultViewModelTest {
 
         coVerify { apiClient.createVault(any(), any()) }
         coVerify { apiClient.listVaults(limit = 20) }
+        assertFalse(vm.state.value.isCreatingVault)
     }
 
     @Test
@@ -195,6 +197,37 @@ class VaultViewModelTest {
             })
         }
         verify { PendingActionSyncWorker.schedule(context) }
+        assertFalse(vm.state.value.isCreatingVault)
+    }
+
+    @Test
+    fun `two rapid createVault calls while the first is in flight only submit once`() = runTest {
+        val gate = CompletableDeferred<ApiResult<Vault>>()
+        coEvery { apiClient.createVault(any(), any()) } coAnswers { gate.await() }
+
+        // First call starts and suspends on the network response (gate not yet completed).
+        vm.createVault("GXYZ", 30)
+        assertTrue(vm.state.value.isCreatingVault)
+
+        // A second tap while the first is still in flight must not reach the api at all.
+        vm.createVault("GXYZ", 30)
+
+        gate.complete(ApiResult.NetworkUnavailable)
+
+        coVerify(exactly = 1) { apiClient.createVault(any(), any()) }
+        coVerify(exactly = 1) { pendingActionDao.insert(any()) }
+    }
+
+    @Test
+    fun `two createVault calls with different arguments both queue separately once offline`() = runTest {
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.NetworkUnavailable
+        coEvery { pendingActionDao.getAll() } returns emptyList()
+
+        vm.createVault("GXYZ", 30)
+        vm.createVault("GABC", 60)
+
+        coVerify(exactly = 2) { apiClient.createVault(any(), any()) }
+        coVerify(exactly = 2) { pendingActionDao.insert(any()) }
     }
 
     // MARK: - #112 Pagination tests
