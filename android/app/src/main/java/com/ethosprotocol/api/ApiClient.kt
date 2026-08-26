@@ -156,12 +156,25 @@ class ApiClient(
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
     suspend fun enable2FA(vaultId: String, req: Enable2FARequest): ApiResult<Enable2FAResponse> =
         post("/vaults/$vaultId/2fa/enable", req)
-    suspend fun verify2FA(vaultId: String, req: Verify2FARequest): ApiResult<Unit> =
+    /** #226: `req.trustDevice` = true asks server to issue a 30-day device trust token. */
+    suspend fun verify2FA(vaultId: String, req: Verify2FARequest): ApiResult<Verify2FAResponse> =
         post("/vaults/$vaultId/2fa/verify", req)
     suspend fun disable2FA(vaultId: String): ApiResult<Unit> =
         post("/vaults/$vaultId/2fa/disable", Unit)
     suspend fun challenge2FA(vaultId: String): ApiResult<TwoFactorStatus> =
         post("/vaults/$vaultId/2fa/challenge", Unit)
+    /** #226: Call after verify2FA with trustDevice=true to request a device trust token. */
+    suspend fun trustDevice(vaultId: String): ApiResult<TrustDeviceResponse> =
+        post("/vaults/$vaultId/2fa/trust-device", TrustDeviceRequest())
+    /** #224: Generates 8 fresh one-time backup codes (invalidates prior set). */
+    suspend fun generateBackupCodes(vaultId: String): ApiResult<BackupCodesResponse> =
+        post("/vaults/$vaultId/2fa/backup-codes/generate", Unit)
+    /** #224: Returns whether backup codes exist + count, never the code values. */
+    suspend fun getBackupCodesStatus(vaultId: String): ApiResult<BackupCodesStatus> =
+        get("/vaults/$vaultId/2fa/backup-codes/status")
+    /** #225: Atomically initiates a method switch; old method stays active until new one is verified. */
+    suspend fun switch2FAMethod(vaultId: String, req: Switch2FARequest): ApiResult<Enable2FAResponse> =
+        post("/vaults/$vaultId/2fa/switch", req)
 
     // Push
     suspend fun registerPushToken(token: String): ApiResult<Unit> =

@@ -1,4 +1,71 @@
-
 # Byte-compiled CI helper scripts
 __pycache__/
 *.pyc
+
+# macOS
+.DS_Store
+**/.DS_Store
+._*
+
+# IDE / editor
+.idea/
+*.iml
+*.suo
+*.user
+.vscode/
+*.swp
+*.swo
+*~
+
+# Android build outputs
+android/build/
+android/**/build/
+android/local.properties
+android/.gradle/
+android/**/.gradle/
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+android/dependency-check-data/
+
+# Android test snapshots (Paparazzi / screenshot tests) — generated artifacts, not source
+android/**/src/test/snapshots/
+android/**/snapshots/
+
+# iOS generated project (XcodeGen output) — regenerated from project.yml, never committed
+ios/EthosProtocol/Xcode/
+
+# iOS build
+ios/**/build/
+ios/**/*.xcarchive
+ios/**/*.ipa
+ios/**/*.dSYM.zip
+
+# iOS test snapshots (__Snapshots__ directories from XCTest / swift-snapshot-testing)
+ios/**/__Snapshots__/
+ios/**/__Fixtures__/
+
+# iOS derived data / SPM cached artifacts
+.build/
+ios/**/.build/
+
+# Gradle wrapper (keep gradle-wrapper.jar but not downloaded distribution)
+!android/gradle/wrapper/gradle-wrapper.jar
+android/gradle/wrapper/dists/
+
+# Google services (device-specific, never committed)
+android/**/google-services.json
+
+# Keystore / signing configs
+*.jks
+*.keystore
+android/keystore.properties
+
+# Node / JS (if any tooling is added)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Coverage reports
+coverage/
+*.lcov

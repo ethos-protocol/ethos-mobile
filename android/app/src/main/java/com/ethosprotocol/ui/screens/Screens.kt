@@ -24,6 +24,7 @@ import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.Switch2FARequest
 import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.UsernameValidator
@@ -1172,13 +1173,31 @@ fun WithdrawScreenContent(
 fun TwoFactorSetupScreen(
     vaultId: String,
     onComplete: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /** #227: Only show methods the server reports as available for this account. */
+    availableMethods: List<TwoFactorMethod> = TwoFactorMethod.values().toList()
 ) {
     val vm: TwoFactorViewModel = hiltViewModel()
     val state by vm.state.collectAsStateWithLifecycle()
-    var selectedMethod by remember { mutableStateOf(TwoFactorMethod.totp) }
+    // #227: Default to first available method; fall back to totp if list is somehow empty.
+    var selectedMethod by remember {
+        mutableStateOf(
+            if (availableMethods.contains(TwoFactorMethod.totp)) TwoFactorMethod.totp
+            else availableMethods.firstOrNull() ?: TwoFactorMethod.totp
+        )
+    }
     var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
+
+    // #224: Show backup codes screen immediately after initial TOTP setup verification.
+    if (state.showBackupCodes) {
+        BackupCodesScreen(
+            codes = state.backupCodes,
+            isLoading = state.isLoading,
+            onDone = { vm.dismissBackupCodes(); onComplete() }
+        )
+        return
+    }
 
     if (state.setupResponse != null) {
         TwoFactorVerifyScreen(
@@ -1199,7 +1218,8 @@ fun TwoFactorSetupScreen(
             Column {
                 Text("Authentication Method", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(8.dp))
-                listOf(TwoFactorMethod.totp, TwoFactorMethod.sms, TwoFactorMethod.email).forEach { method ->
+                // #227: Only render available methods.
+                availableMethods.forEach { method ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(
                             selected = selectedMethod == method,
@@ -1265,6 +1285,8 @@ private fun TwoFactorVerifyScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     var otp by remember { mutableStateOf("") }
     val isInitialSetup = provisioningUri != null
+    // #226: "Remember this device" opt-in.
+    var trustDevice by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.verified) {
         if (state.verified) onVerified()
@@ -1366,13 +1388,34 @@ private fun TwoFactorVerifyScreen(
             else -> Unit
         }
 
+        // #226: Trust-device opt-in row.
+        Spacer(Modifier.height(12.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Checkbox(
+                checked = trustDevice,
+                onCheckedChange = { trustDevice = it }
+            )
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Text("Remember this device", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Skip 2FA on this device for 30 days",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
         state.error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         Spacer(Modifier.height(16.dp))
         Button(
-            onClick = { vm.verify2FA(vaultId, otp) },
+            onClick = { vm.verify2FA(vaultId, otp, trustDevice) },
             modifier = Modifier.fillMaxWidth(),
             enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
@@ -1401,17 +1444,47 @@ fun VaultDetailScreen(
     val context = LocalContext.current
     var showSetup by remember { mutableStateOf(false) }
     var showVerify by remember { mutableStateOf(false) }
+    var showSwitch by remember { mutableStateOf(false) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+
+    // #224: Show backup codes screen after initial TOTP setup.
+    if (state.showBackupCodes) {
+        BackupCodesScreen(
+            codes = state.backupCodes,
+            isLoading = state.isLoading,
+            onDone = { twoFactorVm.dismissBackupCodes(); twoFactorVm.loadStatus(vaultId) }
+        )
+        return
+    }
 
     if (showSetup) {
         TwoFactorSetupScreen(
             vaultId = vaultId,
             onComplete = { showSetup = false; twoFactorVm.loadStatus(vaultId) },
-            onDismiss = { showSetup = false }
+            onDismiss = { showSetup = false },
+            availableMethods = state.status?.availableMethods ?: TwoFactorMethod.values().toList()
         )
         return
+    }
+
+    // #225: Switch method flow.
+    if (showSwitch) {
+        val currentMethod = state.status?.method
+        if (currentMethod != null) {
+            TwoFactorSwitchScreen(
+                vaultId = vaultId,
+                currentMethod = currentMethod,
+                availableMethods = state.status?.availableMethods ?: TwoFactorMethod.values().toList(),
+                onComplete = { showSwitch = false; twoFactorVm.loadStatus(vaultId) },
+                onDismiss = { showSwitch = false },
+                vm = twoFactorVm
+            )
+            return
+        } else {
+            showSwitch = false
+        }
     }
 
     Scaffold(
@@ -1454,6 +1527,14 @@ fun VaultDetailScreen(
                             }
                             Spacer(Modifier.height(8.dp))
                         }
+                        // #225: Switch method without disabling first.
+                        if (twoFaStatus.availableMethods.size > 1) {
+                            OutlinedButton(
+                                onClick = { showSwitch = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Switch Method") }
+                            Spacer(Modifier.height(8.dp))
+                        }
                         biometricError?.let {
                             Text(it, color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodySmall)
@@ -1494,4 +1575,185 @@ fun VaultDetailScreen(
             }
         }
     }
+}
+
+// MARK: - #224 Backup Codes Screen
+
+/**
+ * Displays the one-time backup codes generated after initial TOTP setup.
+ * Codes are shown once and cannot be retrieved again — the server stores only hashes.
+ */
+@Composable
+fun BackupCodesScreen(
+    codes: List<String>,
+    isLoading: Boolean,
+    onDone: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(title = { Text("Backup Codes") })
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Icon(
+                Icons.Default.Key,
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Text("Save Your Backup Codes", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Store these codes somewhere safe. Each code can be used once to sign in if you " +
+                "lose access to your authenticator app. They will not be shown again.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (isLoading) {
+                CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+            } else {
+                androidx.compose.foundation.lazy.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(2),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    items(codes.size) { index ->
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            Text(
+                                codes[index],
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                ),
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Button(
+                onClick = onDone,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isLoading
+            ) {
+                Text("I've Saved My Codes")
+            }
+        }
+    }
+}
+
+// MARK: - #225 Switch 2FA Method Screen
+
+/**
+ * Initiates a 2FA method switch without a gap in protection.
+ * Sets up the new method (pending) → user verifies it → old method is torn down atomically.
+ */
+@Composable
+fun TwoFactorSwitchScreen(
+    vaultId: String,
+    currentMethod: TwoFactorMethod,
+    availableMethods: List<TwoFactorMethod>,
+    onComplete: () -> Unit,
+    onDismiss: () -> Unit,
+    vm: TwoFactorViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    // Methods the user can switch *to* — exclude the currently active one.
+    val switchableMethods = availableMethods.filter { it != currentMethod }
+    var selectedMethod by remember {
+        mutableStateOf(switchableMethods.firstOrNull() ?: TwoFactorMethod.totp)
+    }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+
+    // Once the switch is initiated and the new method verified, complete.
+    LaunchedEffect(state.verified) {
+        if (state.verified) { vm.clearSwitchResponse(); onComplete() }
+    }
+
+    if (state.switchResponse != null) {
+        // New method is pending — verify it to complete the switch.
+        TwoFactorVerifyScreen(
+            vaultId = vaultId,
+            method = selectedMethod,
+            provisioningUri = state.switchResponse?.provisioningUri,
+            onVerified = onComplete,
+            onDismiss = onDismiss,
+            vm = vm
+        )
+        return
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Switch 2FA Method") },
+        text = {
+            Column {
+                Text(
+                    "Current method: ${currentMethod.name.uppercase()}. " +
+                    "Choose a new method. Your account stays protected until you verify the new one.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(12.dp))
+                switchableMethods.forEach { method ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(
+                            selected = selectedMethod == method,
+                            onClick = { selectedMethod = method }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            when (method) {
+                                TwoFactorMethod.totp -> "Authenticator App (TOTP)"
+                                TwoFactorMethod.sms -> "SMS Code"
+                                TwoFactorMethod.email -> "Email Code"
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+                if (selectedMethod == TwoFactorMethod.sms) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = phone, onValueChange = { phone = it },
+                        label = { Text("Phone number") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                }
+                if (selectedMethod == TwoFactorMethod.email) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(value = email, onValueChange = { email = it },
+                        label = { Text("Email address") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                }
+                state.error?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    vm.switch2FAMethod(vaultId, selectedMethod, phone.ifBlank { null }, email.ifBlank { null })
+                },
+                enabled = !state.isLoading && when (selectedMethod) {
+                    TwoFactorMethod.totp -> true
+                    TwoFactorMethod.sms -> phone.isNotBlank()
+                    TwoFactorMethod.email -> email.isNotBlank()
+                }
+            ) {
+                if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Continue")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

@@ -6,3 +6,8 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Test snapshots (swift-snapshot-testing / XCTest __Snapshots__)
+**/__Snapshots__/
+**/__Fixtures__/
+*.xcresult

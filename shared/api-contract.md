@@ -372,3 +372,161 @@ Response: `204 No Content`.
 
 ### WebSocketMessage (#110)
 See §WebSocket Message Schema above for the full discriminated-union schema.
+
+---
+
+## #227 — Server-Side 2FA Method Availability
+
+The `GET /vaults/{id}/2fa/status` response now includes an `available_methods` array that
+lists the 2FA methods the server accepts for this account. Clients must filter the method-
+selection UI to only what the server reports — if `sms` is absent the SMS option is hidden.
+
+### Updated TwoFactorStatus model
+```json
+{
+  "vault_id": "string",
+  "enabled": true,
+  "method": "totp|sms|email|null",
+  "verified": true,
+  "phone": "string|null",
+  "email": "string|null",
+  "available_methods": ["totp", "sms", "email"]
+}
+```
+
+`available_methods` defaults to all three methods when absent (older server) so existing
+clients are backward-compatible. Clients must decode the field defensively.
+
+---
+
+## #226 — Trusted-Device Contract ("Remember This Device")
+
+### Duration and revocation
+- Trust window: **30 days** from the time of opt-in. The server records an expiry timestamp.
+- The trust token is opaque and stored securely on the device (Keychain / EncryptedSharedPreferences).
+- Trust can be revoked server-side at any time (e.g. from account settings, linked to #207 remote
+  session revocation). A revoked token returns `401` with body `{"error": "device_trust_revoked"}`.
+- The device trust token is **per-vault** — trusting device for vault A does not skip 2FA for vault B.
+
+### New endpoint
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/vaults/{id}/2fa/trust-device` | Opt in to trusted-device for 30 days |
+
+**Request body** (sent immediately after a successful `POST /vaults/{id}/2fa/verify`):
+```json
+{ "trust_device": true }
+```
+
+**Response:**
+```json
+{
+  "device_trust_token": "string",
+  "expires_at": "ISO8601"
+}
+```
+
+### TrustDeviceRequest / TrustDeviceResponse
+```json
+// request
+{ "trust_device": true }
+
+// response
+{
+  "device_trust_token": "string",
+  "expires_at": "ISO8601"
+}
+```
+
+### Updated Verify2FARequest (opt-in checkbox)
+The existing `POST /vaults/{id}/2fa/verify` body gains an optional field:
+```json
+{
+  "otp": "string",
+  "trust_device": false
+}
+```
+When `trust_device` is `true` the server issues a `device_trust_token` in the response instead of
+`null`, which the client stores and sends as `X-Device-Trust-Token` on subsequent requests.
+
+### Updated Verify2FAResponse
+```json
+{
+  "device_trust_token": "string|null",
+  "expires_at": "ISO8601|null"
+}
+```
+
+### Skipping 2FA with a trusted-device token
+Send `X-Device-Trust-Token: <token>` on any request that would otherwise require fresh 2FA.
+The server validates the token and skips the 2FA challenge if it is still valid and unrevoked.
+
+---
+
+## #224 — TOTP Backup/Recovery Codes
+
+### New endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/vaults/{id}/2fa/backup-codes/generate` | Generate a fresh set of backup codes (invalidates any existing set) |
+| GET  | `/vaults/{id}/2fa/backup-codes/status`   | Check whether backup codes have been generated (count only, never values) |
+
+### BackupCodesResponse
+```json
+{
+  "codes": ["AAAA-BBBB", "CCCC-DDDD", "EEEE-FFFF", "GGGG-HHHH",
+            "IIII-JJJJ", "KKKK-LLLL", "MMMM-NNNN", "OOOO-PPPP"],
+  "generated_at": "ISO8601"
+}
+```
+
+- Codes are shown **once** at generation time. The server stores only hashes; subsequent
+  `GET /status` calls return a count but never the plaintext codes.
+- Each code is **single-use** — using a code marks it consumed server-side (HTTP 409 if reused).
+- `POST .../generate` invalidates any previously issued codes and issues a new set of 8.
+- Backup codes are independent of the TOTP secret — regenerating codes does not change the
+  secret, and rotating the secret does not invalidate existing codes.
+
+### BackupCodesStatus
+```json
+{ "generated": true, "remaining_count": 6 }
+```
+
+---
+
+## #225 — Switch 2FA Method Without Disabling First
+
+### New endpoint
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/vaults/{id}/2fa/switch` | Atomically replace the active 2FA method with a new one |
+
+The server sets up the new method in a **pending** state, issues the provisioning URI / sends the
+OTP, and only tears down the old method once the client verifies the new one. The account is never
+in a zero-2FA state during the switch.
+
+### SwitchMethod request
+```json
+{
+  "new_method": "totp|sms|email",
+  "phone": "string|null",
+  "email": "string|null"
+}
+```
+
+### SwitchMethod response (same shape as Enable2FAResponse)
+```json
+{
+  "vault_id": "string",
+  "method": "totp|sms|email",
+  "secret": "string|null",
+  "provisioning_uri": "string|null"
+}
+```
+
+The client then calls the existing `POST /vaults/{id}/2fa/verify` with the OTP for the **new**
+method. On successful verification the server atomically:
+1. Marks the new method as verified and active.
+2. Disables the old method.
+
+If verification is never completed the old method remains active (no gap in protection).

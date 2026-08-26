@@ -67,6 +67,41 @@ final class KeychainService {
         delete(forKey: pushTokenKey)
     }
 
+    // MARK: - #226 Trusted-Device Token
+
+    /// Persists the per-vault trusted-device token issued by the server after a
+    /// successful 2FA verification with `trust_device: true`.  Stored under a
+    /// vault-scoped key so trusting one vault does not accidentally skip 2FA on another.
+    func saveTrustToken(_ token: String, vaultID: String, expiresAt: Date) {
+        let key = trustTokenKey(for: vaultID)
+        save(token, forKey: key, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+        let expiryKey = key + ".expiry"
+        save(String(expiresAt.timeIntervalSince1970), forKey: expiryKey,
+             accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    }
+
+    func loadTrustToken(vaultID: String) -> String? {
+        load(forKey: trustTokenKey(for: vaultID))
+    }
+
+    /// Returns the expiry of the stored trust token for `vaultID`, or nil if absent/expired.
+    func trustTokenExpiry(vaultID: String) -> Date? {
+        let key = trustTokenKey(for: vaultID) + ".expiry"
+        guard let raw = load(forKey: key), let interval = TimeInterval(raw) else { return nil }
+        return Date(timeIntervalSince1970: interval)
+    }
+
+    /// Deletes the trusted-device token for `vaultID` (e.g. on remote revocation or sign-out).
+    func deleteTrustToken(vaultID: String) {
+        let key = trustTokenKey(for: vaultID)
+        delete(forKey: key)
+        delete(forKey: key + ".expiry")
+    }
+
+    private func trustTokenKey(for vaultID: String) -> String {
+        "com.ethosprotocol.device_trust_token.\(vaultID)"
+    }
+
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {
         let data = Data(value.utf8)
         let query: [CFString: Any] = [
