@@ -57,7 +57,7 @@ Last audited: 2026-07-27
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
 | TTL expiry warning notification | ✅ | ✅ | |
-| Check-in reminder (scaled lead time) | ✅ | ❌ | Android NotificationHelper sends a generic reminder, no lead-time scaling (#TBD) |
+| Check-in reminder (scaled lead time) | ✅ | ✅ | Lead time is 1/10 of the check-in interval, capped at 24h (#197) |
 | Actionable "Check In" notification action | ✅ | ❌ | Android does not set up a CHECK_IN notification action (#TBD) |
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |

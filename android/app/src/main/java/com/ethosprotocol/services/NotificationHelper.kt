@@ -6,8 +6,13 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import com.ethosprotocol.ui.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,6 +34,46 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         const val NO_VAULT_NOTIFICATION_ID = 1
 
         private const val VAULT_NOTIFICATION_IDS_PREFS = "vault_notification_ids"
+
+        // --- Check-in reminder lead-time scaling (ported from iOS
+        // NotificationService.scheduleCheckInReminder, #197) ---
+
+        /** The primary reminder fires one tenth of the check-in interval before expiry… */
+        private const val PRIMARY_LEAD_TIME_DIVISOR = 10L
+        /** …capped at 24 hours, so long-TTL vaults are not warned days in advance. */
+        private const val MAX_PRIMARY_LEAD_TIME_SECONDS = 86_400L
+        /** Vaults with a check-in interval under 24h also get an urgent reminder 2h before expiry. */
+        private const val SHORT_INTERVAL_THRESHOLD_SECONDS = 86_400L
+        private const val SECONDARY_LEAD_TIME_SECONDS = 7_200L
+        /** Never schedule in the past — mirror iOS's 60-second floor. */
+        private const val MIN_REMINDER_DELAY_SECONDS = 60L
+
+        internal const val REMINDER_WORK_PREFIX_PRIMARY = "checkin-primary-"
+        internal const val REMINDER_WORK_PREFIX_SECONDARY = "checkin-secondary-"
+
+        /** Lead time, in seconds, between the primary reminder and expiry. */
+        internal fun primaryLeadTimeSeconds(checkInInterval: Long): Long =
+            (checkInInterval / PRIMARY_LEAD_TIME_DIVISOR)
+                .coerceIn(0L, MAX_PRIMARY_LEAD_TIME_SECONDS)
+
+        /** Delay, in seconds, before the primary reminder fires. */
+        internal fun primaryReminderDelaySeconds(ttlRemaining: Long, checkInInterval: Long): Long =
+            (ttlRemaining - primaryLeadTimeSeconds(checkInInterval))
+                .coerceAtLeast(MIN_REMINDER_DELAY_SECONDS)
+
+        /** Delay, in seconds, before the urgent short-interval reminder fires. */
+        internal fun secondaryReminderDelaySeconds(ttlRemaining: Long): Long =
+            (ttlRemaining - SECONDARY_LEAD_TIME_SECONDS)
+                .coerceAtLeast(MIN_REMINDER_DELAY_SECONDS)
+
+        /**
+         * True when a second, more urgent reminder is worth scheduling: only for short check-in
+         * intervals, and only when it would actually land after the primary reminder.
+         */
+        internal fun hasSecondaryReminder(ttlRemaining: Long, checkInInterval: Long): Boolean =
+            checkInInterval < SHORT_INTERVAL_THRESHOLD_SECONDS &&
+                secondaryReminderDelaySeconds(ttlRemaining) >
+                primaryReminderDelaySeconds(ttlRemaining, checkInInterval)
     }
 
     // String.hashCode() collides between distinct vault IDs within the 32-bit hash space, which
@@ -77,6 +122,71 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.notify(notificationIdFor(vaultId), notification)
     }
+
+    /**
+     * (Re)schedules the local check-in reminders for [vaultId], scaling the lead time to the
+     * vault's check-in interval instead of sending one generic reminder (#197).
+     *
+     * Both reminders are unique work keyed by vault ID and enqueued with
+     * [ExistingWorkPolicy.REPLACE], so calling this again after a check-in (or any other TTL
+     * change) simply re-times the pending reminders.
+     */
+    fun scheduleCheckInReminder(vaultId: String, ttlRemaining: Long?, checkInInterval: Long) {
+        val workManager = WorkManager.getInstance(context)
+        val primaryWork = REMINDER_WORK_PREFIX_PRIMARY + vaultId
+        val secondaryWork = REMINDER_WORK_PREFIX_SECONDARY + vaultId
+
+        if (ttlRemaining == null || ttlRemaining <= 0L) {
+            workManager.cancelUniqueWork(primaryWork)
+            workManager.cancelUniqueWork(secondaryWork)
+            return
+        }
+
+        workManager.enqueueUniqueWork(
+            primaryWork,
+            ExistingWorkPolicy.REPLACE,
+            reminderRequest(
+                vaultId = vaultId,
+                title = "Check-in Reminder",
+                body = "Your vault expires soon. Tap to check in and keep it active.",
+                delaySeconds = primaryReminderDelaySeconds(ttlRemaining, checkInInterval)
+            )
+        )
+
+        if (hasSecondaryReminder(ttlRemaining, checkInInterval)) {
+            workManager.enqueueUniqueWork(
+                secondaryWork,
+                ExistingWorkPolicy.REPLACE,
+                reminderRequest(
+                    vaultId = vaultId,
+                    title = "Check-in Urgent",
+                    body = "Your vault expires in about 2 hours. Check in now to prevent loss of access.",
+                    delaySeconds = secondaryReminderDelaySeconds(ttlRemaining)
+                )
+            )
+        } else {
+            workManager.cancelUniqueWork(secondaryWork)
+        }
+    }
+
+    /** Cancels any pending check-in reminders for [vaultId]. */
+    fun cancelCheckInReminders(vaultId: String) {
+        val workManager = WorkManager.getInstance(context)
+        workManager.cancelUniqueWork(REMINDER_WORK_PREFIX_PRIMARY + vaultId)
+        workManager.cancelUniqueWork(REMINDER_WORK_PREFIX_SECONDARY + vaultId)
+    }
+
+    private fun reminderRequest(vaultId: String, title: String, body: String, delaySeconds: Long) =
+        OneTimeWorkRequestBuilder<CheckInReminderWorker>()
+            .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
+            .setInputData(
+                workDataOf(
+                    CheckInReminderWorker.KEY_VAULT_ID to vaultId,
+                    CheckInReminderWorker.KEY_TITLE to title,
+                    CheckInReminderWorker.KEY_BODY to body
+                )
+            )
+            .build()
 
     fun showQueuedActions(count: Int) {
         val intent = Intent(context, MainActivity::class.java).apply {
