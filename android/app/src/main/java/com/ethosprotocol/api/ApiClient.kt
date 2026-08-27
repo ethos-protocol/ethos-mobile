@@ -120,6 +120,15 @@ class ApiClient(
     suspend fun completeRecovery(req: RecoveryCompleteRequest): ApiResult<Unit> =
         post("/auth/recovery/complete", req)
 
+    // Sessions (#208)
+    suspend fun listSessions(): ApiResult<List<Session>> = get("/auth/sessions")
+
+    // "Sign out this device" for a specific session (may be the caller's own current session).
+    suspend fun revokeSession(id: String): ApiResult<Unit> = delete("/auth/sessions/$id", Unit)
+
+    // "Sign out all other devices" — revokes every session except the one making this call.
+    suspend fun revokeOtherSessions(): ApiResult<Unit> = delete("/auth/sessions", Unit)
+
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
 

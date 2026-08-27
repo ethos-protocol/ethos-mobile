@@ -35,6 +35,7 @@ import com.ethosprotocol.ui.screens.DepositScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
 import com.ethosprotocol.ui.screens.WithdrawScreen
+import com.ethosprotocol.ui.screens.SessionsScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -220,7 +221,13 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(
+                    onVaultClick = { /* navigate to detail */ },
+                    onSessionsClick = { navController.navigate("sessions") }
+                )
+            }
+            composable("sessions") {
+                SessionsScreen(onBack = { navController.popBackStack() })
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

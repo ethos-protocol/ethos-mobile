@@ -160,6 +160,50 @@ class AuthViewModel @Inject constructor(
     }
 }
 
+// --- Sessions ViewModel (#208) ---
+
+data class SessionsUiState(
+    val sessions: List<Session> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class SessionsViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(SessionsUiState())
+    val state = _state.asStateFlow()
+
+    fun load() = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.listSessions()) {
+            is ApiResult.Success -> _state.update { it.copy(sessions = result.data, isLoading = false) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    // Caller (SessionsScreen) is responsible for the biometric prompt before invoking this —
+    // mirrors VaultListScreen's check-in confirmation pattern.
+    fun revoke(session: Session) = viewModelScope.launch {
+        when (val result = apiClient.revokeSession(session.id)) {
+            is ApiResult.Success -> _state.update { it.copy(sessions = it.sessions.filter { s -> s.id != session.id }) }
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+
+    fun revokeAllOthers() = viewModelScope.launch {
+        when (val result = apiClient.revokeOtherSessions()) {
+            is ApiResult.Success -> load()
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+}
+
 // --- TwoFactor ViewModel ---
 
 data class TwoFactorUiState(

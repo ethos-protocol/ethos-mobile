@@ -25,6 +25,7 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.models.StellarAddress
+import com.ethosprotocol.models.Session
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
@@ -33,6 +34,7 @@ import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import com.ethosprotocol.ui.SessionsViewModel
 
 // MARK: - Auth Screen
 
@@ -199,6 +201,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onSessionsClick: () -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -261,6 +264,7 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                IconButton(onClick = onSessionsClick) { Icon(Icons.Default.Devices, "Active sessions") }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -1490,6 +1494,116 @@ fun VaultDetailScreen(
                 }
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Sessions Screen (#208)
+
+@Composable
+fun SessionsScreen(
+    onBack: () -> Unit,
+    vm: SessionsViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var pendingRevocation by remember { mutableStateOf<Session?>(null) }
+    var showRevokeAllConfirmation by remember { mutableStateOf(false) }
+    var biometricError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) { vm.load() }
+
+    pendingRevocation?.let { session ->
+        AlertDialog(
+            onDismissRequest = { pendingRevocation = null },
+            title = { Text("Sign out this device?") },
+            text = { Text("${session.deviceName} will be signed out immediately.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRevocation = null
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Sign Out Device",
+                        subtitle = "Confirm signing out ${session.deviceName}",
+                        onSuccess = { vm.revoke(session) },
+                        onError = { err -> biometricError = err },
+                    )
+                }) { Text("Sign Out") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRevocation = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (showRevokeAllConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showRevokeAllConfirmation = false },
+            title = { Text("Sign out every other device?") },
+            text = { Text("All other devices signed in to this account will be signed out immediately.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRevokeAllConfirmation = false
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Sign Out All Other Devices",
+                        subtitle = "Confirm signing out every other device",
+                        onSuccess = { vm.revokeAllOthers() },
+                        onError = { err -> biometricError = err },
+                    )
+                }) { Text("Sign Out All") }
+            },
+            dismissButton = { TextButton(onClick = { showRevokeAllConfirmation = false }) { Text("Cancel") } }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Active Sessions") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            when {
+                state.isLoading && state.sessions.isEmpty() ->
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                else -> LazyColumn {
+                    val errorMsg = biometricError ?: state.error
+                    errorMsg?.let { err ->
+                        item {
+                            Text(err, color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(16.dp))
+                        }
+                    }
+                    items(state.sessions, key = { it.id }) { session ->
+                        ListItem(
+                            headlineContent = {
+                                Row {
+                                    Text(session.deviceName)
+                                    if (session.isCurrent) {
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("(This Device)", style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                            },
+                            supportingContent = { Text("Last active: ${session.lastActiveAt}") },
+                            trailingContent = {
+                                TextButton(onClick = { pendingRevocation = session }) { Text("Sign Out") }
+                            }
+                        )
+                    }
+                    if (state.sessions.any { !it.isCurrent }) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                OutlinedButton(onClick = { showRevokeAllConfirmation = true }) {
+                                    Text("Sign Out All Other Devices")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

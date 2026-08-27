@@ -149,6 +149,32 @@ public final class APIClient {
         let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
     }
 
+    // MARK: - Sessions (#208)
+
+    func listSessions() async throws -> [Session] {
+        try await get(path: "/auth/sessions")
+    }
+
+    /// "Sign out this device" for a specific session (may be the caller's own current session).
+    func revokeSession(id: String) async throws {
+        var req = request(path: "/auth/sessions/\(id)")
+        req.httpMethod = "DELETE"
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
+    }
+
+    /// "Sign out all other devices" — revokes every session except the one making this call.
+    func revokeOtherSessions() async throws {
+        var req = request(path: "/auth/sessions")
+        req.httpMethod = "DELETE"
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"

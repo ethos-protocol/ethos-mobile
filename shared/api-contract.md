@@ -52,6 +52,9 @@ The server must:
 | POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
 | POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
 | POST | `/auth/recover/link` | Link a new passkey to an existing account, once identity is proven via email/backup code ("lost your device" recovery) |
+| GET | `/auth/sessions` | List active sessions (devices) holding a valid JWT for the calling account — see §Session/Device List (#208) |
+| DELETE | `/auth/sessions/{id}` | Revoke a single session by id ("Sign out this device") — see §Session/Device List (#208) |
+| DELETE | `/auth/sessions` | Revoke every session except the caller's current one ("Sign out all other devices") — see §Session/Device List (#208) |
 
 ### Vaults
 | Method | Path | Description |
@@ -177,6 +180,38 @@ deposit, withdrawal, beneficiary change, status transition).
 - On `vault_updated`, merge the embedded `vault` object into the local vault list in-place
   (do not full-reload from REST).
 - On `vault_expired` / `vault_released`, trigger a local notification if the app is backgrounded.
+
+---
+
+## Session/Device List (#208)
+
+Visibility and control over which devices currently hold a valid JWT for the account,
+addressing the gap where token storage was entirely server-side and invisible to the user
+(e.g. no way to remotely sign out a lost phone).
+
+### `GET /auth/sessions`
+
+Response: `200` with a JSON array of `Session` (see §Models). The session for the device
+making the request has `is_current: true`. Ordered most-recently-active first.
+
+### `DELETE /auth/sessions/{id}`
+
+Revokes the session identified by `id` — the corresponding JWT is invalidated server-side.
+Revoking a session other than the caller's own signs that device out ("Sign out this
+device"); revoking the caller's own current session is equivalent to a normal sign-out.
+Response: `204 No Content` on success; `404` if `id` does not belong to the caller's account.
+
+### `DELETE /auth/sessions`
+
+Revokes every session for the account **except** the one making the request ("Sign out all
+other devices"). Response: `204 No Content`.
+
+### Platform requirement: biometric gate
+
+Both `DELETE /auth/sessions/{id}` and `DELETE /auth/sessions` are destructive, remote-facing
+actions and must be gated behind a biometric (or device passcode) prompt client-side before
+the request is sent — the same `BiometricService`/`BiometricHelper` used for withdrawals and
+2FA disable.
 
 ---
 
@@ -372,3 +407,15 @@ Response: `204 No Content`.
 
 ### WebSocketMessage (#110)
 See §WebSocket Message Schema above for the full discriminated-union schema.
+
+### Session (#208)
+```json
+{
+  "id": "string",
+  "device_name": "string",
+  "platform": "ios|android",
+  "created_at": "ISO8601",
+  "last_active_at": "ISO8601",
+  "is_current": true
+}
+```

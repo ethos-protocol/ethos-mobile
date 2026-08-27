@@ -167,6 +167,17 @@ struct PushRegistration: Codable {
     let platform: String  // "ios" | "android"
 }
 
+/// A device currently holding a valid JWT for this account (#208). Drives SessionsView's
+/// device list and its "Sign out this device" / "Sign out all other devices" actions.
+struct Session: Codable, Identifiable, Equatable {
+    let id: String
+    let deviceName: String
+    let platform: String
+    let createdAt: Date
+    let lastActiveAt: Date
+    let isCurrent: Bool
+}
+
 // MARK: - 2FA Models
 
 enum TwoFactorMethod: String, Codable, CaseIterable {
