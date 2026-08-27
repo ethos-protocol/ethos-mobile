@@ -400,6 +400,14 @@ normal WebAuthn registration ceremony against a `/auth/challenge` obtained for t
 account) rather than issuing a session directly. Clients call `POST /auth/verify`
 afterwards to authenticate with the newly linked passkey.
 
+**Expiry (#211):** the same applies to Android's `RecoveryCompleteRequest`/`recovery_token`,
+issued by `POST /auth/recovery/initiate` with a limited lifetime. If the recovery token/proof
+has expired by the time the client completes the ceremony, the server responds `401` with a
+human-readable message in the body: `{"error": "<message>"}` (e.g. `"Your recovery code has
+expired. Please request a new one."`). Clients must surface this message as-is rather than the
+generic "sign in again" copy normally shown for a `401`, and let the user request a fresh code
+instead of leaving them on a dead-end error.
+
 ### BeneficiaryUpdateRequest
 ```json
 { "beneficiary": "string" }
@@ -426,3 +434,6 @@ See §WebSocket Message Schema above for the full discriminated-union schema.
   "is_current": true
 }
 ```
+`device_name` is a human-readable label (e.g. "iPhone 15 Pro", "Pixel 8") the server derives
+from the device that registered the session. `is_current` marks the session belonging to the
+device making the `GET /auth/sessions` request.

@@ -52,12 +52,22 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         )
     }
 
+    if (showRecovery) {
+        RecoverySheet(
+            state = state,
+            onSendCode = { username -> vm.sendRecoveryCode(username) },
+            onFinish = { username -> vm.finishRecovery(activity, username) },
+            onDismiss = { showRecovery = false; vm.clearRecovery() }
+        )
+    }
+
     AuthScreenContent(
         isLoading = state.isLoading,
         error = state.error,
         cooldownRemainingSeconds = state.cooldownRemainingSeconds,
         onSignIn = { vm.signIn(activity) },
-        onRegister = { showRegister = true }
+        onRegister = { showRegister = true },
+        onRecover = { showRecovery = true }
     )
 }
 
@@ -71,7 +81,8 @@ fun AuthScreenContent(
     error: String?,
     cooldownRemainingSeconds: Int = 0,
     onSignIn: () -> Unit,
-    onRegister: () -> Unit
+    onRegister: () -> Unit,
+    onRecover: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -109,6 +120,7 @@ fun AuthScreenContent(
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onRegister) { Text("Create account") }
+        TextButton(onClick = onRecover) { Text("Lost your device?") }
     }
 }
 

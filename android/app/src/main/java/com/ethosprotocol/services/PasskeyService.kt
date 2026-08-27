@@ -156,7 +156,7 @@ class PasskeyService @Inject constructor(
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            is ApiResult.Error -> throw ApiCallFailedException(result.message, result.code)
             ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }

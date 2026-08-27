@@ -17,6 +17,8 @@ import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.*
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.Json
@@ -198,7 +200,10 @@ class ApiClient(
                 }
                 // The token the server rejected is no longer valid — clear it locally so it
                 // isn't kept being sent, and so the UI correctly routes back to AuthScreen.
-                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
+                // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
+                // recovery token/proof on completeRecovery) — surface it instead of the
+                // generic "Unauthorized" so the caller isn't left with a dead-end message.
+                401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
@@ -221,7 +226,10 @@ class ApiClient(
             }
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
+                // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
+                // recovery token/proof on completeRecovery) — surface it instead of the
+                // generic "Unauthorized" so the caller isn't left with a dead-end message.
+                401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
@@ -242,7 +250,10 @@ class ApiClient(
             // deletion (401/500/etc.) is silently reported back to callers as success.
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
-                401 -> { tokenProvider.clear(); ApiResult.Error("Unauthorized", 401) }
+                // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
+                // recovery token/proof on completeRecovery) — surface it instead of the
+                // generic "Unauthorized" so the caller isn't left with a dead-end message.
+                401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
@@ -263,6 +274,12 @@ class ApiClient(
     // HttpRequestTimeoutException is checked explicitly because it subclasses
     // CancellationException (so HttpTimeout can cooperate with coroutine
     // cancellation) rather than IOException.
+    // #211: reads the `{"error": "<message>"}` body a 401 response may carry, falling back to
+    // "Unauthorized" when there's no body (the normal case for a rejected session token).
+    private suspend fun HttpResponse.unauthorizedMessage(): String =
+        runCatching { Json.decodeFromString<Map<String, String>>(bodyAsText())["error"] }
+            .getOrNull() ?: "Unauthorized"
+
     private fun isRetryableNetworkError(e: Throwable): Boolean =
         e is HttpRequestTimeoutException || e is IOException
 

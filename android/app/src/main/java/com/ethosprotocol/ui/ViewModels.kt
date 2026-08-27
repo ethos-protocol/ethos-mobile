@@ -7,6 +7,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ethosprotocol.BuildConfig
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
@@ -21,6 +22,7 @@ import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.services.NotificationHelper
+import com.ethosprotocol.services.PasskeyException
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -161,6 +163,45 @@ class AuthViewModel @Inject constructor(
                 startScheduledRefresh()
             }
             .onFailure { e -> handleAuthFailure(e) }
+    }
+
+    // ── Account recovery ("lost your device?") — mirrors iOS AuthStore.recoverAccess (#211) ──
+
+    fun sendRecoveryCode(username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.initiateRecovery(RecoveryInitiateRequest(username))) {
+            is ApiResult.Success -> _state.update { it.copy(isLoading = false, recoveryToken = result.data.recoveryToken) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun finishRecovery(activity: Activity, username: String) = viewModelScope.launch {
+        val recoveryToken = _state.value.recoveryToken ?: return@launch
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.recoverAccount(activity, username, recoveryToken)
+            .onSuccess {
+                _state.update { it.copy(isAuthenticated = true, isLoading = false, recoveryToken = null) }
+                startScheduledRefresh()
+            }
+            .onFailure { e ->
+                // A rejected recovery token/proof (401) can't be retried as-is — drop back to
+                // the "send code" step instead of leaving the user stuck on a dead-end error.
+                val recoveryRejected = (e as? ApiCallFailedException)?.code == 401
+                val message = if (e is PasskeyException) e.message ?: "Recovery failed. Please try again."
+                              else ApiErrorMapper.friendlyMessage(e)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = message,
+                        recoveryToken = if (recoveryRejected) null else it.recoveryToken
+                    )
+                }
+            }
+    }
+
+    fun clearRecovery() {
+        _state.update { it.copy(recoveryToken = null, error = null) }
     }
 
     fun signOut() = viewModelScope.launch {

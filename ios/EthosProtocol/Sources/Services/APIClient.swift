@@ -421,6 +421,14 @@ public final class APIClient {
             // The token the server rejected is no longer valid — drop it locally so we
             // don't keep sending it, and so a relaunch correctly shows the sign-in screen.
             KeychainService.shared.deleteToken()
+            // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
+            // recovery token/proof on /auth/recover/link) — surface it instead of the
+            // generic "Authentication required" so the caller isn't left on a dead end.
+            // Ordinary session-token 401s have an empty body, so this falls through to the
+            // existing .unauthorized behavior unchanged.
+            if let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"] {
+                throw APIError.serverError(message)
+            }
             throw APIError.unauthorized
         case 404: throw APIError.notFound
         default:

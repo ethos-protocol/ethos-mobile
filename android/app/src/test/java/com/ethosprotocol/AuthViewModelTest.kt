@@ -230,6 +230,72 @@ class AuthViewModelTest {
         assertEquals(0, vm.state.value.cooldownRemainingSeconds)
     }
 
+    // MARK: - #211 Account recovery — expired recovery token
+
+    @Test
+    fun `sendRecoveryCode success stores the recovery token`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+
+        vm.sendRecoveryCode("alice")
+
+        assertEquals("recovery-token-123", vm.state.value.recoveryToken)
+        assertNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `finishRecovery success authenticates and clears the recovery token`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns Result.success(Unit)
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertTrue(vm.state.value.isAuthenticated)
+        assertNull(vm.state.value.recoveryToken)
+    }
+
+    @Test
+    fun `finishRecovery with expired token surfaces a clear error and resets to the send-code step`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns
+            Result.failure(com.ethosprotocol.api.ApiCallFailedException(
+                "Your recovery code has expired. Please request a new one.", 401
+            ))
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertFalse(vm.state.value.isAuthenticated)
+        assertEquals("Your recovery code has expired. Please request a new one.", vm.state.value.error)
+        assertNull("An expired recovery token must not leave the user on the same dead-end step",
+            vm.state.value.recoveryToken)
+    }
+
+    @Test
+    fun `finishRecovery with a non-expiry failure keeps the recovery token so the user can retry`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns
+            Result.failure(RuntimeException("device error"))
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertFalse(vm.state.value.isAuthenticated)
+        assertEquals("recovery-token-123", vm.state.value.recoveryToken)
+    }
+
     // MARK: - #209 Scheduled proactive token refresh
 
     @Test

@@ -349,6 +349,49 @@ final class APIClientAuthTests: XCTestCase {
         }
     }
 
+    // #211: an expired recovery proof must surface its own clear message, not the generic
+    // "Authentication required" shown for a rejected session token.
+    func test_linkAdditionalPasskey_expiredRecoveryProof_surfacesServerMessage_notGenericUnauthorized() async throws {
+        let errorBody = """
+        {"error": "Your recovery code has expired. Please request a new one."}
+        """.data(using: .utf8)!
+        mockResponse(for: linkURL, status: 401, body: errorBody)
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw for an expired recovery proof")
+        } catch APIError.serverError(let message) {
+            XCTAssertEqual(message, "Your recovery code has expired. Please request a new one.")
+        }
+    }
+
+    // A 401 with no body (the normal rejected-session-token case) must keep the generic,
+    // "sign in again" message — this behavior must not regress from the fix above.
+    func test_plain401WithNoBody_stillThrowsGenericUnauthorized() async throws {
+        mockResponse(for: linkURL, status: 401, body: Data())
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw")
+        } catch APIError.unauthorized {
+            // expected
+        }
+    }
+
     // MARK: Sessions (#208)
 
     func test_listSessions_decodesSessionList() async throws {
