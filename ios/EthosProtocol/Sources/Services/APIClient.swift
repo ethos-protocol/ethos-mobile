@@ -289,6 +289,26 @@ public final class APIClient {
         _ = try await execute(req)
     }
 
+    // #231: Persist notification preferences server-side so they survive reinstall.
+    // Best-effort: a failure here does not block the local preference save.
+    func updateNotificationPreferences(_ preferences: NotificationPreferences) async throws {
+        struct Body: Encodable {
+            let ttlWarningsEnabled: Bool
+            let checkInRemindersEnabled: Bool
+            let quietHoursEnabled: Bool
+            let quietHoursStart: Int
+            let quietHoursEnd: Int
+        }
+        let body = Body(
+            ttlWarningsEnabled: preferences.ttlWarningsEnabled,
+            checkInRemindersEnabled: preferences.checkInRemindersEnabled,
+            quietHoursEnabled: preferences.quietHoursEnabled,
+            quietHoursStart: preferences.quietHoursStart,
+            quietHoursEnd: preferences.quietHoursEnd
+        )
+        let _: EmptyBody = try await post(path: "/notifications/preferences", body: body)
+    }
+
     // MARK: - Logging Redaction Audit (#111)
     //
     // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.

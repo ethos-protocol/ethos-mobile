@@ -169,6 +169,10 @@ class ApiClient(
     suspend fun unregisterPushToken(token: String): ApiResult<Unit> =
         delete("/notifications/register", PushRegistration(token = token))
 
+    // #231: Persist notification preferences server-side so they survive reinstall.
+    suspend fun updateNotificationPreferences(preferences: com.ethosprotocol.models.NotificationPreferences): ApiResult<Unit> =
+        post("/notifications/preferences", preferences)
+
     // Internals
     private suspend inline fun <reified T> get(path: String): ApiResult<T> {
         ensureFreshToken()

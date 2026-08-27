@@ -33,6 +33,15 @@ struct SettingsView: View {
             } header: {
                 Text("Privacy")
             }
+
+            // #231: In-app notification preferences (per-category toggles + quiet hours).
+            Section {
+                NavigationLink(destination: NotificationPreferencesView()) {
+                    Label("Notification Preferences", systemImage: "bell.badge")
+                }
+            } header: {
+                Text("Notifications")
+            }
         }
         .navigationTitle("Settings")
     }

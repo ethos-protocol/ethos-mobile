@@ -32,6 +32,8 @@ import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
 import com.ethosprotocol.ui.screens.DepositScreen
+import com.ethosprotocol.ui.screens.NotificationPreferencesScreen
+import com.ethosprotocol.ui.screens.SettingsScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
 import com.ethosprotocol.ui.screens.WithdrawScreen
@@ -263,6 +265,19 @@ private fun AppNavigation(
                     vaultId = vaultId,
                     vaultBalanceStroops = vaultBalance,
                     onDone = { navController.popBackStack() }
+                )
+            }
+            // #231: Settings screen — entry point for notification preferences and future settings.
+            composable("settings") {
+                SettingsScreen(
+                    onNotificationPreferences = { navController.navigate("notification_preferences") },
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            // #231: Notification preferences screen — per-category toggles and quiet hours.
+            composable("notification_preferences") {
+                NotificationPreferencesScreen(
+                    onBack = { navController.popBackStack() }
                 )
             }
         }

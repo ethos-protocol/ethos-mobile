@@ -992,6 +992,59 @@ struct ManageBeneficiaryView: View {
 
 // MARK: - 2FA Views
 
+// #228: Copyable TOTP secret with auto-clear clipboard and one-time security warning.
+private struct TOTPSecretCopyView: View {
+    let secret: String
+    @State private var showCopied = false
+    @State private var showWarning = false
+    private static let warnedKey = "com.ethosprotocol.totp_copy_warned"
+    private static let clearDelay: TimeInterval = 30
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Label(secret, systemImage: "key.fill")
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+            }
+            Button(action: copySecret) {
+                Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(showCopied ? .green : .blue)
+            }
+            .accessibilityLabel(showCopied ? "Copied" : "Copy TOTP secret")
+        }
+        .alert("Security Notice", isPresented: $showWarning) {
+            Button("I Understand", role: .cancel) {
+                UserDefaults.standard.set(true, forKey: Self.warnedKey)
+                performCopy()
+            }
+        } message: {
+            Text("Your 2FA secret will be copied to the clipboard and automatically cleared after 30 seconds. Clipboard managers and other apps may capture it before it is cleared. Treat this secret like a password.")
+        }
+    }
+
+    private func copySecret() {
+        if UserDefaults.standard.bool(forKey: Self.warnedKey) {
+            performCopy()
+        } else {
+            showWarning = true
+        }
+    }
+
+    private func performCopy() {
+        UIPasteboard.general.string = secret
+        showCopied = true
+        // #228: Auto-clear the clipboard after 30 seconds.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearDelay) {
+            if UIPasteboard.general.string == self.secret {
+                UIPasteboard.general.string = ""
+            }
+            showCopied = false
+        }
+    }
+}
+
 struct TwoFactorSetupView: View {
     let vaultID: String
     @Environment(\.dismiss) var dismiss
@@ -1092,6 +1145,59 @@ struct TwoFactorSetupView: View {
     }
 }
 
+// #228: Copyable TOTP secret with auto-clear clipboard and one-time security warning.
+private struct TOTPSecretCopyView: View {
+    let secret: String
+    @State private var showCopied = false
+    @State private var showWarning = false
+    private static let warnedKey = "com.ethosprotocol.totp_copy_warned"
+    private static let clearDelay: TimeInterval = 30
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Label(secret, systemImage: "key.fill")
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+            }
+            Button(action: copySecret) {
+                Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                    .font(.caption)
+                    .foregroundStyle(showCopied ? .green : .blue)
+            }
+            .accessibilityLabel(showCopied ? "Copied" : "Copy TOTP secret")
+        }
+        .alert("Security Notice", isPresented: $showWarning) {
+            Button("I Understand", role: .cancel) {
+                UserDefaults.standard.set(true, forKey: Self.warnedKey)
+                performCopy()
+            }
+        } message: {
+            Text("Your 2FA secret will be copied to the clipboard and automatically cleared after 30 seconds. Clipboard managers and other apps may capture it before it is cleared. Treat this secret like a password.")
+        }
+    }
+
+    private func copySecret() {
+        if UserDefaults.standard.bool(forKey: Self.warnedKey) {
+            performCopy()
+        } else {
+            showWarning = true
+        }
+    }
+
+    private func performCopy() {
+        UIPasteboard.general.string = secret
+        showCopied = true
+        // #228: Auto-clear the clipboard after 30 seconds.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearDelay) {
+            if UIPasteboard.general.string == self.secret {
+                UIPasteboard.general.string = ""
+            }
+            showCopied = false
+        }
+    }
+}
+
 struct TwoFactorVerifyView: View {
     let vaultID: String
     let method: TwoFactorMethod
@@ -1125,11 +1231,7 @@ struct TwoFactorVerifyView: View {
                     Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
                     Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     if let secret {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            Label(secret, systemImage: "key.fill")
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                        }
+                        TOTPSecretCopyView(secret: secret)
                     }
                 } else if method == .totp {
                     Text("Enter the 6-digit code from your authenticator app.").foregroundStyle(.secondary)
@@ -1145,6 +1247,14 @@ struct TwoFactorVerifyView: View {
                 .multilineTextAlignment(.center)
                 .font(.title2)
                 .disabled(rateLimiter.isBlocked)
+                // #230: Positional accessibility label so VoiceOver announces entry progress
+                // (e.g. "3 of 6 digits entered") rather than just the placeholder text.
+                .accessibilityLabel("OTP code field")
+                .accessibilityValue(otp.isEmpty ? "empty" : "\(otp.count) of 6 digits entered")
+                .accessibilityHint("Enter the 6-digit verification code")
+                .accessibilityLabel("OTP code field")
+                .accessibilityValue(otp.isEmpty ? "empty" : "\(otp.count) of 6 digits entered")
+                .accessibilityHint("Enter the 6-digit verification code")
 
             // #119: Show remaining cooldown when the user is locked out.
             if rateLimiter.isBlocked {
