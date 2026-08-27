@@ -352,7 +352,8 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    val labelUpdated: Boolean = false
 )
 
 private const val PAGE_SIZE = 20
@@ -526,6 +527,23 @@ class VaultViewModel @Inject constructor(
         _state.update { it.copy(beneficiaryUpdated = false) }
     }
 
+    // #218: sets or clears (via label = null) a vault's display label.
+    fun updateLabel(vaultId: String, label: String?) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null, labelUpdated = false) }
+        when (val result = apiClient.updateVaultLabel(vaultId, label)) {
+            is ApiResult.Success -> {
+                _state.update { it.copy(isLoading = false, labelUpdated = true) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearLabelUpdated() {
+        _state.update { it.copy(labelUpdated = false) }
+    }
+
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {
         val req = CreateVaultRequest(beneficiary, intervalDays * 86_400L)
         when (val result = apiClient.createVault(req)) {
@@ -676,5 +694,62 @@ class WithdrawViewModel @Inject constructor(
         val stroops = value * 10_000_000.0
         if (stroops > Long.MAX_VALUE.toDouble()) return null
         return stroops.toLong()
+    }
+}
+
+// #217: vault activity history — paginated the same way VaultViewModel.loadMore()
+// is, reusing ApiClient's cursor/limit convention for GET /vaults/{id}/history.
+data class VaultHistoryUiState(
+    val events: List<com.ethosprotocol.models.VaultHistoryEvent> = emptyList(),
+    val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val hasMore: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class VaultHistoryViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(VaultHistoryUiState())
+    val state = _state.asStateFlow()
+
+    private var nextCursor: String? = null
+
+    fun load(vaultId: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.getVaultHistory(vaultId)) {
+            is ApiResult.Success -> {
+                nextCursor = result.data.nextCursor
+                _state.update {
+                    it.copy(events = result.data.events, isLoading = false, hasMore = result.data.hasMore)
+                }
+            }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+        }
+    }
+
+    fun loadMore(vaultId: String) {
+        val cursor = nextCursor ?: return
+        if (_state.value.isLoadingMore) return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingMore = true) }
+            when (val result = apiClient.getVaultHistory(vaultId, after = cursor)) {
+                is ApiResult.Success -> {
+                    nextCursor = result.data.nextCursor
+                    _state.update {
+                        it.copy(
+                            events = it.events + result.data.events,
+                            isLoadingMore = false,
+                            hasMore = result.data.hasMore
+                        )
+                    }
+                }
+                ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoadingMore = false, error = "No network") }
+                is ApiResult.Error -> _state.update { it.copy(isLoadingMore = false, error = result.message) }
+            }
+        }
     }
 }

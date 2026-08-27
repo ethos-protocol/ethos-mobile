@@ -48,12 +48,209 @@ final class VaultModelTests: XCTestCase {
         XCTAssertEqual(vault.balance, 50_000_000)
     }
 
+    // #218: display name prefers the label, falls back to a truncated ID.
+    func test_displayName_withLabel_returnsLabel() {
+        let vault = makeVault(label: "Emergency Fund")
+        XCTAssertEqual(vault.displayName, "Emergency Fund")
+    }
+
+    func test_displayName_withoutLabel_returnsTruncatedID() {
+        let vault = makeVault(id: "vault-1234567890abcdef")
+        XCTAssertEqual(vault.displayName, "vault-123456")
+    }
+
+    func test_vaultDecoding_labelAbsent_decodesToNil() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 50000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertNil(vault.label)
+    }
+
+    func test_vaultDecoding_labelPresent_decodesValue() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 50000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active",
+          "label": "College Fund"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertEqual(vault.label, "College Fund")
+    }
+
     // MARK: - Helpers
 
-    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil) -> Vault {
-        Vault(id: "v1", owner: "GABC", beneficiary: "GXYZ",
+    private func makeVault(id: String = "v1", balance: Int64 = 0, ttlRemaining: UInt64? = nil, label: String? = nil) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ",
               balance: balance, checkInInterval: 2_592_000,
-              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active)
+              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active,
+              label: label)
+    }
+}
+
+// MARK: - #219 Vault Search/Filter Tests
+
+final class VaultListFilteringTests: XCTestCase {
+    private func makeVault(id: String, status: Vault.VaultStatus = .active,
+                            label: String? = nil, ttlRemaining: UInt64? = 172_800) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: 0,
+              checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: ttlRemaining,
+              status: status, label: label)
+    }
+
+    func test_filter_blankSearch_allStatus_returnsEverything() {
+        let vaults = [makeVault(id: "vault-a"), makeVault(id: "vault-b")]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .all)
+        XCTAssertEqual(result.count, 2)
+    }
+
+    func test_filter_searchByLabel_matchesCaseInsensitively() {
+        let vaults = [
+            makeVault(id: "vault-a", label: "Emergency Fund"),
+            makeVault(id: "vault-b", label: "College Fund"),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "emergency", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["vault-a"])
+    }
+
+    func test_filter_searchByID_matchesWhenNoLabel() {
+        let vaults = [makeVault(id: "vault-abc123"), makeVault(id: "vault-xyz789")]
+        let result = VaultListFiltering.filter(vaults, searchText: "abc123", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["vault-abc123"])
+    }
+
+    func test_filter_searchWithWhitespace_isTrimmed() {
+        let vaults = [makeVault(id: "vault-a", label: "Fund")]
+        let result = VaultListFiltering.filter(vaults, searchText: "  fund  ", statusFilter: .all)
+        XCTAssertEqual(result.count, 1)
+    }
+
+    func test_filter_statusActive_excludesOtherStatuses() {
+        let vaults = [
+            makeVault(id: "a", status: .active),
+            makeVault(id: "b", status: .expired),
+            makeVault(id: "c", status: .released),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .active)
+        XCTAssertEqual(result.map(\.id), ["a"])
+    }
+
+    func test_filter_statusExpired_excludesActive() {
+        let vaults = [makeVault(id: "a", status: .active), makeVault(id: "b", status: .expired)]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .expired)
+        XCTAssertEqual(result.map(\.id), ["b"])
+    }
+
+    func test_filter_statusExpiringSoon_requiresActiveAndUnder24h() {
+        let vaults = [
+            makeVault(id: "soon", status: .active, ttlRemaining: 3_600),
+            makeVault(id: "later", status: .active, ttlRemaining: 172_800),
+            makeVault(id: "expired-and-soon-ttl", status: .expired, ttlRemaining: 3_600),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .expiringSoon)
+        XCTAssertEqual(result.map(\.id), ["soon"])
+    }
+
+    func test_filter_combinesSearchAndStatus() {
+        let vaults = [
+            makeVault(id: "vault-a", status: .active, label: "Fund"),
+            makeVault(id: "vault-b", status: .expired, label: "Fund"),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "fund", statusFilter: .active)
+        XCTAssertEqual(result.map(\.id), ["vault-a"])
+    }
+
+    func test_filter_worksAcrossAlreadyFetchedPaginatedResults() {
+        // Simulates vaults accumulated from multiple pages via loadAll() — the
+        // filter is purely local, so page boundaries are irrelevant to it.
+        let page1 = [makeVault(id: "p1-a"), makeVault(id: "p1-b", label: "Target")]
+        let page2 = [makeVault(id: "p2-a"), makeVault(id: "p2-b")]
+        let accumulated = page1 + page2
+        let result = VaultListFiltering.filter(accumulated, searchText: "target", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["p1-b"])
+    }
+}
+
+// MARK: - #217 Vault History Tests
+
+final class VaultHistoryEventTests: XCTestCase {
+    private func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    func test_decode_checkInEvent() throws {
+        let json = """
+        { "event_type": "check_in", "timestamp": "2026-04-01T00:00:00Z" }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .checkIn)
+        XCTAssertNil(event.amount)
+        XCTAssertNil(event.beneficiary)
+        XCTAssertEqual(event.displayTitle, "Checked In")
+    }
+
+    func test_decode_depositEvent_withAmount() throws {
+        let json = """
+        { "event_type": "deposit", "timestamp": "2026-04-01T00:00:00Z", "amount": 50000000 }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .deposit)
+        XCTAssertEqual(event.amount, 50_000_000)
+        XCTAssertEqual(event.displayTitle, "Deposit")
+    }
+
+    func test_decode_beneficiaryChangedEvent_withNewBeneficiary() throws {
+        let json = """
+        { "event_type": "beneficiary_changed", "timestamp": "2026-04-01T00:00:00Z", "beneficiary": "GNEW123" }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .beneficiaryChanged)
+        XCTAssertEqual(event.beneficiary, "GNEW123")
+        XCTAssertEqual(event.displayTitle, "Beneficiary Changed")
+    }
+
+    func test_decode_arrayOfEvents() throws {
+        let json = """
+        [
+          { "event_type": "created", "timestamp": "2026-01-01T00:00:00Z" },
+          { "event_type": "withdrawal", "timestamp": "2026-02-01T00:00:00Z", "amount": 1000000 }
+        ]
+        """.data(using: .utf8)!
+        let events = try decoder().decode([VaultHistoryEvent].self, from: json)
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].eventType, .created)
+        XCTAssertEqual(events[1].eventType, .withdrawal)
+    }
+
+    func test_id_isDistinctForDifferentTimestamps() {
+        let a = VaultHistoryEvent(eventType: .checkIn, timestamp: Date(timeIntervalSince1970: 0), amount: nil, beneficiary: nil)
+        let b = VaultHistoryEvent(eventType: .checkIn, timestamp: Date(timeIntervalSince1970: 1), amount: nil, beneficiary: nil)
+        XCTAssertNotEqual(a.id, b.id)
     }
 }
 
@@ -1417,6 +1614,36 @@ final class VaultAmountTests: XCTestCase {
 
     func test_hasSufficientBalance_zeroAmount_returnsFalse() {
         XCTAssertFalse(VaultAmount.hasSufficientBalance(amount: 0, vaultBalance: 10_000_000))
+    }
+
+    // MARK: - #216 Large Withdrawal Threshold Tests
+
+    func test_isLargeWithdrawal_belowThreshold_returnsFalse() {
+        // 70% of balance, 80% threshold.
+        XCTAssertFalse(VaultAmount.isLargeWithdrawal(amount: 7_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_atThreshold_returnsTrue() {
+        // Exactly 80% of balance, 80% threshold — inclusive.
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 8_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_aboveThreshold_returnsTrue() {
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 9_500_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_fullBalance_returnsTrue() {
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 10_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_zeroBalance_returnsFalse() {
+        XCTAssertFalse(VaultAmount.isLargeWithdrawal(amount: 0, vaultBalance: 0, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_respectsConfiguredThreshold() {
+        // Same 70% amount, but a lower configured threshold now catches it —
+        // proves the threshold is a parameter, not hardcoded in the check.
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 7_000_000, vaultBalance: 10_000_000, thresholdBps: 5_000))
     }
 }
 

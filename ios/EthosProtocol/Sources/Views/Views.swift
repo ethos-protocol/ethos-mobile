@@ -328,9 +328,19 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
+    // #219: search/filter over the vaults already fetched into vaultStore.vaults.
+    @State private var searchText = ""
+    @State private var statusFilter: VaultListFilter = .all
     // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
     // block access to the app, consistent with the "secure digital inheritance" posture.
     @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
+
+    /// #219: filtered view over every vault page already fetched — search and
+    /// status filter both apply client-side, so they work across paginated
+    /// results without an extra fetch.
+    private var filteredVaults: [Vault] {
+        VaultListFiltering.filter(vaultStore.vaults, searchText: searchText, statusFilter: statusFilter)
+    }
 
     var body: some View {
         NavigationStack {
@@ -344,21 +354,29 @@ struct VaultListView: View {
                 } else if vaultStore.vaults.isEmpty {
                     ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
                 } else {
-                    List {
-                        ForEach(vaultStore.vaults) { vault in
-                            NavigationLink(destination: VaultDetailView(vault: vault)) {
-                                VaultRowView(vault: vault)
+                    VaultStatusFilterRow(selection: $statusFilter)
+                    if filteredVaults.isEmpty {
+                        ContentUnavailableView("No Matching Vaults", systemImage: "magnifyingglass", description: Text("Try a different search or filter."))
+                    } else {
+                        List {
+                            ForEach(filteredVaults) { vault in
+                                NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                    VaultRowView(vault: vault)
+                                }
+                            }
+                            // Load More only makes sense against the unfiltered list — a
+                            // filtered view already searched everything fetched so far.
+                            if vaultStore.hasMorePages && searchText.isEmpty && statusFilter == .all {
+                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                    Task { await vaultStore.loadMore() }
+                                }
                             }
                         }
-                        if vaultStore.hasMorePages {
-                            LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
-                                Task { await vaultStore.loadMore() }
-                            }
-                        }
+                        .refreshable { await vaultStore.load() }
                     }
-                    .refreshable { await vaultStore.load() }
                 }
             }
+            .searchable(text: $searchText, prompt: "Search by label or ID")
             .navigationTitle("My Vaults")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -422,6 +440,31 @@ struct VaultListView: View {
     }
 }
 
+/// Status filter chip row for the vault list (#219).
+struct VaultStatusFilterRow: View {
+    @Binding var selection: VaultListFilter
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(VaultListFilter.allCases) { filter in
+                    Button(action: { selection = filter }) {
+                        Text(filter.label)
+                            .font(.subheadline)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(selection == filter ? Color.accentColor : Color.secondary.opacity(0.15))
+                            .foregroundStyle(selection == filter ? Color.white : Color.primary)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+        }
+    }
+}
+
 struct StatusBannerView: View {
     let text: String
     let systemImage: String
@@ -465,7 +508,16 @@ struct VaultRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                CopyableIDView(fullID: vault.id, displayLength: 12)
+                // #218: prefer the user-set label; fall back to the truncated
+                // (but still copyable) ID when none is set.
+                if let label = vault.label {
+                    Text(label)
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                } else {
+                    CopyableIDView(fullID: vault.id, displayLength: 12)
+                }
                 Spacer()
                 StatusBadge(status: vault.status)
             }
@@ -525,12 +577,16 @@ struct VaultDetailView: View {
     @State private var showDeposit = false
     @State private var showWithdraw = false
     @State private var showManageBeneficiary = false
+    @State private var showRenameVault = false
     /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
     @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
         List {
             Section("Overview") {
+                if let label = vault.label {
+                    LabeledContent("Label", value: label)
+                }
                 LabeledContent("Balance", value: vault.formattedBalance)
                 LabeledContent("Status", value: vault.status.rawValue.capitalized)
                 HStack {
@@ -603,9 +659,15 @@ struct VaultDetailView: View {
                 Button(action: { showManageBeneficiary = true }) {
                     Label("Manage Beneficiary", systemImage: "person.2.fill")
                 }
+                Button(action: { showRenameVault = true }) {
+                    Label(vault.label == nil ? "Add Label" : "Rename Vault", systemImage: "pencil")
+                }
+                NavigationLink(destination: VaultHistoryView(vaultID: vault.id)) {
+                    Label("Activity History", systemImage: "clock.arrow.circlepath")
+                }
             }
         }
-        .navigationTitle("Vault")
+        .navigationTitle(vault.displayName)
         .navigationBarTitleDisplayMode(.inline)
         // `.task` auto-cancels when the view disappears, so this polling loop
         // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
@@ -637,6 +699,9 @@ struct VaultDetailView: View {
         }
         .sheet(isPresented: $showManageBeneficiary) {
             NavigationStack { ManageBeneficiaryView(vault: vault) }
+        }
+        .sheet(isPresented: $showRenameVault) {
+            NavigationStack { RenameVaultView(vault: vault) }
         }
     }
 
@@ -836,12 +901,22 @@ struct WithdrawView: View {
     @State private var amountText = ""
     @State private var isWithdrawing = false
     @State private var error: String?
+    // #216: extra confirmation gate for a large withdrawal — shown instead of
+    // withdrawing immediately when isLargeWithdrawal is true.
+    @State private var showLargeWithdrawalConfirmation = false
 
     private var amountStroops: Int64? { VaultAmount.parseStroops(amountText) }
 
     private var isAmountValid: Bool {
         guard let amount = amountStroops else { return false }
         return VaultAmount.hasSufficientBalance(amount: amount, vaultBalance: vault.balance)
+    }
+
+    private var isLargeWithdrawal: Bool {
+        guard let amount = amountStroops else { return false }
+        return VaultAmount.isLargeWithdrawal(
+            amount: amount, vaultBalance: vault.balance,
+            thresholdBps: WithdrawalThreshold.largeWithdrawalBps)
     }
 
     var body: some View {
@@ -854,6 +929,10 @@ struct WithdrawView: View {
                     .keyboardType(.decimalPad)
                 if let amount = amountStroops, amount > vault.balance {
                     Text("Amount exceeds available balance.").foregroundStyle(.red).font(.caption)
+                } else if isLargeWithdrawal {
+                    Label("This is a large withdrawal relative to the vault's balance.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
                 }
             }
             if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
@@ -862,7 +941,7 @@ struct WithdrawView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button(isWithdrawing ? "Withdrawing…" : "Withdraw") { withdraw() }
+                Button(isWithdrawing ? "Withdrawing…" : "Withdraw") { attemptWithdraw() }
                     .disabled(!isAmountValid || isWithdrawing)
             }
             ToolbarItem(placement: .cancellationAction) {
@@ -870,6 +949,26 @@ struct WithdrawView: View {
             }
         }
         .overlay { if isWithdrawing { ProgressView() } }
+        // #216: a large withdrawal needs an explicit extra tap before it proceeds,
+        // on top of the biometric gate every withdrawal already requires.
+        .confirmationDialog(
+            "Withdraw \(amountText.isEmpty ? "" : amountText) XLM?",
+            isPresented: $showLargeWithdrawalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Withdraw", role: .destructive) { withdraw() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This withdraws a large share of the vault's balance. This cannot be undone.")
+        }
+    }
+
+    private func attemptWithdraw() {
+        if isLargeWithdrawal {
+            showLargeWithdrawalConfirmation = true
+        } else {
+            withdraw()
+        }
     }
 
     private func withdraw() {
@@ -888,6 +987,154 @@ struct WithdrawView: View {
                 self.error = error.localizedDescription
             }
             isWithdrawing = false
+        }
+    }
+}
+
+// MARK: - Vault History (#217)
+
+struct VaultHistoryView: View {
+    let vaultID: String
+    @State private var events: [VaultHistoryEvent] = []
+    @State private var nextCursor: String?
+    @State private var isLoading = false
+    @State private var isLoadingMore = false
+    @State private var error: String?
+
+    private var hasMorePages: Bool { nextCursor != nil }
+
+    var body: some View {
+        Group {
+            if isLoading && events.isEmpty {
+                ProgressView("Loading history…")
+            } else if let error, events.isEmpty {
+                ErrorActionView(error: ErrorPresentation(message: error, showsRetry: true),
+                                retry: { Task { await load() } })
+            } else if events.isEmpty {
+                ContentUnavailableView("No Activity Yet", systemImage: "clock",
+                                        description: Text("Check-ins, deposits, and withdrawals will show up here."))
+            } else {
+                List {
+                    ForEach(events) { event in
+                        VaultHistoryRowView(event: event)
+                    }
+                    if hasMorePages {
+                        LoadMoreRow(isLoading: isLoadingMore) {
+                            Task { await loadMore() }
+                        }
+                    }
+                }
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("Activity")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        isLoading = true; error = nil
+        do {
+            let page = try await APIClient.shared.getVaultHistory(vaultID: vaultID)
+            events = page.events
+            nextCursor = page.nextCursor
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoading = false
+    }
+
+    private func loadMore() async {
+        guard !isLoadingMore, let cursor = nextCursor else { return }
+        isLoadingMore = true
+        do {
+            let page = try await APIClient.shared.getVaultHistory(vaultID: vaultID, cursor: cursor)
+            events += page.events
+            nextCursor = page.nextCursor
+        } catch {
+            self.error = error.localizedDescription
+        }
+        isLoadingMore = false
+    }
+}
+
+struct VaultHistoryRowView: View {
+    let event: VaultHistoryEvent
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(event.displayTitle).font(.headline).foregroundStyle(.primary)
+            if let amount = event.amount {
+                Text(String(format: "%.7f XLM", Double(amount) / 10_000_000))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            if let beneficiary = event.beneficiary {
+                Text("New beneficiary: \(beneficiary)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(event.timestamp, style: .date) + Text(" ") + Text(event.timestamp, style: .time)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Rename Vault (#218)
+
+struct RenameVaultView: View {
+    let vault: Vault
+    @EnvironmentObject var vaultStore: VaultStore
+    @Environment(\.dismiss) var dismiss
+    @State private var labelText: String
+    @State private var isUpdating = false
+    @State private var error: String?
+
+    init(vault: Vault) {
+        self.vault = vault
+        _labelText = State(initialValue: vault.label ?? "")
+    }
+
+    private var trimmedLabel: String {
+        labelText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        Form {
+            Section("Label") {
+                TextField("e.g. Emergency Fund", text: $labelText)
+                Text("Shown instead of the vault ID in your vault list. Leave blank to clear it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+        }
+        .navigationTitle(vault.label == nil ? "Add Label" : "Rename Vault")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(isUpdating ? "Saving…" : "Save") { save() }
+                    .disabled(isUpdating)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+
+    private func save() {
+        isUpdating = true; error = nil
+        let newLabel = trimmedLabel.isEmpty ? nil : trimmedLabel
+        Task {
+            await vaultStore.updateLabel(vault: vault, label: newLabel)
+            if let storeError = vaultStore.error {
+                error = storeError.message
+            } else {
+                dismiss()
+            }
+            isUpdating = false
         }
     }
 }

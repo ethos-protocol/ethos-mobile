@@ -1,9 +1,11 @@
 package com.ethosprotocol.ui.screens
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -206,6 +208,9 @@ fun VaultListScreen(
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
+    // #219: search/filter over the vaults already fetched into state.vaults.
+    var searchText by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf(com.ethosprotocol.models.VaultListFilter.ALL) }
 
     // #118: Non-blocking root warning. Shown once per session; does not block access.
     var showRootWarning by remember {
@@ -258,6 +263,11 @@ fun VaultListScreen(
     }
 
 
+    val filteredVaults = remember(state.vaults, searchText, statusFilter) {
+        com.ethosprotocol.models.filterVaults(state.vaults, searchText, statusFilter)
+    }
+    val isFiltering = searchText.isNotBlank() || statusFilter != com.ethosprotocol.models.VaultListFilter.ALL
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
@@ -274,6 +284,36 @@ fun VaultListScreen(
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
+                    Column(Modifier.fillMaxSize()) {
+                        OutlinedTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            label = { Text("Search by label or ID") },
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                                .testTag("vaultSearchField")
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            com.ethosprotocol.models.VaultListFilter.entries.forEach { filter ->
+                                FilterChip(
+                                    selected = statusFilter == filter,
+                                    onClick = { statusFilter = filter },
+                                    label = { Text(filter.label) }
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (filteredVaults.isEmpty()) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("No matching vaults. Try a different search or filter.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        } else {
                     // Ties the pull gesture to the same VaultViewModel.load() used for the initial
                     // fetch, so state.isLoading naturally drives the pull indicator too.
                     PullToRefreshBox(
@@ -292,14 +332,17 @@ fun VaultListScreen(
                                         modifier = Modifier.padding(16.dp))
                                 }
                             }
-                            items(state.vaults, key = { it.id }) { vault ->
+                            items(filteredVaults, key = { it.id }) { vault ->
                                 VaultCard(
                                     vault = vault,
                                     onClick = { onVaultClick(vault.id) },
                                     onCheckIn = { pendingCheckIn = vault },
+                                    onRename = { newLabel -> vm.updateLabel(vault.id, newLabel) },
                                 )
                             }
-                            if (state.hasMore) item {
+                            // Load More only makes sense against the unfiltered list — a
+                            // filtered view already searched everything fetched so far.
+                            if (state.hasMore && !isFiltering) item {
                                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                     if (state.isLoadingMore) {
                                         CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -308,6 +351,8 @@ fun VaultListScreen(
                                     }
                                 }
                             }
+                        }
+                    }
                         }
                     }
                 }
@@ -342,6 +387,41 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
         },
         confirmButton = {
             TextButton(onClick = onConfirm) { Text("Confirm") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+// #218: rename/label dialog, reachable from VaultCard's edit icon.
+@Composable
+private fun RenameVaultDialog(currentLabel: String?, onConfirm: (String?) -> Unit, onDismiss: () -> Unit) {
+    var labelText by remember { mutableStateOf(currentLabel ?: "") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (currentLabel == null) "Add Label" else "Rename Vault") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = labelText,
+                    onValueChange = { labelText = it },
+                    label = { Text("Label") },
+                    placeholder = { Text("e.g. Emergency Fund") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Shown instead of the vault ID in your vault list. Leave blank to clear it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val trimmed = labelText.trim()
+                onConfirm(trimmed.ifEmpty { null })
+            }) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -389,16 +469,31 @@ private fun VaultCard(
     onClick: () -> Unit,
     onCheckIn: () -> Unit,
     onDeposit: () -> Unit = {},
-    onWithdraw: () -> Unit = {}
+    onWithdraw: () -> Unit = {},
+    onRename: (String?) -> Unit = {}
 ) {
+    var showRenameDialog by remember { mutableStateOf(false) }
+    if (showRenameDialog) {
+        RenameVaultDialog(
+            currentLabel = vault.label,
+            onConfirm = { newLabel -> showRenameDialog = false; onRename(newLabel) },
+            onDismiss = { showRenameDialog = false }
+        )
+    }
+
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
             // At the largest font scale a full-length id + chip in one row will clip rather than
             // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
+                // #218: prefer the user-set label; fall back to the truncated ID.
+                Text(vault.displayName, style = MaterialTheme.typography.titleMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
+                IconButton(onClick = { showRenameDialog = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = if (vault.label == null) "Add label" else "Rename vault",
+                        modifier = Modifier.size(16.dp))
+                }
                 StatusChip(vault.status)
             }
             Spacer(Modifier.height(4.dp))
@@ -1050,22 +1145,54 @@ fun WithdrawScreen(
         "%.7f XLM".format(vaultBalanceStroops / 10_000_000.0)
     }
 
+    val amountStroops = (amountInput.toDoubleOrNull())?.let { (it * 10_000_000.0).toLong() }
+    val isLarge = amountStroops?.let {
+        com.ethosprotocol.models.isLargeWithdrawal(
+            it, vaultBalanceStroops, com.ethosprotocol.models.WithdrawalThreshold.LARGE_WITHDRAWAL_BPS
+        )
+    } ?: false
+    var showLargeWithdrawalConfirmation by remember { mutableStateOf(false) }
+
+    fun startBiometricWithdraw() {
+        biometricError = null
+        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+            title = "Confirm Withdrawal",
+            subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
+            onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
+            onError = { err -> biometricError = err }
+        )
+    }
+
+    // #216: a large withdrawal needs an explicit extra tap before the biometric
+    // gate even runs, on top of the biometric confirmation every withdrawal
+    // already requires.
+    if (showLargeWithdrawalConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLargeWithdrawalConfirmation = false },
+            title = { Text("Withdraw $amountInput XLM?") },
+            text = { Text("This withdraws a large share of the vault's balance. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLargeWithdrawalConfirmation = false
+                    startBiometricWithdraw()
+                }) { Text("Withdraw") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLargeWithdrawalConfirmation = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     WithdrawScreenContent(
         vaultId = vaultId,
         availableBalance = availableBalance,
         amountInput = amountInput,
         isLoading = state.isLoading,
         error = state.error ?: biometricError,
+        isLargeWithdrawal = isLarge,
         onAmountChange = { amountInput = it },
         onWithdraw = {
-            // Biometric gate is required before dispatching a withdrawal.
-            biometricError = null
-            BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                title = "Confirm Withdrawal",
-                subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
-                onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
-                onError = { err -> biometricError = err }
-            )
+            if (isLarge) showLargeWithdrawalConfirmation = true else startBiometricWithdraw()
         },
         onDone = onDone
     )
@@ -1082,6 +1209,7 @@ fun WithdrawScreenContent(
     amountInput: String,
     isLoading: Boolean,
     error: String?,
+    isLargeWithdrawal: Boolean = false,
     onAmountChange: (String) -> Unit,
     onWithdraw: () -> Unit,
     onDone: () -> Unit
@@ -1137,6 +1265,12 @@ fun WithdrawScreenContent(
                 Text(
                     "Enter a valid positive XLM amount.",
                     color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else if (isLargeWithdrawal) {
+                Text(
+                    "This is a large withdrawal relative to the vault's balance.",
+                    color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1493,5 +1627,88 @@ fun VaultDetailScreen(
                 }
             }
         }
+    }
+}
+
+// MARK: - Vault History (#217)
+
+@Composable
+fun VaultHistoryScreen(
+    vaultId: String,
+    onBack: () -> Unit,
+    vm: com.ethosprotocol.ui.VaultHistoryViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    LaunchedEffect(vaultId) { vm.load(vaultId) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Activity") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            when {
+                state.isLoading && state.events.isEmpty() ->
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                state.error != null && state.events.isEmpty() ->
+                    Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(state.error ?: "", color = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = { vm.load(vaultId) }) { Text("Retry") }
+                    }
+                state.events.isEmpty() ->
+                    Text("No activity yet. Check-ins, deposits, and withdrawals will show up here.",
+                        Modifier.align(Alignment.Center).padding(32.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> {
+                    LazyColumn {
+                        items(state.events) { event ->
+                            VaultHistoryRow(event)
+                            HorizontalDivider()
+                        }
+                        if (state.hasMore) item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (state.isLoadingMore) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                } else {
+                                    OutlinedButton(onClick = { vm.loadMore(vaultId) }) { Text("Load more") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VaultHistoryRow(event: com.ethosprotocol.models.VaultHistoryEvent) {
+    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+        Text(event.displayTitle, style = MaterialTheme.typography.titleSmall)
+        event.amount?.let { amount ->
+            Text(
+                "%.7f XLM".format(amount / 10_000_000.0),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        event.beneficiary?.let { beneficiary ->
+            Text(
+                "New beneficiary: $beneficiary",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            event.timestamp,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }

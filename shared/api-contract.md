@@ -63,7 +63,9 @@ The server must:
 | POST | `/vaults/{id}/deposit` | Deposit funds |
 | POST | `/vaults/{id}/withdraw` | Withdraw funds |
 | POST | `/vaults/{id}/beneficiary` | Update vault beneficiary (owner-only) |
+| POST | `/vaults/{id}/label` | Set or clear vault display label (owner-only, #218) |
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
+| GET | `/vaults/{id}/history` | List vault activity history (paginated — see §Pagination) (#217) |
 | POST | `/vaults/{id}/accept` | Beneficiary accepts vault (token required — see §Beneficiary Acceptance) |
 
 #### List Pagination (`GET /vaults`)
@@ -87,6 +89,12 @@ Response headers:
 
 Cursors are opaque — clients must not parse or construct them, only round-trip
 the value returned by `X-Next-Cursor` back as the `cursor` query param.
+
+#### History Pagination (`GET /vaults/{id}/history`, #217)
+
+Reuses the exact same `cursor`/`limit` query params and `X-Next-Cursor` response
+header described above for `GET /vaults` — the body is a bare JSON array of
+`VaultHistoryEvent` (see §Models), newest first.
 
 ### Notifications
 | Method | Path | Description |
@@ -294,9 +302,13 @@ GET /vaults?limit={n}&after={cursor}
   "check_in_interval": 0,
   "last_check_in": "ISO8601",
   "ttl_remaining": 0,
-  "status": "active|expired|released|paused"
+  "status": "active|expired|released|paused",
+  "label": "string | null"
 }
 ```
+`label` (#218) is an optional, owner-set display name — `null` until the owner sets one via
+`POST /vaults/{id}/label`. Clients fall back to a truncated `id` when it's absent (see
+`VaultRowView`/`VaultCard`).
 
 ### VaultPage (#112 — paginated list response)
 ```json
@@ -306,6 +318,19 @@ GET /vaults?limit={n}&after={cursor}
   "has_more": false
 }
 ```
+
+### VaultHistoryEvent (#217)
+```json
+{
+  "event_type": "check_in|deposit|withdrawal|beneficiary_changed|created",
+  "timestamp": "ISO8601",
+  "amount": 0,
+  "beneficiary": "string | null"
+}
+```
+One entry per past vault action, newest first (see §History Pagination). `amount` is
+present for `deposit`/`withdrawal` (stroops), `null` otherwise. `beneficiary` is present
+only for `beneficiary_changed` (the new beneficiary address), `null` otherwise.
 
 ### AuthChallenge
 ```json
@@ -363,6 +388,13 @@ afterwards to authenticate with the newly linked passkey.
 { "beneficiary": "string" }
 ```
 Response: the updated `Vault` object (see above), reflecting the new `beneficiary` value.
+
+### VaultLabelUpdateRequest (#218)
+```json
+{ "label": "string | null" }
+```
+`null` (or omitting the field) clears an existing label back to unset. Response: the
+updated `Vault` object, reflecting the new `label` value.
 
 ### BeneficiaryAcceptRequest (#109)
 ```json

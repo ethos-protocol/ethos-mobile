@@ -234,6 +234,15 @@ public final class APIClient {
         try await post(path: "/vaults/\(vaultID)/beneficiary", body: ["beneficiary": newBeneficiary])
     }
 
+    private struct VaultLabelUpdateRequest: Encodable {
+        let label: String?
+    }
+
+    /// Sets or clears (via `label: nil`) a vault's display label (#218).
+    func updateVaultLabel(vaultID: String, label: String?) async throws -> Vault {
+        try await post(path: "/vaults/\(vaultID)/label", body: VaultLabelUpdateRequest(label: label))
+    }
+
     func acceptBeneficiary(vaultID: String, token: String) async throws {
         let body = ["vault_id": vaultID, "token": token]
         let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/accept", body: body)
@@ -242,6 +251,17 @@ public final class APIClient {
     func getTTL(vaultID: String) async throws -> UInt64 {
         let result: [String: UInt64] = try await get(path: "/vaults/\(vaultID)/ttl")
         return result["ttl_remaining"] ?? 0
+    }
+
+    /// Fetches a page of vault activity history (#217). Reuses the exact
+    /// cursor/limit/X-Next-Cursor pagination pattern as `listVaults`.
+    func getVaultHistory(vaultID: String, cursor: String? = nil, limit: Int = APIClient.defaultVaultPageSize) async throws -> VaultHistoryPage {
+        var req = request(path: "/vaults/\(vaultID)/history", queryItems: Self.vaultsQueryItems(cursor: cursor, limit: limit))
+        req.httpMethod = "GET"
+        let (data, response) = try await execute(req)
+        let events: [VaultHistoryEvent] = try decode(data, path: "/vaults/\(vaultID)/history")
+        let nextCursor = Self.parseNextCursor(fromHeaderValue: response.value(forHTTPHeaderField: Self.nextCursorHeader))
+        return VaultHistoryPage(events: events, nextCursor: nextCursor)
     }
 
     // MARK: - 2FA

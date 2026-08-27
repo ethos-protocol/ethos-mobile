@@ -152,6 +152,20 @@ class ApiClient(
     suspend fun updateBeneficiary(vaultId: String, newBeneficiary: String): ApiResult<Vault> =
         post("/vaults/$vaultId/beneficiary", BeneficiaryUpdateRequest(newBeneficiary))
 
+    // #218: sets or clears (via label = null) a vault's display label.
+    suspend fun updateVaultLabel(vaultId: String, label: String?): ApiResult<Vault> =
+        post("/vaults/$vaultId/label", VaultLabelUpdateRequest(label))
+
+    // #217: paginated vault activity history. Mirrors listVaults(limit, after)'s
+    // own cursor convention for consistency within this client.
+    suspend fun getVaultHistory(vaultId: String, limit: Int = 20, after: String? = null): ApiResult<VaultHistoryPage> {
+        val path = buildString {
+            append("/vaults/$vaultId/history?limit=$limit")
+            if (after != null) append("&after=$after")
+        }
+        return get(path)
+    }
+
     // 2FA
     suspend fun get2FAStatus(vaultId: String): ApiResult<TwoFactorStatus> = get("/vaults/$vaultId/2fa/status")
     suspend fun enable2FA(vaultId: String, req: Enable2FARequest): ApiResult<Enable2FAResponse> =

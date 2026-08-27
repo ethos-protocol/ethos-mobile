@@ -383,6 +383,18 @@ final class VaultStore: ObservableObject {
         }
     }
 
+    /// Sets or clears (via `label: nil`) a vault's display label (#218), then
+    /// reloads the vault list so the new label shows up in VaultRowView.
+    func updateLabel(vault: Vault, label: String?) async {
+        error = nil
+        do {
+            _ = try await APIClient.shared.updateVaultLabel(vaultID: vault.id, label: label)
+            if !Task.isCancelled { await load() }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+    }
+
     /// Replaces the vault matching `updated.id` in place (preserving list order), or
     /// appends it if it isn't currently in `vaults` — e.g. a vault created from another
     /// device that this session hasn't loaded yet.
