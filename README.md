@@ -66,6 +66,14 @@ mobile/
 - `OfflineCache` stores last successful GET responses keyed by URL (SHA-256 filename)
 - On network unavailable: cached data served transparently; mutations show "offline" error
 - iOS: `CryptoKit.SHA256` for cache keys; Android: `MessageDigest("SHA-256")`
+- **Offline check-in queue**: a check-in made while offline is queued for retry rather
+  than just failing.
+  - iOS: `PendingCheckInStore` (disk-backed JSON) is the sole insertion point; `CheckInSyncTask`
+    drains it via a `BGProcessingTask` once connectivity returns. This is the only check-in
+    queue implementation — an earlier duplicate (`CheckInQueue`/`CheckInSyncService`) was
+    removed in 8d8d59d; see `PendingCheckInStoreTests`/`CheckInSyncTaskTests` for the
+    regression guard.
+  - Android: `PendingActionDao`/`PendingActionDatabase` (Room), drained by `PendingActionSyncWorker` (WorkManager)
 
 ### State Management
 - **iOS**: `@StateObject` / `ObservableObject` stores (`AuthStore`, `VaultStore`) injected via SwiftUI environment
