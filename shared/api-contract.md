@@ -377,6 +377,13 @@ No request body. Requires the current (possibly near-expiry, not-yet-expired) `A
 Bearer <jwt>` header. Response: `AuthToken`. `401` if the current token is no longer valid — the
 client falls back to its normal delete-and-reauth behavior in that case.
 
+**Refresh margin (#209):** both clients treat a token as due for proactive refresh once it is
+within **60 seconds** of `expires_at`. iOS (`AuthStore.refreshLeadTime`) schedules a one-shot
+timer for `expires_at - 60s` the moment a token is stored, independent of whether a request is
+in flight. Android (`TokenProvider.isNearExpiry`, default `threshold = 60s`) additionally runs a
+periodic check (`AuthViewModel`'s scheduled-refresh loop, every 30s while signed in) so a token
+is refreshed even if the app is foregrounded but idle, not just before the next API call.
+
 ### RecoverAccessLinkRequest
 ```json
 {

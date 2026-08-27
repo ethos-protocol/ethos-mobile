@@ -72,6 +72,38 @@ class AuthViewModel @Inject constructor(
     private var consecutiveFailures = 0
     private var cooldownJob: Job? = null
 
+    // #209: proactive token refresh, scheduled independently of request activity — ApiClient's
+    // ensureFreshToken() already covers "refresh before the next API call", but a foregrounded,
+    // idle app makes no calls and would otherwise sit on a token until it's rejected. Polling
+    // (rather than a one-shot timer at the exact expiry, as AuthStore.swift does) is used because
+    // TokenProvider only exposes isNearExpiry(), not the raw expiry instant.
+    private var refreshJob: Job? = null
+
+    init {
+        if (tokenProvider.token != null) startScheduledRefresh()
+    }
+
+    private fun startScheduledRefresh() {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            while (true) {
+                delay(REFRESH_POLL_INTERVAL_MILLIS)
+                if (tokenProvider.token == null) return@launch
+                if (!tokenProvider.isNearExpiry()) continue
+                when (val result = apiClient.refreshToken()) {
+                    is ApiResult.Success -> tokenProvider.setSession(result.data)
+                    is ApiResult.Error -> if (result.code == 401) {
+                        // ApiClient already cleared the stored token on the 401; reflect that
+                        // here so the UI falls back to full re-authentication.
+                        _state.update { it.copy(isAuthenticated = false) }
+                        return@launch
+                    }
+                    ApiResult.NetworkUnavailable -> Unit // transient — retry on the next tick
+                }
+            }
+        }
+    }
+
     /** Called from MainActivity.onStop — records when the app left the foreground. */
     fun onAppBackgrounded(now: Long = System.currentTimeMillis()) {
         if (_state.value.isAuthenticated) backgroundedAtMillis = now
@@ -98,6 +130,7 @@ class AuthViewModel @Inject constructor(
                 consecutiveFailures = 0
                 cooldownJob?.cancel()
                 _state.update { it.copy(isAuthenticated = true, isLoading = false, cooldownRemainingSeconds = 0) }
+                startScheduledRefresh()
             }
             .onFailure { e -> handleAuthFailure(e) }
     }
@@ -123,11 +156,16 @@ class AuthViewModel @Inject constructor(
         // PasskeyService.register already stores the session token returned by the
         // backend, so there's no need to run a second sign-in ceremony here.
         passkeyService.register(activity, username)
-            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
+            .onSuccess {
+                _state.update { it.copy(isAuthenticated = true, isLoading = false) }
+                startScheduledRefresh()
+            }
             .onFailure { e -> handleAuthFailure(e) }
     }
 
     fun signOut() = viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = null
         // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
         // tokenProvider.token when building the request, so clearing first would send
         // the delete unauthenticated. Best-effort: sign-out proceeds locally either way.
@@ -157,6 +195,9 @@ class AuthViewModel @Inject constructor(
         private const val COOLDOWN_FAILURE_THRESHOLD = 3
         private const val COOLDOWN_BASE_SECONDS = 2
         private const val COOLDOWN_MAX_SECONDS = 60
+        // #209: matches TokenProvider.isNearExpiry's default 60s threshold — checking every
+        // 30s guarantees at least one check lands inside that window before expiry.
+        private const val REFRESH_POLL_INTERVAL_MILLIS = 30_000L
     }
 }
 

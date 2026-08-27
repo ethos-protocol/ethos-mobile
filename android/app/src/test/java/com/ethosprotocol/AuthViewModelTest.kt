@@ -230,6 +230,79 @@ class AuthViewModelTest {
         assertEquals(0, vm.state.value.cooldownRemainingSeconds)
     }
 
+    // MARK: - #209 Scheduled proactive token refresh
+
+    @Test
+    fun `scheduled refresh fires while signed in and near expiry, keeping the user authenticated`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        val refreshedToken = com.ethosprotocol.models.AuthToken(token = "new-token", expiresAt = "2099-01-01T00:00:00Z")
+        coEvery { apiClient.refreshToken() } returns ApiResult.Success(refreshedToken)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(atLeast = 1) { apiClient.refreshToken() }
+        verify { tokenProvider.setSession(refreshedToken) }
+        assertTrue(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh rejected with 401 signs the user out`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.Error("Unauthorized", 401)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh transient failure does not sign the user out`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.NetworkUnavailable
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        assertTrue(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh does not fire when token is not near expiry`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns false
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(exactly = 0) { apiClient.refreshToken() }
+    }
+
+    @Test
+    fun `signOut cancels the scheduled refresh loop`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.Success(
+            com.ethosprotocol.models.AuthToken(token = "new-token", expiresAt = "2099-01-01T00:00:00Z")
+        )
+
+        vm.signIn(activity)
+        vm.signOut()
+        every { tokenProvider.token } returns null
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(exactly = 0) { apiClient.refreshToken() }
+    }
+
     @Test
     fun `signOut clears cooldown state`() = runTest {
         coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))
