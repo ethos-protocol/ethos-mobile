@@ -26,6 +26,7 @@ import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultAssociationStore
 import com.ethosprotocol.services.VaultEventSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -57,7 +58,9 @@ class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
     private val notificationHelper: NotificationHelper,
-    private val pendingActionDao: PendingActionDao
+    private val pendingActionDao: PendingActionDao,
+    // #200: cross-device sync of non-secret vault-to-passkey-credential associations.
+    private val vaultAssociationStore: VaultAssociationStore
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -138,6 +141,9 @@ class AuthViewModel @Inject constructor(
         // should not persist or sync after sign-out (they belong to the previous user's vaults).
         pendingActionDao.deleteAll()
         notificationHelper.cancelQueuedActions()
+        // #200: local vault-to-credential associations belong to the previous session;
+        // the synced copy is left alone so another signed-in device isn't affected.
+        vaultAssociationStore.clearAll()
         backgroundedAtMillis = null
         consecutiveFailures = 0
         cooldownJob?.cancel()

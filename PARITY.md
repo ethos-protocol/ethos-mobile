@@ -78,7 +78,7 @@ Last audited: 2026-07-27
 | Vault action links (check-in, withdraw, …) | ✅ | ✅ | |
 | Deep-link input validation (path traversal, length) | ✅ | ✅ | |
 | **iCloud / cross-device sync** | | | |
-| iCloud KV vault ↔ credential sync | ✅ | ❌ | Android has no equivalent cloud sync |
+| iCloud KV / cross-device vault ↔ credential sync | ✅ | ✅ | iOS uses `NSUbiquitousKeyValueStore` (`ICloudSyncService`); Android uses `VaultAssociationStore`, a SharedPreferences file included in Auto Backup for Apps (#200). Neither syncs private keys or tokens — only the vault-ID-to-credential-ID mapping |
 
 ---
 
@@ -99,7 +99,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
-| iCloud / cross-device sync | Android | TBD |
 
 ---
 
