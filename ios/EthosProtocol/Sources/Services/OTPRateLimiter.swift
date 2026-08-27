@@ -39,12 +39,34 @@ final class OTPRateLimiter: ObservableObject {
     }
 
     private var timerToken: TimerToken?
+    private let defaults: UserDefaults
+
+    private static let failureCountKey = "com.ethosprotocol.otpRateLimiter.failureCount"
+    private static let cooldownDeadlineKey = "com.ethosprotocol.otpRateLimiter.cooldownDeadline"
+
+    // MARK: - Init
+
+    /// - Parameters:
+    ///   - defaults: backing store for the persisted rate-limit state (#172). Injectable for testing.
+    ///   - now: provides the current time, used to recompute the remaining cooldown against the
+    ///     persisted absolute deadline. Injectable for testing.
+    init(defaults: UserDefaults = .standard, now: @escaping () -> Date = { Date() }) {
+        self.defaults = defaults
+        self.now = now
+        failureCount = defaults.integer(forKey: Self.failureCountKey)
+
+        let remaining = Self.remainingCooldownSeconds(defaults: defaults, now: now())
+        guard remaining > 0 else { return }
+        cooldownSecondsRemaining = remaining
+        resumeTicking(seconds: remaining)
+    }
 
     // MARK: - Public API
 
     /// Records a failed verification attempt and starts the cooldown if appropriate.
     func recordFailure() {
         failureCount += 1
+        defaults.set(failureCount, forKey: Self.failureCountKey)
         let cooldown = cooldownSeconds(for: failureCount)
         guard cooldown > 0 else { return }
         startCooldown(seconds: cooldown)
@@ -56,6 +78,8 @@ final class OTPRateLimiter: ObservableObject {
         cooldownSecondsRemaining = 0
         timerToken?.cancel()
         timerToken = nil
+        defaults.removeObject(forKey: Self.failureCountKey)
+        defaults.removeObject(forKey: Self.cooldownDeadlineKey)
     }
 
     // MARK: - Cooldown schedule
@@ -75,9 +99,18 @@ final class OTPRateLimiter: ObservableObject {
         Self.cooldownSeconds(for: failures)
     }
 
+    /// Starts a fresh cooldown, persisting its absolute deadline — not the remaining-seconds
+    /// count — so it stays meaningful however long the process was dead (#172, mirroring
+    /// Android's `SavedStateHandle`-backed `TwoFactorViewModel`).
     private func startCooldown(seconds: Int) {
-        timerToken?.cancel()
+        let deadline = now().addingTimeInterval(TimeInterval(seconds))
+        defaults.set(deadline.timeIntervalSince1970, forKey: Self.cooldownDeadlineKey)
         cooldownSecondsRemaining = seconds
+        resumeTicking(seconds: seconds)
+    }
+
+    private func resumeTicking(seconds: Int) {
+        timerToken?.cancel()
         timerToken = makeTimer(1.0) { [weak self] in
             guard let self else { return }
             Task { @MainActor in
@@ -89,6 +122,15 @@ final class OTPRateLimiter: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Seconds left until the persisted cooldown deadline, or 0 when none is pending.
+    private static func remainingCooldownSeconds(defaults: UserDefaults, now: Date) -> Int {
+        guard defaults.object(forKey: cooldownDeadlineKey) != nil else { return 0 }
+        let deadline = Date(timeIntervalSince1970: defaults.double(forKey: cooldownDeadlineKey))
+        let remaining = deadline.timeIntervalSince(now)
+        guard remaining > 0 else { return 0 }
+        return Int(remaining.rounded(.up))
     }
 }
 
