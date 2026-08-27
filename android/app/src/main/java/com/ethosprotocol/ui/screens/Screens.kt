@@ -33,6 +33,7 @@ import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import kotlinx.coroutines.launch
 
 // MARK: - Auth Screen
 
@@ -235,13 +236,19 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onSignOut: () -> Unit = {},
+    checkLastRemainingPasskey: suspend () -> Boolean = { false },
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
+    // #214: Blocking confirmation before sign-out when this is the account's last
+    // remaining passkey.
+    var showLastPasskeySignOutWarning by remember { mutableStateOf(false) }
 
     // #118: Non-blocking root warning. Shown once per session; does not block access.
     var showRootWarning by remember {
@@ -277,6 +284,31 @@ fun VaultListScreen(
         )
     }
 
+    // #214: This is the account's only registered passkey — signing out here with no
+    // recovery already in hand could permanently lock the user out of a vault holding
+    // real funds, so this confirmation blocks the sign-out.
+    if (showLastPasskeySignOutWarning) {
+        AlertDialog(
+            onDismissRequest = { showLastPasskeySignOutWarning = false },
+            title = { Text("This Is Your Only Passkey") },
+            text = {
+                Text(
+                    "No other device has a passkey for this account. If you sign out without " +
+                    "a way to recover access (your account's recovery email and backup code), " +
+                    "you could be permanently locked out of any vaults you own."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showLastPasskeySignOutWarning = false; onSignOut() }) {
+                    Text("Sign Out Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLastPasskeySignOutWarning = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     pendingCheckIn?.let { vault ->
         CheckInConfirmationDialog(
             vault = vault,
@@ -298,6 +330,11 @@ fun VaultListScreen(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
+                IconButton(onClick = {
+                    coroutineScope.launch {
+                        if (checkLastRemainingPasskey()) showLastPasskeySignOutWarning = true else onSignOut()
+                    }
+                }) { Icon(Icons.Default.ExitToApp, "Sign out") }
             })
         }
     ) { padding ->

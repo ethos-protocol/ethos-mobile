@@ -220,7 +220,11 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(
+                    onVaultClick = { /* navigate to detail */ },
+                    onSignOut = { authVm.signOut() },
+                    checkLastRemainingPasskey = { authVm.isLastRemainingPasskey() }
+                )
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

@@ -177,3 +177,46 @@ final class AuthStoreRecoveryRateLimitTests: XCTestCase {
         await store.signOut()
     }
 }
+
+// MARK: - #214 Last-Remaining-Passkey Sign-Out Warning Tests
+
+@MainActor
+final class AuthStoreLastRemainingPasskeyTests: XCTestCase {
+
+    func test_isLastRemainingPasskey_onlyOneCredential_returnsTrue() async {
+        let store = AuthStore()
+        store.fetchExistingCredentialCount = { 1 }
+
+        let isLast = await store.isLastRemainingPasskey()
+
+        XCTAssertTrue(isLast)
+    }
+
+    func test_isLastRemainingPasskey_noCredentials_returnsTrue() async {
+        let store = AuthStore()
+        store.fetchExistingCredentialCount = { 0 }
+
+        let isLast = await store.isLastRemainingPasskey()
+
+        XCTAssertTrue(isLast, "Zero registered credentials is at least as risky as exactly one")
+    }
+
+    func test_isLastRemainingPasskey_multipleCredentials_returnsFalse() async {
+        let store = AuthStore()
+        store.fetchExistingCredentialCount = { 2 }
+
+        let isLast = await store.isLastRemainingPasskey()
+
+        XCTAssertFalse(isLast)
+    }
+
+    func test_isLastRemainingPasskey_lookupFails_defaultsToFalse() async {
+        enum FakeError: Error { case offline }
+        let store = AuthStore()
+        store.fetchExistingCredentialCount = { throw FakeError.offline }
+
+        let isLast = await store.isLastRemainingPasskey()
+
+        XCTAssertFalse(isLast, "A failed lookup must not block sign-out")
+    }
+}

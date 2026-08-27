@@ -133,6 +133,20 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> handleAuthFailure(e) }
     }
 
+    /**
+     * Whether this device's passkey appears to be the only one registered to the account
+     * (#214) — callers should confirm with the user before signing out when this is true,
+     * since with no other device's passkey and no recovery already in hand, signing out
+     * could permanently lock them out of a vault holding real funds.
+     *
+     * Best-effort: a failed lookup (e.g. offline) doesn't block sign-out, so it defaults to
+     * `false` rather than trapping the user in the app.
+     */
+    suspend fun isLastRemainingPasskey(): Boolean {
+        val result = apiClient.getChallenge()
+        return (result as? ApiResult.Success)?.data?.existingCredentialIds?.size?.let { it <= 1 } ?: false
+    }
+
     fun signOut() = viewModelScope.launch {
         // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
         // tokenProvider.token when building the request, so clearing first would send

@@ -350,6 +350,9 @@ struct VaultListView: View {
     // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
     // block access to the app, consistent with the "secure digital inheritance" posture.
     @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
+    // #214: Blocking confirmation before sign-out when this is the account's last
+    // remaining passkey — unlike #118, this one gates the action itself.
+    @State private var showLastPasskeySignOutWarning = false
 
     var body: some View {
         NavigationStack {
@@ -389,11 +392,28 @@ struct VaultListView: View {
                         NavigationLink(destination: SettingsView()) {
                             Label("Settings", systemImage: "gear")
                         }
-                        Button("Sign Out") { Task { await authStore.signOut() } }
+                        Button("Sign Out") {
+                            Task {
+                                if await authStore.isLastRemainingPasskey() {
+                                    showLastPasskeySignOutWarning = true
+                                } else {
+                                    await authStore.signOut()
+                                }
+                            }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
+            }
+            // #214: This is the account's only registered passkey — signing out here
+            // with no recovery already in hand could permanently lock the user out of
+            // a vault holding real funds, so this confirmation blocks the sign-out.
+            .alert("This Is Your Only Passkey", isPresented: $showLastPasskeySignOutWarning) {
+                Button("Cancel", role: .cancel) {}
+                Button("Sign Out Anyway", role: .destructive) { Task { await authStore.signOut() } }
+            } message: {
+                Text("No other device has a passkey for this account. If you sign out without a way to recover access (your account's recovery email and backup code), you could be permanently locked out of any vaults you own.")
             }
             .task { await vaultStore.load() }
             .sheet(isPresented: $showCreate) { CreateVaultView() }

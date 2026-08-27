@@ -43,6 +43,12 @@ final class AuthStore: ObservableObject {
     var linkAdditionalPasskey: (String, AccountRecoveryProof) async throws -> String = { username, proof in
         try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
     }
+    // #214: Used to warn before sign-out when this appears to be the account's only
+    // registered passkey — the same signal registration already uses to populate
+    // excludedCredentials.
+    var fetchExistingCredentialCount: () async throws -> Int = {
+        try await APIClient.shared.getChallenge().existingCredentialIds.count
+    }
 
     // #212: Client-side rate limiting for recovery-code submission, reusing #119's
     // escalating cooldown schedule — a recovery backup code is just as brute-forceable
@@ -151,6 +157,16 @@ final class AuthStore: ObservableObject {
     private func tickRecoveryCooldown() {
         guard recoveryCooldownSecondsRemaining > 0 else { return }
         recoveryCooldownSecondsRemaining -= 1
+    }
+
+    /// Whether this device's passkey appears to be the only one registered to the
+    /// account (#214). Callers should confirm with the user before signing out when
+    /// this is true — with no other device's passkey and no recovery already in hand,
+    /// signing out here could permanently lock them out of a vault holding real funds.
+    /// Best-effort: a failed lookup (e.g. offline) doesn't block sign-out, so it
+    /// defaults to `false` rather than trapping the user in the app.
+    func isLastRemainingPasskey() async -> Bool {
+        (try? await fetchExistingCredentialCount()).map { $0 <= 1 } ?? false
     }
 
     func signOut() async {
