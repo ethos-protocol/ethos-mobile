@@ -1004,6 +1004,11 @@ struct TwoFactorSetupView: View {
     @State private var error: String?
     @State private var setupComplete = false
 
+    // #202: A method + "code sent" flag restored from a prior, interrupted setup —
+    // used only when process death happened after the code was sent but before the
+    // response object (and its non-persisted secret/provisioningUri) was recreated.
+    @State private var restoredSession: PendingTwoFactorSession?
+
     var body: some View {
         NavigationStack {
             if let response = setupResponse {
@@ -1012,7 +1017,15 @@ struct TwoFactorSetupView: View {
                     method: response.method,
                     provisioningUri: response.provisioningUri,
                     secret: response.secret,
-                    onVerified: { setupComplete = true }
+                    onVerified: { setupComplete = true; PendingTwoFactorSessionStore.shared.clear(for: vaultID) }
+                )
+            } else if let restoredSession {
+                TwoFactorVerifyView(
+                    vaultID: vaultID,
+                    method: restoredSession.method,
+                    provisioningUri: nil,
+                    secret: nil,
+                    onVerified: { setupComplete = true; PendingTwoFactorSessionStore.shared.clear(for: vaultID) }
                 )
             } else {
                 Form {
@@ -1055,6 +1068,11 @@ struct TwoFactorSetupView: View {
             }
         }
         .interactiveDismissDisabled(setupComplete == false)
+        .onAppear {
+            // #202: Restore a still-valid in-progress session on relaunch instead of
+            // forcing the user back through method selection and a fresh code send.
+            restoredSession = PendingTwoFactorSessionStore.shared.session(for: vaultID)
+        }
     }
 
     private var canContinue: Bool {
@@ -1084,6 +1102,12 @@ struct TwoFactorSetupView: View {
                     email: selectedMethod == .email ? email : nil
                 )
                 setupResponse = response
+                // #202: Persist just enough to resume at the verify step if the process
+                // dies before setupComplete — never the secret/provisioningUri or the OTP.
+                PendingTwoFactorSessionStore.shared.save(
+                    PendingTwoFactorSession(method: selectedMethod, codeSent: true, createdAt: Date()),
+                    for: vaultID
+                )
             } catch {
                 self.error = error.localizedDescription
             }
