@@ -165,6 +165,25 @@ class PasskeyServiceTest {
         assertEquals("Forbidden", result.exceptionOrNull()?.message)
     }
 
+    // ── register: no biometric hardware available (#210) ───────────────────────
+
+    @Test
+    fun register_noCreateOptionAvailable_returnsFailureWithBiometricFallbackCopy() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } throws
+            androidx.credentials.exceptions.CreateCredentialNoCreateOptionException()
+
+        val result = service.register(mockActivity, "alice")
+
+        assertTrue("Expected failure", result.isFailure)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue("Expected guidance to enroll a biometric: $message",
+            message.contains("biometric", ignoreCase = true))
+        assertTrue("Expected guidance about a device PIN/passcode fallback: $message",
+            message.contains("PIN", ignoreCase = true) || message.contains("passcode", ignoreCase = true))
+        coVerify(exactly = 0) { mockApiClient.registerPasskey(any()) }
+    }
+
     // ── authenticate ─────────────────────────────────────────────────────────
 
     @Test

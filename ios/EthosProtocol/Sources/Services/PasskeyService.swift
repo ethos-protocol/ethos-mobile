@@ -1,5 +1,6 @@
 import AuthenticationServices
 import Foundation
+import LocalAuthentication
 
 final class PasskeyService: NSObject {
     static let shared = PasskeyService()
@@ -195,6 +196,7 @@ enum PasskeyError: LocalizedError, Equatable {
     case userCancelled
     case notInteractive
     case credentialAlreadyExists
+    case biometricUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -203,6 +205,9 @@ enum PasskeyError: LocalizedError, Equatable {
         case .userCancelled:           return "Passkey request was cancelled."
         case .notInteractive:          return "Bring the app to the foreground to use your passkey."
         case .credentialAlreadyExists: return "A passkey for this account already exists on this device."
+        case .biometricUnavailable:
+            return "This device has no biometric or passcode set up, so it can't create a passkey. " +
+                   "Enroll Face ID/Touch ID, or set a device passcode, in Settings and try again."
         }
     }
 
@@ -210,6 +215,16 @@ enum PasskeyError: LocalizedError, Equatable {
     /// best describes it, so the UI can show distinct guidance instead of one generic
     /// failure message for cancellation, backgrounding, and duplicate-credential cases.
     static func map(_ error: Error, fallback: PasskeyError) -> PasskeyError {
+        // #210: a device with no biometric enrolled (or an MDM policy disabling it, or no
+        // passcode set) surfaces as an ASAuthorizationError wrapping the real LAError in
+        // NSUnderlyingErrorKey — check that before falling through to the ASAuthorizationError
+        // code switch below, which has no case that distinguishes this from any other failure.
+        if let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == LAErrorDomain,
+           let laCode = LAError.Code(rawValue: underlying.code),
+           [.biometryNotEnrolled, .biometryNotAvailable, .passcodeNotSet].contains(laCode) {
+            return .biometricUnavailable
+        }
         guard let authError = error as? ASAuthorizationError else { return fallback }
         switch authError.code {
         case .canceled:
