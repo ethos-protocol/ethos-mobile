@@ -758,37 +758,77 @@ struct CreateVaultView: View {
     @State private var intervalDays = 30.0
     @State private var isCreating = false
     @State private var error: String?
+    // #215: Vault creation commits real funds to a TTL-gated structure — require an
+    // explicit review step showing exactly what's about to be submitted before the
+    // POST /vaults call fires, rather than submitting straight from the input form.
+    @State private var isConfirming = false
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Beneficiary") {
-                    TextField("Stellar address", text: $beneficiary)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                    if !beneficiary.isEmpty && !isBeneficiaryValid {
-                        Text("Enter a valid Stellar address (56 characters, starting with G).")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-                Section("Check-in Interval") {
-                    Slider(value: $intervalDays, in: 1...365, step: 1)
-                    Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
-                }
-                if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
-            }
-            .navigationTitle("New Vault")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }.disabled(!isBeneficiaryValid || isCreating)
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+            if isConfirming {
+                confirmationForm
+            } else {
+                inputForm
             }
         }
+    }
+
+    private var inputForm: some View {
+        Form {
+            Section("Beneficiary") {
+                TextField("Stellar address", text: $beneficiary)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+                if !beneficiary.isEmpty && !isBeneficiaryValid {
+                    Text("Enter a valid Stellar address (56 characters, starting with G).")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            Section("Check-in Interval") {
+                Slider(value: $intervalDays, in: 1...365, step: 1)
+                Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("New Vault")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Next") { isConfirming = true }.disabled(!isBeneficiaryValid)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+
+    private var confirmationForm: some View {
+        Form {
+            Section {
+                LabeledContent("Beneficiary") {
+                    Text(beneficiary)
+                        .font(.system(.footnote, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Check-in Interval", value: "\(Int(intervalDays)) days")
+            } header: {
+                Text("Review Vault")
+            } footer: {
+                Text("If you don't check in within the interval above, the vault's funds release to the beneficiary address shown. Double-check the address — this cannot be undone once created.")
+            }
+            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+        }
+        .navigationTitle("Confirm Vault")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(isCreating ? "Creating…" : "Confirm & Create") { create() }.disabled(isCreating)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Back") { isConfirming = false }.disabled(isCreating)
+            }
+        }
+        .overlay { if isCreating { ProgressView() } }
     }
 
     private var isBeneficiaryValid: Bool {

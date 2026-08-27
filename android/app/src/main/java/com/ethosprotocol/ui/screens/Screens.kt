@@ -942,39 +942,70 @@ private fun ManageBeneficiaryDialog(
 private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> Unit) {
     var beneficiary by remember { mutableStateOf("") }
     var days by remember { mutableStateOf(30f) }
+    // #215: Vault creation commits real funds to a TTL-gated structure — require an
+    // explicit review step showing exactly what's about to be submitted before the
+    // POST /vaults call fires, rather than submitting straight from the input form.
+    var isConfirming by remember { mutableStateOf(false) }
 
     // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
     val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New Vault") },
+        title = { Text(if (isConfirming) "Confirm Vault" else "New Vault") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = beneficiary,
-                    onValueChange = { beneficiary = it },
-                    label = { Text("Beneficiary Stellar address") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
-                    supportingText = {
-                        if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
-                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+            if (isConfirming) {
+                Column {
+                    Text(
+                        "If you don't check in within the interval below, the vault's funds " +
+                        "release to the beneficiary address shown. Double-check the address — " +
+                        "this cannot be undone once created.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("Beneficiary", style = MaterialTheme.typography.labelMedium)
+                    Text(beneficiary, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Check-in interval", style = MaterialTheme.typography.labelMedium)
+                    Text("${days.toInt()} days", style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                Column {
+                    OutlinedTextField(
+                        value = beneficiary,
+                        onValueChange = { beneficiary = it },
+                        label = { Text("Beneficiary Stellar address") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
+                        supportingText = {
+                            if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
+                                Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            }
                         }
-                    }
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("Check-in interval: ${days.toInt()} days",
-                    style = MaterialTheme.typography.bodySmall)
-                Slider(value = days, onValueChange = { days = it }, valueRange = 1f..365f, steps = 363)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("Check-in interval: ${days.toInt()} days",
+                        style = MaterialTheme.typography.bodySmall)
+                    Slider(value = days, onValueChange = { days = it }, valueRange = 1f..365f, steps = 363)
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
-                enabled = isBeneficiaryValid) { Text("Create") }
+            if (isConfirming) {
+                TextButton(onClick = { onCreate(beneficiary, days.toInt()) }) { Text("Confirm & Create") }
+            } else {
+                TextButton(onClick = { isConfirming = true }, enabled = isBeneficiaryValid) { Text("Next") }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            if (isConfirming) {
+                TextButton(onClick = { isConfirming = false }) { Text("Back") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        }
     )
 }
 

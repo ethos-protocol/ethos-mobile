@@ -67,6 +67,35 @@ class VaultListScreenTest {
         assert(signedOut) { "Confirming the warning must proceed with sign-out" }
     }
 
+    // ── #215 Create-vault confirmation step ─────────────────────────────────
+
+    private val validBeneficiary = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+
+    @Test
+    fun createVault_next_showsConfirmationBeforeCreating() {
+        composeRule.setContent { VaultListScreen(onVaultClick = {}) }
+
+        composeRule.onNodeWithContentDescription("Create vault").performClick()
+        composeRule.onNodeWithText("Beneficiary Stellar address").performTextInput(validBeneficiary)
+        composeRule.onNodeWithText("Next").performClick()
+
+        composeRule.onNodeWithText("Confirm Vault").assertIsDisplayed()
+        composeRule.onNodeWithText("Confirm & Create").assertIsDisplayed()
+    }
+
+    @Test
+    fun createVault_back_returnsToInputFormWithoutCreating() {
+        composeRule.setContent { VaultListScreen(onVaultClick = {}) }
+
+        composeRule.onNodeWithContentDescription("Create vault").performClick()
+        composeRule.onNodeWithText("Beneficiary Stellar address").performTextInput(validBeneficiary)
+        composeRule.onNodeWithText("Next").performClick()
+        composeRule.onNodeWithText("Back").performClick()
+
+        composeRule.onNodeWithText("New Vault").assertIsDisplayed()
+        composeRule.onNodeWithText("Confirm & Create").assertDoesNotExist()
+    }
+
     @Test
     fun signOut_whenNotLastRemainingPasskey_signsOutImmediately_withNoWarning() {
         var signedOut = false
