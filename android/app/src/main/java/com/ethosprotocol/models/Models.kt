@@ -55,7 +55,8 @@ data class BeneficiaryUpdateRequest(val beneficiary: String)
 @Serializable
 data class PushRegistration(
     val token: String,
-    val platform: String = "android"
+    val platform: String = "android",
+    val locale: String = java.util.Locale.getDefault().toLanguageTag()
 )
 
 @Serializable

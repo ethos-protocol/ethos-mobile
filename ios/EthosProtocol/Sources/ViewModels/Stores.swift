@@ -248,6 +248,7 @@ final class VaultStore: ObservableObject {
     /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
     /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
     @Published private(set) var queuedCheckInCount = 0
+    @Published private(set) var queueAtCapacity = false
 
     private var eventSocket: VaultEventSocket?
 
@@ -256,6 +257,7 @@ final class VaultStore: ObservableObject {
 
     private func updateQueuedIndicator() {
         queuedCheckInCount = PendingCheckInStore.shared.count
+        queueAtCapacity = PendingCheckInStore.shared.isAtCapacity
     }
 
     func load() async {
@@ -337,11 +339,16 @@ final class VaultStore: ObservableObject {
             let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
             PendingCheckInStore.shared.insert(item)
             let count = PendingCheckInStore.shared.count
+            let atCapacity = PendingCheckInStore.shared.isAtCapacity
             NotificationService.shared.showQueuedCheckIn(count: count)
             CheckInSyncTask.shared.scheduleSync()
             ifNotCancelled {
                 queuedCheckInCount = count
-                self.error = ErrorPresentation(message: "Offline — check-in queued and will retry automatically")
+                queueAtCapacity = atCapacity
+                let message = atCapacity
+                    ? "Offline — queue is full (oldest check-in replaced). Will retry automatically."
+                    : "Offline — check-in queued and will retry automatically"
+                self.error = ErrorPresentation(message: message)
             }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }

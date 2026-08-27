@@ -24,7 +24,10 @@ final class CheckInSyncTask {
 
     // Error codes where the server has definitively rejected the check-in. Matches
     // PendingActionSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
-    static let nonRetryableErrorCodes: Set<Int> = [400, 404, 410]
+    static let nonRetryableErrorCodes: Set<Int> = [400, 404]
+
+    // HTTP 410 Gone — vault has already expired; handled separately to surface a notification.
+    static let vaultExpiredCode = 410
 
     // Injected for testing
     var apiClient: APIClientProtocol = APIClient.shared
@@ -74,7 +77,10 @@ final class CheckInSyncTask {
             case .networkUnavailable:
                 hasRetryableFailure = true
             case .serverError(let code, _):
-                if Self.nonRetryableErrorCodes.contains(code) {
+                if code == Self.vaultExpiredCode {
+                    store.delete(item)
+                    NotificationService.shared.showVaultExpiredNotification(vaultId: item.vaultId)
+                } else if Self.nonRetryableErrorCodes.contains(code) {
                     // Server has permanently rejected this check-in — drop it.
                     store.delete(item)
                 } else {

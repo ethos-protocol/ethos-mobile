@@ -352,7 +352,9 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    val queueNearCapacity: Boolean = false,
+    val queueAtCapacity: Boolean = false
 )
 
 private const val PAGE_SIZE = 20
@@ -544,9 +546,21 @@ class VaultViewModel @Inject constructor(
     private suspend fun queueAction(action: PendingAction) {
         pendingActionDao.insert(action)
         val queued = pendingActionDao.getAll()
-        notificationHelper.showQueuedActions(queued.size)
+        // Enforce queue size cap — remove oldest items beyond the limit
+        if (queued.size > PendingAction.MAX_QUEUE_SIZE) {
+            val overflow = queued.size - PendingAction.MAX_QUEUE_SIZE
+            queued.take(overflow).forEach { pendingActionDao.delete(it) }
+        }
+        val currentCount = pendingActionDao.getAll().size
+        val atCapacity = currentCount >= PendingAction.MAX_QUEUE_SIZE
+        val nearCapacity = currentCount >= PendingAction.MAX_QUEUE_SIZE - 5
+        notificationHelper.showQueuedActions(currentCount)
         PendingActionSyncWorker.schedule(context)
-        _state.update { it.copy(error = "Offline — request queued and will retry automatically") }
+        val errorMessage = if (atCapacity)
+            "Offline — queue is full (oldest request replaced). Will retry automatically."
+        else
+            "Offline — request queued and will retry automatically"
+        _state.update { it.copy(error = errorMessage, queueAtCapacity = atCapacity, queueNearCapacity = nearCapacity) }
     }
 }
 

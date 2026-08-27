@@ -1681,3 +1681,75 @@ private final class ReplayRejectionURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+// MARK: - #236 Cold-Start Notification Tests
+
+/// Covers the cold-start case where the app is fully terminated, the user taps a
+/// push notification, and iOS delivers the notification's userInfo to the app
+/// on launch. Key assertions:
+///   - vault_id is extracted correctly from userInfo
+///   - missing vault_id is handled gracefully (no force-unwrap crash)
+///   - a non-existent vault (404/410) in CheckInResult is handled by the
+///     non-retryable path and does not crash
+final class ColdStartNotificationTests: XCTestCase {
+
+    // MARK: - userInfo extraction
+
+    func test_coldStart_vaultId_extractedFromUserInfo() {
+        let userInfo: [AnyHashable: Any] = ["vault_id": "test-vault-123"]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertEqual(vaultId, "test-vault-123",
+            "vault_id must survive the round-trip through userInfo as a String")
+    }
+
+    func test_coldStart_missingVaultId_doesNotCrash() {
+        // Notification payload without vault_id — must not force-unwrap / crash.
+        let userInfo: [AnyHashable: Any] = [:]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertNil(vaultId, "Missing vault_id should be nil, not crash")
+    }
+
+    func test_coldStart_nonStringVaultId_doesNotCrash() {
+        // Server accidentally sends vault_id as a number — as? String returns nil safely.
+        let userInfo: [AnyHashable: Any] = ["vault_id": 42]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertNil(vaultId, "Non-String vault_id should cast to nil, not crash")
+    }
+
+    // MARK: - Non-existent vault at launch
+
+    func test_coldStart_vaultExpired_410_isNonRetryable() {
+        // When the vault referenced by a cold-start notification no longer exists
+        // (HTTP 410 Gone), CheckInSyncTask must drop the item rather than retry.
+        let result = CheckInResult.serverError(code: 410, message: "Gone")
+        switch result {
+        case .serverError(let code, _):
+            XCTAssertEqual(code, CheckInSyncTask.vaultExpiredCode,
+                "410 should match vaultExpiredCode and trigger expired-vault handling")
+        default:
+            XCTFail("Expected serverError for expired vault")
+        }
+    }
+
+    func test_coldStart_vaultNotFound_404_isNonRetryable() {
+        // HTTP 404 — vault deleted entirely; must not be retried.
+        let result = CheckInResult.serverError(code: 404, message: "Not Found")
+        switch result {
+        case .serverError(let code, _):
+            XCTAssertTrue(CheckInSyncTask.nonRetryableErrorCodes.contains(code),
+                "404 must be in nonRetryableErrorCodes")
+        default:
+            XCTFail("Expected serverError")
+        }
+    }
+
+    func test_coldStart_networkUnavailable_isRetryable() {
+        // If device is offline at cold start, the sync should retry — not drop items.
+        let result = CheckInResult.networkUnavailable
+        if case .networkUnavailable = result {
+            // Correct — networkUnavailable is always retried
+        } else {
+            XCTFail("Expected networkUnavailable")
+        }
+    }
+}

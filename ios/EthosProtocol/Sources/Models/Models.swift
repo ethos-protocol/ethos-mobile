@@ -165,6 +165,7 @@ struct AccountRecoveryProof: Codable {
 struct PushRegistration: Codable {
     let token: String
     let platform: String  // "ios" | "android"
+    let locale: String    // BCP 47 language tag, e.g. "en-US"
 }
 
 // MARK: - 2FA Models

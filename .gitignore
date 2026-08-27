@@ -1,4 +1,54 @@
-
 # Byte-compiled CI helper scripts
 __pycache__/
 *.pyc
+
+# ── iOS ──────────────────────────────────────────────────────────────────────
+# XcodeGen-generated project (generated on demand, never committed)
+ios/EthosProtocol/Xcode/
+
+# Xcode derived data & build artefacts
+DerivedData/
+build/
+*.xcarchive
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Xcode user-specific state
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcworkspace/contents.xcworkspacedata
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+*.resolved
+
+# Test snapshots (Paparazzi / SnapshotTesting)
+**/__Snapshots__/
+**/ReferenceImages/
+
+# ── Android ──────────────────────────────────────────────────────────────────
+android/.gradle/
+android/app/build/
+android/build/
+*.jks
+*.keystore
+android/local.properties
+android/app/google-services.json
+google-services.json
+
+# Gradle wrapper (downloaded at build time)
+gradlew
+gradlew.bat
+gradle/wrapper/gradle-wrapper.jar
+
+# ── General ──────────────────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+*.log
+*.orig
+.env
+.env.*
+.idea/
+*.iml
