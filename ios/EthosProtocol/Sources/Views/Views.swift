@@ -273,7 +273,8 @@ struct RecoverAccessView: View {
     @State private var username = ""
 
     private var canSubmit: Bool {
-        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty && !authStore.isLoading
+        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty
+            && !authStore.isLoading && !authStore.isRecoveryBlocked
     }
 
     var body: some View {
@@ -284,9 +285,11 @@ struct RecoverAccessView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
                     TextField("Backup code", text: $backupCode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
                 } header: {
                     Text("Verify your identity")
                 } footer: {
@@ -296,6 +299,22 @@ struct RecoverAccessView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
+                }
+                // #212: Escalating cooldown after repeated recovery-code failures.
+                if authStore.isRecoveryBlocked {
+                    Section {
+                        Label("Too many attempts — wait \(authStore.recoveryCooldownSecondsRemaining)s",
+                              systemImage: "timer")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } else if authStore.recoveryFailureCount > 0 {
+                    Section {
+                        Text("\(authStore.recoveryFailureCount) failed attempt\(authStore.recoveryFailureCount == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let error = authStore.error {
                     Section { Text(error.message).foregroundStyle(.red).font(.caption) }

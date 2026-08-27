@@ -48,8 +48,14 @@ data class AuthUiState(
     // Set once initiateRecovery() succeeds — its presence means a recovery code has been
     // sent and the UI should show the "finish recovery" step.
     val recoveryToken: String? = null,
-    val cooldownRemainingSeconds: Int = 0
-)
+    val cooldownRemainingSeconds: Int = 0,
+    // #212: Client-side rate limiting for recovery-code submission, mirroring #119's
+    // OTP cooldown schedule — a recovery code is just as brute-forceable as an OTP.
+    val recoveryFailureCount: Int = 0,
+    val recoveryCooldownSeconds: Int = 0
+) {
+    val isRecoveryBlocked: Boolean get() = recoveryCooldownSeconds > 0
+}
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -149,6 +155,84 @@ class AuthViewModel @Inject constructor(
         consecutiveFailures++
         _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
         startCooldownIfNeeded()
+    }
+
+    // ── #212 Recovery-code rate limiting ────────────────────────────────────
+
+    private var recoveryCooldownJob: Job? = null
+
+    fun initiateRecovery(username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.initiateRecovery(RecoveryInitiateRequest(username))) {
+            is ApiResult.Success -> _state.update {
+                it.copy(isLoading = false, recoveryToken = result.data.recoveryToken)
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun finishRecovery(activity: Activity, username: String) = viewModelScope.launch {
+        if (_state.value.isRecoveryBlocked) return@launch
+        val token = _state.value.recoveryToken ?: return@launch
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.recoverAccount(activity, username, token)
+            .onSuccess {
+                recoveryCooldownJob?.cancel()
+                _state.update {
+                    it.copy(isAuthenticated = true, isLoading = false, recoveryToken = null,
+                        recoveryFailureCount = 0, recoveryCooldownSeconds = 0)
+                }
+            }
+            .onFailure { e ->
+                if (BuildConfig.DEBUG) Log.w(TAG, "recovery failed", e)
+                val newCount = _state.value.recoveryFailureCount + 1
+                val cooldown = recoveryCooldownSeconds(newCount)
+                _state.update {
+                    it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e), recoveryFailureCount = newCount)
+                }
+                if (cooldown > 0) startRecoveryCooldown(cooldown)
+            }
+    }
+
+    /** Discards in-progress recovery state, e.g. when the user dismisses the sheet. */
+    fun dismissRecovery() {
+        recoveryCooldownJob?.cancel()
+        _state.update {
+            it.copy(recoveryToken = null, recoveryFailureCount = 0, recoveryCooldownSeconds = 0, error = null)
+        }
+    }
+
+    /**
+     * Escalating cooldown schedule matching TwoFactorViewModel.otpCooldownSeconds / iOS's
+     * OTPRateLimiter (#119):
+     *   1–2 failures → no cooldown (grace period)
+     *   3 failures   → 30 s
+     *   4 failures   → 60 s
+     *   5+ failures  → 120 s (capped)
+     */
+    internal fun recoveryCooldownSeconds(failures: Int): Int = when {
+        failures < 3  -> 0
+        failures == 3 -> 30
+        failures == 4 -> 60
+        else          -> 120
+    }
+
+    private fun startRecoveryCooldown(seconds: Int) {
+        recoveryCooldownJob?.cancel()
+        _state.update { it.copy(recoveryCooldownSeconds = seconds) }
+        recoveryCooldownJob = viewModelScope.launch {
+            for (remaining in seconds - 1 downTo 0) {
+                delay(1_000)
+                _state.update { it.copy(recoveryCooldownSeconds = remaining) }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cooldownJob?.cancel()
+        recoveryCooldownJob?.cancel()
     }
 
     companion object {

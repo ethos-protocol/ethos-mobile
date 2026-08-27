@@ -100,3 +100,80 @@ final class AuthStoreTokenRefreshTests: XCTestCase {
         await store.signOut()
     }
 }
+
+// MARK: - #212 Recovery-Code Rate Limiting Tests
+
+@MainActor
+final class AuthStoreRecoveryRateLimitTests: XCTestCase {
+
+    enum FakeError: Error, LocalizedError {
+        case invalidCode
+        var errorDescription: String? { "invalid recovery code" }
+    }
+
+    private func makeFailingStore() -> AuthStore {
+        let store = AuthStore()
+        store.linkAdditionalPasskey = { _, _ in throw FakeError.invalidCode }
+        store.passkeyAuthenticate = { AuthToken(token: "unused", expiresAt: Date()) }
+        return store
+    }
+
+    func test_recoverAccess_failure_incrementsFailureCount() async {
+        let store = makeFailingStore()
+
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        XCTAssertEqual(store.recoveryFailureCount, 1)
+
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        XCTAssertEqual(store.recoveryFailureCount, 2)
+    }
+
+    func test_recoverAccess_below3Failures_notBlocked() async {
+        let store = makeFailingStore()
+
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+
+        XCTAssertFalse(store.isRecoveryBlocked)
+    }
+
+    func test_recoverAccess_at3Failures_startsCooldown() async {
+        let store = makeFailingStore()
+
+        for _ in 1...3 {
+            await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        }
+
+        XCTAssertTrue(store.isRecoveryBlocked, "After 3 failures recovery submission should be blocked")
+        XCTAssertEqual(store.recoveryCooldownSecondsRemaining, 30)
+    }
+
+    func test_recoverAccess_whileBlocked_doesNotAttemptLink() async {
+        let store = makeFailingStore()
+        for _ in 1...3 {
+            await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        }
+        XCTAssertTrue(store.isRecoveryBlocked, "Precondition: should be blocked after 3 failures")
+
+        var linkCallCount = 0
+        store.linkAdditionalPasskey = { _, _ in linkCallCount += 1; throw FakeError.invalidCode }
+
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+
+        XCTAssertEqual(linkCallCount, 0, "A blocked recovery attempt must not call the backend")
+    }
+
+    func test_recoverAccess_success_resetsFailureCount() async {
+        let store = makeFailingStore()
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        XCTAssertEqual(store.recoveryFailureCount, 2, "Precondition: two prior failures recorded")
+
+        store.linkAdditionalPasskey = { _, _ in "credential-id" }
+        await store.recoverAccess(email: "a@b.com", backupCode: "correct", username: "alice")
+
+        XCTAssertEqual(store.recoveryFailureCount, 0, "A successful recovery must reset the failure counter")
+        XCTAssertFalse(store.isRecoveryBlocked)
+        await store.signOut()
+    }
+}

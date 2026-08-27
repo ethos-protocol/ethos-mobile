@@ -50,12 +50,26 @@ fun AuthScreen(vm: AuthViewModel = hiltViewModel()) {
         )
     }
 
+    if (showRecovery) {
+        RecoverySheet(
+            state = state,
+            onSendCode = { username -> vm.initiateRecovery(username) },
+            onFinish = { username -> vm.finishRecovery(activity, username) },
+            onDismiss = { vm.dismissRecovery(); showRecovery = false }
+        )
+    }
+
+    LaunchedEffect(state.isAuthenticated) {
+        if (state.isAuthenticated) showRecovery = false
+    }
+
     AuthScreenContent(
         isLoading = state.isLoading,
         error = state.error,
         cooldownRemainingSeconds = state.cooldownRemainingSeconds,
         onSignIn = { vm.signIn(activity) },
-        onRegister = { showRegister = true }
+        onRegister = { showRegister = true },
+        onRecover = { showRecovery = true }
     )
 }
 
@@ -69,7 +83,8 @@ fun AuthScreenContent(
     error: String?,
     cooldownRemainingSeconds: Int = 0,
     onSignIn: () -> Unit,
-    onRegister: () -> Unit
+    onRegister: () -> Unit,
+    onRecover: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(32.dp),
@@ -107,6 +122,7 @@ fun AuthScreenContent(
         }
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onRegister) { Text("Create account") }
+        TextButton(onClick = onRecover) { Text("Lost your device?") }
     }
 }
 
@@ -174,6 +190,23 @@ private fun RecoverySheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                // #212: Escalating cooldown after repeated recovery-code failures, mirroring
+                // the OTP rate limiter (#119).
+                if (state.isRecoveryBlocked) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Too many attempts — wait ${state.recoveryCooldownSeconds}s",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else if (state.recoveryFailureCount > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${state.recoveryFailureCount} failed attempt" + if (state.recoveryFailureCount == 1) "" else "s",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 state.error?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -187,7 +220,10 @@ private fun RecoverySheet(
                     enabled = username.isNotBlank() && !state.isLoading
                 ) { Text("Send Code") }
             } else {
-                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text("Continue") }
+                TextButton(
+                    onClick = { onFinish(username) },
+                    enabled = !state.isLoading && !state.isRecoveryBlocked
+                ) { Text("Continue") }
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
