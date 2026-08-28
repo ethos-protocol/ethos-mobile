@@ -1395,15 +1395,23 @@ private fun TwoFactorVerifyScreen(
 fun VaultDetailScreen(
     vaultId: String,
     onBack: () -> Unit,
-    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+    onDeposit: () -> Unit = {},
+    twoFactorVm: TwoFactorViewModel = hiltViewModel(),
+    vaultVm: VaultViewModel = hiltViewModel()
 ) {
     val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val vaultState by vaultVm.state.collectAsStateWithLifecycle()
+    val vault = vaultState.vaults.find { it.id == vaultId }
     val context = LocalContext.current
     var showSetup by remember { mutableStateOf(false) }
     var showVerify by remember { mutableStateOf(false) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+    // Vaults are shown in this screen via balance/beneficiary fields that VaultListScreen's
+    // already-loaded state doesn't carry across (a new VaultViewModel instance is created for
+    // this destination), so this screen loads them itself, matching VaultListScreen's own load().
+    LaunchedEffect(Unit) { vaultVm.load() }
 
     if (showSetup) {
         TwoFactorSetupScreen(
@@ -1430,6 +1438,17 @@ fun VaultDetailScreen(
                 .padding(16.dp)
                 .fillMaxSize()
         ) {
+            Text("Funds", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            vault?.let {
+                Text("Balance: ${it.formattedBalance}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            Button(onClick = onDeposit, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
+                Text("Deposit")
+            }
+            Spacer(Modifier.height(24.dp))
+
             Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
 
