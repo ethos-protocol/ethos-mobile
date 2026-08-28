@@ -33,5 +33,16 @@
 	     ../EthosProtocol/Info.plist. -->
 	<key>API_BASE_URL</key>
 	<string>https://api.ethos-protocol.app/v1</string>
+
+	<!-- Same reasoning as API_BASE_URL above: CertificatePinning.swift is compiled into this
+	     extension target too, and Bundle.main resolves to the extension's own bundle, so the
+	     pin set must be declared here as well. Values expand from the
+	     TLS_PUBLIC_KEY_PIN_CURRENT / TLS_PUBLIC_KEY_PIN_BACKUP build settings (project.yml);
+	     empty entries are ignored, which disables pinning for unconfigured builds. -->
+	<key>TLS_PUBLIC_KEY_PINS</key>
+	<array>
+		<string>$(TLS_PUBLIC_KEY_PIN_CURRENT)</string>
+		<string>$(TLS_PUBLIC_KEY_PIN_BACKUP)</string>
+	</array>
 </dict>
 </plist>

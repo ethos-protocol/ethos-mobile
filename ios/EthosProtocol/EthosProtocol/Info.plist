@@ -63,6 +63,19 @@
 	<key>API_BASE_URL</key>
 	<string>https://api.ethos-protocol.app/v1</string>
 
+	<!-- CertificatePinning.swift's PinningDelegate reads this key via
+	     Bundle.main.object(forInfoDictionaryKey: "TLS_PUBLIC_KEY_PINS"). The two entries are
+	     the current and backup pins of the documented rotation strategy, expanded from the
+	     TLS_PUBLIC_KEY_PIN_CURRENT / TLS_PUBLIC_KEY_PIN_BACKUP build settings (project.yml)
+	     so pins differ per build configuration without editing this file. Empty entries are
+	     ignored by PinningDelegate, so an unconfigured build has pinning disabled;
+	     .github/scripts/check_tls_pinning.py fails a Release build in that state. -->
+	<key>TLS_PUBLIC_KEY_PINS</key>
+	<array>
+		<string>$(TLS_PUBLIC_KEY_PIN_CURRENT)</string>
+		<string>$(TLS_PUBLIC_KEY_PIN_BACKUP)</string>
+	</array>
+
 	<!-- Standard HTTPS/TLS only — CryptoKit.SHA256 is used solely for local
 	     offline-cache filenames (OfflineSupport.swift), not for exportable/proprietary
 	     encryption of user data. If that ever changes (e.g. client-side encryption of

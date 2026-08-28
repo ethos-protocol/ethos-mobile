@@ -36,6 +36,20 @@ settings:
     # for each target. Find it at https://developer.apple.com/account/#/membership.
     # Deliberately left blank — do NOT fill this in with a placeholder/fake ID.
     DEVELOPMENT_TEAM: ""
+    # #170: certificate pins for api.ethos-protocol.app. Both Info.plists expand these
+    # into their TLS_PUBLIC_KEY_PINS array, so a pin rotation is a build-setting change
+    # rather than a plist edit, and can differ per build configuration. Supply the real
+    # values on the build invocation (or in Xcode's build settings / an .xcconfig):
+    #
+    #   xcodebuild -configuration Release \
+    #     TLS_PUBLIC_KEY_PIN_CURRENT=<base64 SPKI SHA-256> \
+    #     TLS_PUBLIC_KEY_PIN_BACKUP=<base64 SPKI SHA-256>
+    #
+    # Left blank here on purpose: PinningDelegate ignores empty entries, so an
+    # unconfigured build has pinning disabled (the documented local-dev behavior).
+    # Release builds are gated by .github/scripts/check_tls_pinning.py.
+    TLS_PUBLIC_KEY_PIN_CURRENT: ""
+    TLS_PUBLIC_KEY_PIN_BACKUP: ""
 
 targets:
   EthosProtocol:
