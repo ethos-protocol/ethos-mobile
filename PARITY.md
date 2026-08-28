@@ -39,7 +39,7 @@ Last audited: 2026-07-27
 | Balance display (formatted XLM) | ✅ | ✅ | |
 | **Beneficiary management** | | | |
 | View beneficiary | ✅ | ✅ | |
-| Update beneficiary | ✅ | ❌ | Android has no ManageBeneficiaryScreen (#87) |
+| Update beneficiary | ✅ | ✅ | Android ManageBeneficiaryScreen reachable from VaultDetailScreen; validates via StellarAddress (#113) (#195) |
 | Beneficiary acceptance deep link | ✅ | ⚠️ | Android parses the deep link but does not call acceptBeneficiary() (#87/#109) |
 | Beneficiary acceptance token forwarded | ✅ | ❌ | Android AcceptanceViewModel ignores the token param (#109) |
 | **Stellar address validation** | | | |

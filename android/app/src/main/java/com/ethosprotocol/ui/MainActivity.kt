@@ -32,6 +32,7 @@ import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
 import com.ethosprotocol.ui.screens.DepositScreen
+import com.ethosprotocol.ui.screens.ManageBeneficiaryRoute
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultDetailScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
@@ -229,7 +230,15 @@ private fun AppNavigation(
                     vaultId = vaultId,
                     onBack = { navController.popBackStack() },
                     onDeposit = { navController.navigate("deposit/$vaultId") },
-                    onWithdraw = { balance -> navController.navigate("withdraw/$vaultId/$balance") }
+                    onWithdraw = { balance -> navController.navigate("withdraw/$vaultId/$balance") },
+                    onManageBeneficiary = { navController.navigate("beneficiary/$vaultId") }
+                )
+            }
+            composable("beneficiary/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                ManageBeneficiaryRoute(
+                    vaultId = vaultId,
+                    onDone = { navController.popBackStack() }
                 )
             }
             composable("accept/{vaultId}/{token}") { backStack ->
