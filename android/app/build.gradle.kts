@@ -19,7 +19,8 @@ fun signingProp(envName: String, propName: String): String? =
 // #173: Certificate pins that will be compiled into a release build. Supplied out of band
 // (CI secret / local gradle.properties) so rotating a pin never needs a source change, and
 // verified before release artifacts ship by .github/scripts/verify_cert_pins.py. When it is
-// blank, CertificatePinner falls back to its compiled-in PLACEHOLDER_PINS.
+// blank, CertificatePinner's pin set is empty, which disables pinning (#169) — there is no
+// compiled-in fallback, so an unconfigured build can never pin to an unmatchable value.
 val releaseCertPins = System.getenv("ETHOS_CERT_PINS")?.takeIf { it.isNotBlank() }
     ?: (project.findProperty("ethos.certPins") as String?)?.takeIf { it.isNotBlank() }
     ?: ""
