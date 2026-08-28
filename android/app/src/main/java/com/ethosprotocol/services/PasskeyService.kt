@@ -16,7 +16,9 @@ import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.models.AddPasskeyRequest
 import com.ethosprotocol.models.AuthChallenge
+import com.ethosprotocol.models.PasskeyCredential
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
 import com.ethosprotocol.models.RecoveryCompleteRequest
@@ -82,6 +84,21 @@ class PasskeyService @Inject constructor(
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
         requireSuccess(apiClient.completeRecovery(completeReq))
+    }.onFailure { if (it is CancellationException) throw it }
+
+    // Registers an additional passkey on this device for the *currently authenticated*
+    // account (#207) — e.g. a user adding a tablet as a second device — distinct from
+    // recoverAccount, which requires a recovery token for a signed-out user. Relies on the
+    // existing session's bearer token (ApiClient attaches it automatically) rather than
+    // recovery proof.
+    suspend fun addPasskey(activity: Activity, username: String): Result<PasskeyCredential> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val addReq = AddPasskeyRequest(
+            credentialId = json.getString("id"),
+            publicKey = extractCosePublicKey(json.getJSONObject("response").getString("attestationObject")),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.addPasskey(addReq))
     }.onFailure { if (it is CancellationException) throw it }
 
     private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {

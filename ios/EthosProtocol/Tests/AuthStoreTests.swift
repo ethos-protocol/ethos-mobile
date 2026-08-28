@@ -48,6 +48,48 @@ final class AuthStoreSingleCeremonyTests: XCTestCase {
     }
 }
 
+// MARK: - #207 Add Additional Passkey While Signed In
+
+@MainActor
+final class AuthStoreAddPasskeyTests: XCTestCase {
+
+    func test_addPasskey_whileSignedIn_succeedsWithoutDisturbingSession() async {
+        let store = AuthStore()
+        store.passkeyRegister = { _ in AuthToken(token: "tok-register", expiresAt: Date().addingTimeInterval(3_600)) }
+        await store.register(username: "alice")
+        XCTAssertTrue(store.isAuthenticated)
+
+        let newCredential = PasskeyCredential(credentialId: "cred-second-device", deviceLabel: "iPad", createdAt: Date(), lastUsedAt: nil)
+        store.passkeyAdd = { _ in newCredential }
+
+        let result = await store.addPasskey(username: "alice")
+
+        XCTAssertEqual(result, newCredential)
+        XCTAssertNil(store.error)
+        // Adding a second passkey must not disturb the existing session (#207) — it's not
+        // a new sign-in, so isAuthenticated must remain exactly what it already was.
+        XCTAssertTrue(store.isAuthenticated)
+        await store.signOut()
+    }
+
+    func test_addPasskey_failure_setsError_keepsExistingSession() async {
+        enum FakeError: Error, LocalizedError { case addFailed
+            var errorDescription: String? { "add failed" }
+        }
+        let store = AuthStore()
+        store.passkeyRegister = { _ in AuthToken(token: "tok-register", expiresAt: Date().addingTimeInterval(3_600)) }
+        await store.register(username: "alice")
+        store.passkeyAdd = { _ in throw FakeError.addFailed }
+
+        let result = await store.addPasskey(username: "alice")
+
+        XCTAssertNil(result)
+        XCTAssertNotNil(store.error)
+        XCTAssertTrue(store.isAuthenticated, "A failed add-passkey attempt must not sign the user out")
+        await store.signOut()
+    }
+}
+
 // MARK: - #3 Token Refresh Tests
 
 @MainActor

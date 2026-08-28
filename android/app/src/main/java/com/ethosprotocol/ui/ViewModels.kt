@@ -127,6 +127,20 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> handleAuthFailure(e) }
     }
 
+    // Registers an additional passkey for the currently signed-in account (#207) — e.g. a
+    // second device — without disturbing the existing session (unlike register(), this
+    // never flips isAuthenticated). PasskeyService.addPasskey uses the existing session's
+    // bearer token rather than an account-recovery proof.
+    fun addPasskey(activity: Activity, username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.addPasskey(activity, username)
+            .onSuccess { _state.update { it.copy(isLoading = false, error = null) } }
+            .onFailure { e ->
+                if (BuildConfig.DEBUG) Log.w(TAG, "addPasskey failed", e)
+                _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
+            }
+    }
+
     fun signOut() = viewModelScope.launch {
         // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
         // tokenProvider.token when building the request, so clearing first would send

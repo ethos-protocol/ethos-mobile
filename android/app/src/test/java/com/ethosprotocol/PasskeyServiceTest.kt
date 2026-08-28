@@ -6,8 +6,10 @@ import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.models.AddPasskeyRequest
 import com.ethosprotocol.models.AuthChallenge
 import com.ethosprotocol.models.AuthToken
+import com.ethosprotocol.models.PasskeyCredential
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
 import com.ethosprotocol.services.CredentialManagerFactory
@@ -160,6 +162,66 @@ class PasskeyServiceTest {
         coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Error("Forbidden", 403)
 
         val result = service.register(mockActivity, "alice")
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals("Forbidden", result.exceptionOrNull()?.message)
+    }
+
+    // ── addPasskey (#207: adding a second passkey while already signed in) ─────
+
+    @Test
+    fun addPasskey_success_callsAddPasskeyWithCorrectFields() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        val fakeCredential = PasskeyCredential(
+            credentialId = "credential-id-reg",
+            deviceLabel = "iPad",
+            createdAt = "2099-01-01T00:00:00Z"
+        )
+        // Already signed in: tokenProvider already holds a session before this call, and
+        // addPasskey must not touch it — it authenticates via ApiClient's bearer auth, not
+        // a fresh sign-in ceremony.
+        tokenProvider.token = "already-signed-in-token"
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.addPasskey(any()) } returns ApiResult.Success(fakeCredential)
+
+        val result = service.addPasskey(mockActivity, "alice")
+
+        assertTrue("Expected success", result.isSuccess)
+        assertEquals(fakeCredential, result.getOrNull())
+        assertEquals("already-signed-in-token", tokenProvider.token)
+
+        val slot = slot<AddPasskeyRequest>()
+        coVerify { mockApiClient.addPasskey(capture(slot)) }
+        assertEquals("credential-id-reg",  slot.captured.credentialId)
+        assertEquals(fakeCoseKeyBase64,    slot.captured.publicKey)
+        assertEquals("client-data-base64", slot.captured.clientDataJson)
+    }
+
+    @Test
+    fun addPasskey_credentialManagerThrows_returnsFailure_addPasskeyNotCalled() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } throws
+            RuntimeException("biometric cancelled")
+
+        val result = service.addPasskey(mockActivity, "alice")
+
+        assertTrue("Expected failure", result.isFailure)
+        coVerify(exactly = 0) { mockApiClient.addPasskey(any()) }
+    }
+
+    @Test
+    fun addPasskey_apiError_returnsFailure() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.addPasskey(any()) } returns ApiResult.Error("Forbidden", 403)
+
+        val result = service.addPasskey(mockActivity, "alice")
 
         assertTrue("Expected failure", result.isFailure)
         assertEquals("Forbidden", result.exceptionOrNull()?.message)

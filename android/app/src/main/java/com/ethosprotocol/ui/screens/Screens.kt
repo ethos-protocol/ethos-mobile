@@ -199,6 +199,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onAddPasskeyClick: () -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -261,6 +262,8 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                // #207: authenticated entry point to add a passkey for a second device.
+                IconButton(onClick = onAddPasskeyClick) { Icon(Icons.Default.Key, "Add another passkey") }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -1490,6 +1493,71 @@ fun VaultDetailScreen(
                 }
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Add Passkey Screen
+
+/**
+ * #207: authenticated "Add another passkey" entry point, distinct from the initial
+ * account-registration flow (AuthScreen's register mode) — lets an already-signed-in user
+ * register a passkey for a second device without going through account recovery.
+ */
+@Composable
+fun AddPasskeyScreen(
+    onDone: () -> Unit,
+    vm: AuthViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val activity = LocalContext.current as android.app.Activity
+    var username by remember { mutableStateOf("") }
+    var submitted by remember { mutableStateOf(false) }
+
+    // Navigate back once the in-flight add completes successfully — mirrors how
+    // RegisterView (iOS) dismisses on a successful AuthStore.register() call.
+    LaunchedEffect(state.isLoading, state.error) {
+        if (submitted && !state.isLoading && state.error == null) onDone()
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Add Another Passkey") },
+                navigationIcon = { IconButton(onClick = onDone) { Icon(Icons.Default.ArrowBack, "Back") } }
+            )
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).padding(16.dp).fillMaxWidth()) {
+            Text(
+                "Confirm your username, then use this device's screen lock or biometric to " +
+                "create a new passkey for it.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(16.dp))
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Username") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(16.dp))
+            state.error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+            }
+            Button(
+                onClick = { submitted = true; vm.addPasskey(activity, username) },
+                enabled = username.isNotBlank() && !state.isLoading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (state.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary)
+                } else {
+                    Text("Add Passkey")
                 }
             }
         }

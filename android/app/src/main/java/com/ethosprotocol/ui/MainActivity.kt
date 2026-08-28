@@ -29,6 +29,7 @@ import androidx.navigation.compose.rememberNavController
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
+import com.ethosprotocol.ui.screens.AddPasskeyScreen
 import com.ethosprotocol.ui.screens.AuthScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
 import com.ethosprotocol.ui.screens.DepositScreen
@@ -220,7 +221,13 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(
+                    onVaultClick = { /* navigate to detail */ },
+                    onAddPasskeyClick = { navController.navigate("add-passkey") }
+                )
+            }
+            composable("add-passkey") {
+                AddPasskeyScreen(onDone = { navController.popBackStack() })
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

@@ -149,6 +149,18 @@ public final class APIClient {
         let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
     }
 
+    // MARK: - Passkey Credentials (#207)
+
+    /// Registers an additional passkey to the *currently authenticated* account (#207),
+    /// using the existing session's Bearer token — distinct from `linkAdditionalPasskey`,
+    /// which is for a signed-out user proving identity via account recovery instead.
+    func addPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws -> PasskeyCredential {
+        let body = ["credential_id": credentialID,
+                    "public_key": publicKey,
+                    "client_data_json": clientDataJSON]
+        return try await post(path: "/auth/credentials", body: body)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"

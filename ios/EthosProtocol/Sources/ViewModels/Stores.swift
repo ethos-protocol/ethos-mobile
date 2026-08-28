@@ -43,6 +43,7 @@ final class AuthStore: ObservableObject {
     var linkAdditionalPasskey: (String, AccountRecoveryProof) async throws -> String = { username, proof in
         try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
     }
+    var passkeyAdd: (String) async throws -> PasskeyCredential = { try await PasskeyService.shared.addPasskey(username: $0) }
 
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
@@ -107,6 +108,23 @@ final class AuthStore: ObservableObject {
             ifNotCancelled { self.error = ErrorPresentation(error) }
         }
         isLoading = false
+    }
+
+    /// Registers an additional passkey for the currently signed-in account (#207) — e.g. a
+    /// second device — without disturbing the existing session (unlike `register`/
+    /// `recoverAccess`, this never sets `isAuthenticated`). Returns the newly added
+    /// credential on success so the caller (PasskeyManagementView) can refresh its list.
+    @discardableResult
+    func addPasskey(username: String) async -> PasskeyCredential? {
+        isLoading = true; error = nil
+        var added: PasskeyCredential?
+        do {
+            added = try await passkeyAdd(username)
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+        isLoading = false
+        return added
     }
 
     func signOut() async {

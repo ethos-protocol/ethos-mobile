@@ -120,6 +120,11 @@ class ApiClient(
     suspend fun completeRecovery(req: RecoveryCompleteRequest): ApiResult<Unit> =
         post("/auth/recovery/complete", req)
 
+    // Adds a passkey to the *currently authenticated* account (#207), distinct from
+    // registerPasskey (new account) and completeRecovery (recovery for a signed-out user).
+    suspend fun addPasskey(req: AddPasskeyRequest): ApiResult<PasskeyCredential> =
+        post("/auth/credentials", req)
+
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
 

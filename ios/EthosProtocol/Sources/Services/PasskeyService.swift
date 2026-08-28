@@ -89,6 +89,21 @@ final class PasskeyService: NSObject {
         return credential.credentialID
     }
 
+    /// Registers an additional passkey on this device for the *currently signed-in* account
+    /// (#207) — e.g. a user adding a tablet as a second device — without going through the
+    /// account-recovery flow `linkAdditionalPasskey` requires for a signed-out user. Relies
+    /// on the existing session's Bearer token for authorization instead of a recovery proof.
+    func addPasskey(username: String) async throws -> PasskeyCredential {
+        let credential = try await createRegistrationCredential(username: username)
+        let result = try await APIClient.shared.addPasskey(
+            credentialID: credential.credentialID,
+            publicKey: credential.publicKey,
+            clientDataJSON: credential.clientDataJSON
+        )
+        persistCredentialID(credential.credentialID)
+        return result
+    }
+
     private struct RegistrationCredential {
         let credentialID: String
         let publicKey: String
