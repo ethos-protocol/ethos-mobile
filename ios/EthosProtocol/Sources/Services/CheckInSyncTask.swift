@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import os.log
 
 // MARK: - CheckInSyncTask
 
@@ -21,6 +22,10 @@ import Foundation
 final class CheckInSyncTask {
     static let shared = CheckInSyncTask()
     static let taskIdentifier = "app.ethos-protocol.checkin-sync"
+
+    // #204: see docs/background-task-scheduling.md — used to compare requested vs.
+    // real-world observed cadence against BackgroundRefreshService's separate scheduling pool.
+    private static let log = OSLog(subsystem: "app.ethos-protocol", category: "background-scheduling")
 
     // Error codes where the server has definitively rejected the check-in. Matches
     // PendingActionSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
@@ -53,6 +58,7 @@ final class CheckInSyncTask {
         request.requiresExternalPower = false
         // Submit best-effort; ignore if background tasks are disabled (simulator, low power mode).
         try? BGTaskScheduler.shared.submit(request)
+        Self.log.log("scheduled: requiresNetworkConnectivity=true")
     }
 
     // MARK: - Sync logic
@@ -93,6 +99,7 @@ final class CheckInSyncTask {
     // MARK: - BGProcessingTask handler
 
     private func handleSync(task: BGProcessingTask) {
+        Self.log.log("invoked")
         // Re-schedule before doing the work so a gap never opens up.
         scheduleSync()
 
