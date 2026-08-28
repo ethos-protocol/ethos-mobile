@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accept Ethos-Protocol Vault</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+        .subtitle {
+            color: #666;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+        .action-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+        .action-title {
+            color: #333;
+            font-weight: 600;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+        .store-links {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+        .store-link {
+            display: inline-block;
+            text-decoration: none;
+            background: #333;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.3s ease;
+        }
+        .store-link:hover {
+            background: #555;
+        }
+        .app-store {
+            background: #000;
+        }
+        .app-store:hover {
+            background: #222;
+        }
+        .google-play {
+            background: #167fca;
+        }
+        .google-play:hover {
+            background: #0d5fa3;
+        }
+        .info-box {
+            background: #f0f7ff;
+            border-left: 4px solid #667eea;
+            padding: 16px;
+            margin: 20px 0;
+            text-align: left;
+            border-radius: 6px;
+        }
+        .info-box p {
+            color: #333;
+            font-size: 14px;
+            line-height: 1.6;
+            margin: 8px 0;
+        }
+        .info-icon {
+            font-size: 20px;
+            margin-right: 8px;
+        }
+        .benefits {
+            text-align: left;
+            margin: 20px 0;
+            padding: 16px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+        .benefits h3 {
+            color: #333;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+        .benefits ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .benefits li {
+            color: #666;
+            font-size: 13px;
+            padding: 6px 0;
+            padding-left: 24px;
+            position: relative;
+        }
+        .benefits li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #667eea;
+            font-weight: bold;
+        }
+        .footer {
+            color: #999;
+            font-size: 12px;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎉 Vault Beneficiary Acceptance</h1>
+        
+        <p class="subtitle">
+            You've been named as a beneficiary of an Ethos-Protocol vault. Accept this role through the Ethos-Protocol app to gain access.
+        </p>
+
+        <div class="action-section">
+            <div class="action-title">📱 Install Ethos-Protocol</div>
+            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                Open the app to accept your beneficiary role:
+            </p>
+            <div class="store-links">
+                <a href="https://apps.apple.com/app/ethos-protocol/id1234567890" class="store-link app-store">
+                    App Store
+                </a>
+                <a href="https://play.google.com/store/apps/details?id=com.ethosprotocol" class="store-link google-play">
+                    Google Play
+                </a>
+            </div>
+        </div>
+
+        <div class="info-box">
+            <p>
+                <span class="info-icon">ℹ️</span>
+                <strong>What does this mean?</strong>
+            </p>
+            <p>
+                As a beneficiary, you've been granted access to an Ethos-Protocol vault in case of the account owner's loss of control or other triggers. Accepting this role doesn't give you access until those specific conditions are met.
+            </p>
+        </div>
+
+        <div class="benefits">
+            <h3>Why use Ethos-Protocol?</h3>
+            <ul>
+                <li>Secure inheritance and asset protection</li>
+                <li>Multi-factor authentication available</li>
+                <li>Recovery and emergency access management</li>
+                <li>Complete audit trail of actions</li>
+                <li>No single point of failure</li>
+            </ul>
+        </div>
+
+        <div class="footer">
+            <p>
+                Questions? Visit <a href="https://ethos-protocol.app/support">our support page</a> or contact 
+                <a href="mailto:support@ethos-protocol.app">support@ethos-protocol.app</a>
+            </p>
+            <p style="margin-top: 12px;">
+                <a href="https://ethos-protocol.app">Back to Ethos-Protocol</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>
