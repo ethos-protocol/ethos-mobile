@@ -8,6 +8,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
+                // #206: lists registered credentials and lets the user revoke one, e.g.
+                // after losing the device it lives on.
+                NavigationLink("Manage Passkeys") { PasskeyManagementView() }
                 // #207: authenticated "Add another passkey" entry point — distinct from the
                 // initial account-registration flow (RegisterView), for a signed-in user
                 // adding a second device without going through account recovery.

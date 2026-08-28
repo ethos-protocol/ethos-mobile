@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.PasskeyCredential
 import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
@@ -33,6 +34,7 @@ import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import com.ethosprotocol.ui.PasskeyManagementViewModel
 
 // MARK: - Auth Screen
 
@@ -199,7 +201,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
-    onAddPasskeyClick: () -> Unit = {},
+    onManagePasskeysClick: () -> Unit = {},
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -262,8 +264,8 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
-                // #207: authenticated entry point to add a passkey for a second device.
-                IconButton(onClick = onAddPasskeyClick) { Icon(Icons.Default.Key, "Add another passkey") }
+                // #206: entry point to the passkey management screen (list/revoke/add).
+                IconButton(onClick = onManagePasskeysClick) { Icon(Icons.Default.Key, "Manage passkeys") }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -1493,6 +1495,102 @@ fun VaultDetailScreen(
                 }
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Passkey Management Screen
+
+/**
+ * Lists the account's registered passkeys and lets the user revoke one (#206) — e.g. after
+ * losing the device it lives on. Revoke is gated by [BiometricHelper], mirroring how
+ * [VaultDetailScreen] gates disabling 2FA (#120): the biometric prompt requires a
+ * [androidx.fragment.app.FragmentActivity] and so lives here in the screen layer, while the
+ * network call is delegated to the ViewModel.
+ */
+@Composable
+fun PasskeyManagementScreen(
+    onBack: () -> Unit,
+    onAddPasskeyClick: () -> Unit,
+    vm: PasskeyManagementViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var biometricError by remember { mutableStateOf<String?>(null) }
+    var pendingRevoke by remember { mutableStateOf<PasskeyCredential?>(null) }
+
+    LaunchedEffect(Unit) { vm.load() }
+
+    pendingRevoke?.let { credential ->
+        AlertDialog(
+            onDismissRequest = { pendingRevoke = null },
+            title = { Text("Revoke this passkey?") },
+            text = { Text("Any device using \"${credential.deviceLabel ?: "this passkey"}\" will no longer be able to sign in.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRevoke = null
+                    biometricError = null
+                    BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+                        title = "Confirm Revoke Passkey",
+                        subtitle = "Biometric or PIN required to revoke this passkey",
+                        onSuccess = { vm.revokeCredentialAfterBiometric(credential.credentialId) },
+                        onError = { err -> biometricError = err }
+                    )
+                }) { Text("Revoke") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("Cancel") } }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Passkeys") },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") } },
+                actions = {
+                    IconButton(onClick = onAddPasskeyClick) { Icon(Icons.Default.Add, "Add another passkey") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            biometricError?.let {
+                Text(it, color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+            }
+            when {
+                state.isLoading && state.credentials.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                }
+                state.error != null && state.credentials.isEmpty() -> {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(state.error!!, color = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = { vm.load() }) { Text("Retry") }
+                    }
+                }
+                state.credentials.isEmpty() -> {
+                    Text("No passkeys registered.", modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                else -> {
+                    LazyColumn {
+                        items(state.credentials, key = { it.credentialId }) { credential ->
+                            ListItem(
+                                headlineContent = { Text(credential.deviceLabel ?: "Unknown device") },
+                                supportingContent = {
+                                    Text(credential.lastUsedAt?.let { "Last used $it" } ?: "Never used")
+                                },
+                                trailingContent = {
+                                    IconButton(onClick = { pendingRevoke = credential }) {
+                                        Icon(Icons.Default.Delete, "Revoke passkey")
+                                    }
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }

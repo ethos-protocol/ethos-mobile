@@ -31,6 +31,7 @@ import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
 import com.ethosprotocol.ui.screens.AddPasskeyScreen
 import com.ethosprotocol.ui.screens.AuthScreen
+import com.ethosprotocol.ui.screens.PasskeyManagementScreen
 import com.ethosprotocol.ui.screens.BeneficiaryAcceptanceScreen
 import com.ethosprotocol.ui.screens.DepositScreen
 import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
@@ -223,6 +224,12 @@ private fun AppNavigation(
             composable("vaults") {
                 VaultListScreen(
                     onVaultClick = { /* navigate to detail */ },
+                    onManagePasskeysClick = { navController.navigate("passkeys") }
+                )
+            }
+            composable("passkeys") {
+                PasskeyManagementScreen(
+                    onBack = { navController.popBackStack() },
                     onAddPasskeyClick = { navController.navigate("add-passkey") }
                 )
             }

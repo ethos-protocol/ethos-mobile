@@ -479,3 +479,54 @@ struct Disable2FACoordinator {
         try await apiDisable(vaultID)
     }
 }
+
+// MARK: - #206 Passkey Management
+
+@MainActor
+final class PasskeyManagementStore: ObservableObject {
+    @Published var credentials: [PasskeyCredential] = []
+    @Published var isLoading = false
+    @Published var error: ErrorPresentation?
+
+    // Injected for testing; mirrors BackgroundRefreshService.vaultListProvider.
+    var listCredentials: () async throws -> [PasskeyCredential] = { try await APIClient.shared.listCredentials() }
+    var revoke = RevokeCredentialCoordinator()
+
+    func load() async {
+        isLoading = true; error = nil
+        do {
+            let result = try await listCredentials()
+            ifNotCancelled { credentials = result }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+        isLoading = false
+    }
+
+    /// Revokes `credential` after a biometric gate (#206) and removes it from the
+    /// displayed list on success, without a full reload round trip.
+    func revokeCredential(_ credential: PasskeyCredential) async {
+        error = nil
+        do {
+            try await revoke.run(credentialID: credential.id)
+            ifNotCancelled { credentials.removeAll { $0.id == credential.id } }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+    }
+}
+
+/// Encapsulates the "authenticate then revoke" sequence for a passkey credential (#206),
+/// mirroring `Disable2FACoordinator`'s biometric-gate pattern — revoking a passkey is at
+/// least as security-sensitive as disabling 2FA.
+struct RevokeCredentialCoordinator {
+    var biometric: BiometricAuthenticating = BiometricService.shared
+    var apiRevoke: (String) async throws -> Void = { credentialID in
+        try await APIClient.shared.revokeCredential(credentialID: credentialID)
+    }
+
+    func run(credentialID: String) async throws {
+        try await biometric.authenticate(reason: "Confirm removing this passkey")
+        try await apiRevoke(credentialID)
+    }
+}

@@ -357,6 +357,44 @@ class TwoFactorViewModel @Inject constructor(
     }
 }
 
+// --- Passkey Management ViewModel (#206) ---
+
+data class PasskeyManagementUiState(
+    val credentials: List<PasskeyCredential> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class PasskeyManagementViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(PasskeyManagementUiState())
+    val state = _state.asStateFlow()
+
+    fun load() = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.listCredentials()) {
+            is ApiResult.Success -> _state.update { it.copy(credentials = result.data, isLoading = false) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    // Called only after successful BiometricHelper authentication in the screen layer (#206),
+    // mirroring TwoFactorViewModel.disable2FAAfterBiometric — revoking a passkey is at least
+    // as security-sensitive as disabling 2FA.
+    fun revokeCredentialAfterBiometric(credentialId: String) = viewModelScope.launch {
+        when (val result = apiClient.revokeCredential(credentialId)) {
+            is ApiResult.Success ->
+                _state.update { it.copy(credentials = it.credentials.filterNot { c -> c.credentialId == credentialId }) }
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+}
+
 // --- Vault ViewModel ---
 
 data class VaultUiState(

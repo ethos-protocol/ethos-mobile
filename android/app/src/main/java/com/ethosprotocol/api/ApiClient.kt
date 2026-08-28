@@ -125,6 +125,13 @@ class ApiClient(
     suspend fun addPasskey(req: AddPasskeyRequest): ApiResult<PasskeyCredential> =
         post("/auth/credentials", req)
 
+    // Passkey credential management (#206) — an account is not limited to a single passkey,
+    // so listCredentials() always returns a list.
+    suspend fun listCredentials(): ApiResult<List<PasskeyCredential>> = get("/auth/credentials")
+
+    suspend fun revokeCredential(credentialId: String): ApiResult<Unit> =
+        delete("/auth/credentials/$credentialId", Unit)
+
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
 
