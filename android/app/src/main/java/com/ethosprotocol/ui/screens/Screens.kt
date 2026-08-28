@@ -1396,6 +1396,7 @@ fun VaultDetailScreen(
     vaultId: String,
     onBack: () -> Unit,
     onDeposit: () -> Unit = {},
+    onWithdraw: (Long) -> Unit = {},
     twoFactorVm: TwoFactorViewModel = hiltViewModel(),
     vaultVm: VaultViewModel = hiltViewModel()
 ) {
@@ -1446,6 +1447,14 @@ fun VaultDetailScreen(
             }
             Button(onClick = onDeposit, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
                 Text("Deposit")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { vault?.let { onWithdraw(it.balance) } },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = vault != null
+            ) {
+                Text("Withdraw")
             }
             Spacer(Modifier.height(24.dp))
 

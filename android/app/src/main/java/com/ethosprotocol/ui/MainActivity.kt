@@ -228,7 +228,8 @@ private fun AppNavigation(
                 VaultDetailScreen(
                     vaultId = vaultId,
                     onBack = { navController.popBackStack() },
-                    onDeposit = { navController.navigate("deposit/$vaultId") }
+                    onDeposit = { navController.navigate("deposit/$vaultId") },
+                    onWithdraw = { balance -> navController.navigate("withdraw/$vaultId/$balance") }
                 )
             }
             composable("accept/{vaultId}/{token}") { backStack ->

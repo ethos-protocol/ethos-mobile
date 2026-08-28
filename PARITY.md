@@ -35,7 +35,7 @@ Last audited: 2026-07-27
 | Biometric confirmation for check-in | ✅ | ✅ | iOS: LocalAuthentication; Android: BiometricPrompt |
 | **Funds** | | | |
 | Deposit | ✅ | ✅ | Android DepositScreen added, reachable from VaultDetailScreen (#193) |
-| Withdraw | ✅ | ❌ | Android has no WithdrawScreen (#87) |
+| Withdraw | ✅ | ✅ | Android WithdrawScreen added, reachable from VaultDetailScreen; gated behind BiometricHelper (#194) |
 | Balance display (formatted XLM) | ✅ | ✅ | |
 | **Beneficiary management** | | | |
 | View beneficiary | ✅ | ✅ | |
