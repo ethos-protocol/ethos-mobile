@@ -1012,10 +1012,19 @@ final class StellarAddressTests: XCTestCase {
     // version byte, and CRC16/XModem checksum).
     private let validAddress = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
     private let validAddress2 = "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX"
+    
+    // Muxed accounts (M-addresses, 69 chars, SEP-0023)
+    private let muxedAccountZero = "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"
+    private let muxedAccountLarge = "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVAAAAAAAAAAAAAJLK"
 
-    func test_isValidPublicKey_acceptsWellFormedAddresses() {
+    func test_isValidPublicKey_acceptsWellFormedGAddresses() {
         XCTAssertTrue(StellarAddress.isValidPublicKey(validAddress))
         XCTAssertTrue(StellarAddress.isValidPublicKey(validAddress2))
+    }
+
+    func test_isValidPublicKey_acceptsMuxedAccounts() {
+        XCTAssertTrue(StellarAddress.isValidPublicKey(muxedAccountZero))
+        XCTAssertTrue(StellarAddress.isValidPublicKey(muxedAccountLarge))
     }
 
     func test_isValidPublicKey_rejectsBadChecksum() {
@@ -1023,8 +1032,8 @@ final class StellarAddressTests: XCTestCase {
         XCTAssertFalse(StellarAddress.isValidPublicKey("GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZA"))
     }
 
-    func test_isValidPublicKey_rejectsWrongPrefix() {
-        XCTAssertFalse(StellarAddress.isValidPublicKey("M" + validAddress.dropFirst()))
+    func test_isValidPublicKey_rejectsMuxedAccountBadChecksum() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey("MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUR"))
     }
 
     func test_isValidPublicKey_rejectsTooShort() {
@@ -1033,6 +1042,10 @@ final class StellarAddressTests: XCTestCase {
 
     func test_isValidPublicKey_rejectsTooLong() {
         XCTAssertFalse(StellarAddress.isValidPublicKey(validAddress + "A"))
+    }
+
+    func test_isValidPublicKey_rejectsMuxedTooLong() {
+        XCTAssertFalse(StellarAddress.isValidPublicKey(muxedAccountZero + "A"))
     }
 
     func test_isValidPublicKey_rejectsLowercase() {

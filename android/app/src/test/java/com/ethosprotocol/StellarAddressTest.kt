@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * Tests for [StellarAddress.isValidPublicKey].
  *
- * All fixtures are taken directly from `shared/stellar-validation-spec.md` (#113)
+ * All fixtures are taken directly from `shared/stellar-validation-spec.md` (#264, #113)
  * so the same valid/invalid addresses are tested identically on iOS and Android.
  * If a fixture is added or changed in the spec, update both this file and
  * `ios/EthosProtocol/Tests/EthosProtocolTests.swift` (StellarAddressTests).
@@ -16,7 +16,7 @@ import org.junit.Test
 class StellarAddressTest {
 
     // -------------------------------------------------------------------------
-    // Valid addresses — all must be accepted
+    // Valid addresses: public keys (G-addresses)
     // -------------------------------------------------------------------------
 
     // Verified valid StrKey ed25519 public keys (correct length, "G" prefix,
@@ -44,11 +44,29 @@ class StellarAddressTest {
     }
 
     // -------------------------------------------------------------------------
+    // Valid addresses: muxed accounts (M-addresses)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `isValidPublicKey accepts muxed account with memo ID zero`() {
+        assertTrue(StellarAddress.isValidPublicKey(
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey accepts muxed account with large memo ID`() {
+        assertTrue(StellarAddress.isValidPublicKey(
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVAAAAAAAAAAAAAJLK"
+        ))
+    }
+
+    // -------------------------------------------------------------------------
     // Invalid: wrong checksum
     // -------------------------------------------------------------------------
 
     @Test
-    fun `isValidPublicKey rejects address with wrong checksum`() {
+    fun `isValidPublicKey rejects G-address with wrong checksum`() {
         // Same as the second valid address but the last character is changed
         // from 'X' to 'A', corrupting the checksum.
         assertFalse(StellarAddress.isValidPublicKey(
@@ -56,15 +74,10 @@ class StellarAddressTest {
         ))
     }
 
-    // -------------------------------------------------------------------------
-    // Invalid: wrong prefix
-    // -------------------------------------------------------------------------
-
     @Test
-    fun `isValidPublicKey rejects address with wrong prefix`() {
-        // Replace 'G' with 'M' — not a valid ed25519 public key version prefix.
+    fun `isValidPublicKey rejects M-address with wrong checksum`() {
         assertFalse(StellarAddress.isValidPublicKey(
-            "MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUR"
         ))
     }
 
@@ -73,7 +86,7 @@ class StellarAddressTest {
     // -------------------------------------------------------------------------
 
     @Test
-    fun `isValidPublicKey rejects address that is too short`() {
+    fun `isValidPublicKey rejects G-address that is too short`() {
         // 55 characters — one less than required.
         assertFalse(StellarAddress.isValidPublicKey(
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAW"
@@ -81,10 +94,27 @@ class StellarAddressTest {
     }
 
     @Test
-    fun `isValidPublicKey rejects address that is too long`() {
+    fun `isValidPublicKey rejects G-address that is too long`() {
         // 57 characters — one more than required.
         assertFalse(StellarAddress.isValidPublicKey(
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey rejects M-address that is too short`() {
+        // 56 characters — should be 69 for an M-address.
+        // This looks like it has "M" prefix but is too short.
+        assertFalse(StellarAddress.isValidPublicKey(
+            "MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey rejects M-address that is too long`() {
+        // 70 characters — one more than required.
+        assertFalse(StellarAddress.isValidPublicKey(
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQA"
         ))
     }
 
