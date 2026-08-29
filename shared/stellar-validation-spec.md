@@ -217,6 +217,16 @@ Validators MUST accept **both** G-addresses (56 chars) and M-addresses (69 chars
 The validator function determines the address type by checking the first character and length,
 then applies the appropriate validation algorithm.
 
+### Shared test fixtures
+
+All test fixtures are defined in a single source: `shared/stellar-address-fixtures.json`.
+Both platform test files MUST use these canonical fixtures to prevent silent drift.
+
+A CI check (`scripts/validate_stellar_fixtures.py`) runs on every PR to ensure:
+- Both platforms' test files include all fixtures from the canonical list
+- Neither platform has diverged with extra fixtures
+- Fixture additions/changes happen in the JSON first, then in test files
+
 ### iOS (`StellarAddress.swift`)
 
 - Location: `ios/EthosProtocol/Sources/Models/StellarAddress.swift`
@@ -224,6 +234,7 @@ then applies the appropriate validation algorithm.
   (accepts both G and M addresses)
 - Used in `CreateVaultView.isBeneficiaryValid` and `ManageBeneficiaryView.isAddressValid`
 - Tests: `StellarAddressTests` in `Tests/EthosProtocolTests.swift`
+- Fixtures used: All addresses from `shared/stellar-address-fixtures.json`
 
 ### Android (`StellarAddress.kt`)
 
@@ -232,6 +243,14 @@ then applies the appropriate validation algorithm.
   (accepts both G and M addresses)
 - Used in `CreateVaultDialog.isBeneficiaryValid` inside `Screens.kt`
 - Tests: `StellarAddressTest` in `android/app/src/test/java/com/ethosprotocol/StellarAddressTest.kt`
+- Fixtures used: All addresses from `shared/stellar-address-fixtures.json`
 
 Both implementations are dependency-free (no external Stellar SDK) and implement
 the same algorithm so the validation result is identical for any given input.
+
+### Adding a new test fixture
+
+1. Edit `shared/stellar-address-fixtures.json` to add the new address
+2. Add corresponding test cases to both `StellarAddressTest.kt` and `StellarAddressTests` (tests should match the canonical fixture list)
+3. Run `python .github/scripts/validate_stellar_fixtures.py` to verify no divergence
+4. Commit both the fixture JSON and updated test files together
