@@ -216,6 +216,23 @@ fun VaultListScreen(
 
     LaunchedEffect(Unit) { vm.load() }
 
+    // #a11y-live-region: OfflineBanner being present/labeled is not enough — TalkBack only
+    // announces a view when it first appears or when an explicit accessibility event fires.
+    // Toggling isOffline swaps the banner's presence but, without this, that swap is silent to a
+    // screen-reader user unless they happen to be scrolled to that part of the list. Fire an
+    // explicit announcement via View.announceForAccessibility on every offline<->online
+    // transition (skipping the very first composition, which is not a transition).
+    val localView = androidx.compose.ui.platform.LocalView.current
+    var previousIsOffline by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(state.isOffline) {
+        val prev = previousIsOffline
+        if (prev != null && prev != state.isOffline) {
+            val message = if (state.isOffline) "Offline — showing cached data" else "Back online"
+            localView.announceForAccessibility(message)
+        }
+        previousIsOffline = state.isOffline
+    }
+
     // #118: Non-blocking root warning dialog.
     if (showRootWarning) {
         AlertDialog(

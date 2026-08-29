@@ -30,6 +30,16 @@ Covers Android issue #android-a11y-content-descriptions (mirrors iOS #44).
       icons (offline, warning, lock/security context) are announced, and decorative icons are
       silently skipped.
 - [ ] iOS: run the equivalent VoiceOver pass per #44.
+- [ ] **Offline banner transitions, not just the static banner**: go offline, confirm TalkBack /
+      VoiceOver announces "Offline — showing cached data" as it appears (`announceForAccessibility`
+      in `VaultListScreen`'s `LaunchedEffect(state.isOffline)` on Android,
+      `UIAccessibility.post(.announcement)` in `VaultListView`'s
+      `.onChange(of: vaultStore.vaultsCacheAge == nil)` on iOS), then go back online and confirm
+      "Back online" is announced too — not just the initial banner appearance. Repeat at least
+      twice to confirm it fires on every transition, not only the first.
+- [ ] The WebSocket connection-status indicator proposed in #254 does not exist in the app yet;
+      once added, extend this same announce-on-transition pattern to its
+      connecting/connected/reconnecting states.
 
 ## Dynamic-color contrast pass (Android)
 
