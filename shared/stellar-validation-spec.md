@@ -171,6 +171,34 @@ here unless this document is updated first.
 
 ---
 
+## Optional Memo Field
+
+Many Stellar-facing services (exchanges, custodial wallets) require a memo alongside
+the account ID to correctly route funds. This application supports an **optional memo**
+in addition to the beneficiary address.
+
+### Memo Types
+
+Stellar supports four memo types. Beneficiaries may specify one:
+
+| Type | Range/Format | Stellar Constant | Notes |
+|------|--------------|------------------|-------|
+| **None** | (empty) | — | No memo (default) |
+| **Text** | 0–28 bytes UTF-8 | `MEMO_TYPE_TEXT` | Human-readable text |
+| **ID** | 0–18,446,744,073,709,551,615 (uint64) | `MEMO_TYPE_ID` | Numeric memo ID |
+| **Hash** | Exactly 32 bytes (hex-encoded) | `MEMO_TYPE_HASH` | SHA-256 hash |
+
+### Memo Validation
+
+When a memo is provided:
+- **Text memo**: Must be valid UTF-8, maximum 28 bytes when encoded as UTF-8
+- **ID memo**: Decimal number, must be non-negative 64-bit unsigned integer
+- **Hash memo**: Exactly 64 hexadecimal characters (0-9, a-f, A-F), representing 32 bytes
+
+Memos are **optional**. If omitted, the beneficiary address alone is used for fund routing.
+
+---
+
 ## Shared test fixtures
 
 Both platforms' test suites MUST use the addresses below. This ensures the same

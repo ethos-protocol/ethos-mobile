@@ -1746,3 +1746,104 @@ private final class ReplayRejectionURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+
+// MARK: - Memo Field Support Tests
+
+final class MemoValidatorTests: XCTestCase {
+
+    func test_isValidTextMemo_acceptsShortText() {
+        XCTAssertTrue(MemoValidator.isValidTextMemo("hello"))
+    }
+
+    func test_isValidTextMemo_acceptsMaxLengthText() {
+        // 28 bytes of ASCII
+        let maxText = String(repeating: "a", count: 28)
+        XCTAssertTrue(MemoValidator.isValidTextMemo(maxText))
+    }
+
+    func test_isValidTextMemo_rejectsTextOverLimit() {
+        let tooLong = String(repeating: "a", count: 29)
+        XCTAssertFalse(MemoValidator.isValidTextMemo(tooLong))
+    }
+
+    func test_isValidTextMemo_acceptsUTF8WithinByteLimit() {
+        // "🚀" is 4 bytes in UTF-8
+        let emoji = String(repeating: "🚀", count: 7) // 28 bytes total
+        XCTAssertTrue(MemoValidator.isValidTextMemo(emoji))
+    }
+
+    func test_isValidTextMemo_rejectsUTF8ExceedingByteLimit() {
+        // "🚀" is 4 bytes, 8 repetitions = 32 bytes
+        let tooManyEmoji = String(repeating: "🚀", count: 8)
+        XCTAssertFalse(MemoValidator.isValidTextMemo(tooManyEmoji))
+    }
+
+    func test_isValidIDMemo_acceptsValidID() {
+        XCTAssertTrue(MemoValidator.isValidIDMemo("12345"))
+    }
+
+    func test_isValidIDMemo_acceptsZero() {
+        XCTAssertTrue(MemoValidator.isValidIDMemo("0"))
+    }
+
+    func test_isValidIDMemo_acceptsMaxUInt64() {
+        XCTAssertTrue(MemoValidator.isValidIDMemo("18446744073709551615"))
+    }
+
+    func test_isValidIDMemo_rejectsNegativeNumber() {
+        XCTAssertFalse(MemoValidator.isValidIDMemo("-1"))
+    }
+
+    func test_isValidIDMemo_rejectsNonNumeric() {
+        XCTAssertFalse(MemoValidator.isValidIDMemo("not-a-number"))
+    }
+
+    func test_isValidIDMemo_rejectsEmptyString() {
+        XCTAssertFalse(MemoValidator.isValidIDMemo(""))
+    }
+
+    func test_isValidHashMemo_acceptsValidHash() {
+        let validHash = String(repeating: "a", count: 64)
+        XCTAssertTrue(MemoValidator.isValidHashMemo(validHash))
+    }
+
+    func test_isValidHashMemo_acceptsMixedHex() {
+        let hexHash = "abcdef0123456789" + String(repeating: "a", count: 48)
+        XCTAssertTrue(MemoValidator.isValidHashMemo(hexHash))
+    }
+
+    func test_isValidHashMemo_rejectsTooShort() {
+        let tooShort = String(repeating: "a", count: 63)
+        XCTAssertFalse(MemoValidator.isValidHashMemo(tooShort))
+    }
+
+    func test_isValidHashMemo_rejectsTooLong() {
+        let tooLong = String(repeating: "a", count: 65)
+        XCTAssertFalse(MemoValidator.isValidHashMemo(tooLong))
+    }
+
+    func test_isValidHashMemo_rejectsNonHexCharacters() {
+        let nonHex = String(repeating: "G", count: 64) // G is not in hex
+        XCTAssertFalse(MemoValidator.isValidHashMemo(nonHex))
+    }
+
+    func test_stellarMemo_none_displaysCorrectly() {
+        XCTAssertEqual(StellarMemo.none.displayString(), "(no memo)")
+    }
+
+    func test_stellarMemo_text_displaysCorrectly() {
+        XCTAssertEqual(StellarMemo.text("account-123").displayString(), "Text: account-123")
+    }
+
+    func test_stellarMemo_id_displaysCorrectly() {
+        XCTAssertEqual(StellarMemo.id(42).displayString(), "ID: 42")
+    }
+
+    func test_stellarMemo_hash_truncatesForDisplay() {
+        let hash = String(repeating: "a", count: 64)
+        let display = StellarMemo.hash(hash).displayString()
+        XCTAssertTrue(display.contains("Hash:"))
+        XCTAssertTrue(display.contains("..."))
+    }
+}

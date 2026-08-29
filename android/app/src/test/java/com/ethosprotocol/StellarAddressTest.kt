@@ -206,3 +206,100 @@ class StellarAddressTest {
         val sanitized = StellarAddress.sanitize(messy)
         assertTrue(StellarAddress.isValidPublicKey(sanitized))
     }
+
+// MARK: - Memo Field Support Tests
+
+class MemoValidatorTest {
+
+    @Test
+    fun `isValidTextMemo accepts short text`() {
+        assertTrue(MemoValidator.isValidTextMemo("hello"))
+    }
+
+    @Test
+    fun `isValidTextMemo accepts max length text`() {
+        // 28 bytes of ASCII
+        val maxText = "a".repeat(28)
+        assertTrue(MemoValidator.isValidTextMemo(maxText))
+    }
+
+    @Test
+    fun `isValidTextMemo rejects text over 28 bytes`() {
+        val tooLong = "a".repeat(29)
+        assertFalse(MemoValidator.isValidTextMemo(tooLong))
+    }
+
+    @Test
+    fun `isValidTextMemo accepts utf8 text within byte limit`() {
+        // "🚀" is 4 bytes in UTF-8
+        val emoji = "🚀".repeat(7) // 28 bytes total
+        assertTrue(MemoValidator.isValidTextMemo(emoji))
+    }
+
+    @Test
+    fun `isValidTextMemo rejects utf8 text exceeding byte limit`() {
+        // "🚀" is 4 bytes, 8 repetitions = 32 bytes
+        val tooManyEmoji = "🚀".repeat(8)
+        assertFalse(MemoValidator.isValidTextMemo(tooManyEmoji))
+    }
+
+    @Test
+    fun `isValidIDMemo accepts valid id`() {
+        assertTrue(MemoValidator.isValidIDMemo("12345"))
+    }
+
+    @Test
+    fun `isValidIDMemo accepts zero`() {
+        assertTrue(MemoValidator.isValidIDMemo("0"))
+    }
+
+    @Test
+    fun `isValidIDMemo accepts max uint64`() {
+        assertTrue(MemoValidator.isValidIDMemo("18446744073709551615"))
+    }
+
+    @Test
+    fun `isValidIDMemo rejects negative number`() {
+        assertFalse(MemoValidator.isValidIDMemo("-1"))
+    }
+
+    @Test
+    fun `isValidIDMemo rejects non-numeric`() {
+        assertFalse(MemoValidator.isValidIDMemo("not-a-number"))
+    }
+
+    @Test
+    fun `isValidIDMemo rejects empty string`() {
+        assertFalse(MemoValidator.isValidIDMemo(""))
+    }
+
+    @Test
+    fun `isValidHashMemo accepts valid hash`() {
+        val validHash = "a".repeat(64)
+        assertTrue(MemoValidator.isValidHashMemo(validHash))
+    }
+
+    @Test
+    fun `isValidHashMemo accepts mixed hex`() {
+        val hexHash = "abcdef0123456789" + "a".repeat(48)
+        assertTrue(MemoValidator.isValidHashMemo(hexHash))
+    }
+
+    @Test
+    fun `isValidHashMemo rejects too short`() {
+        val tooShort = "a".repeat(63)
+        assertFalse(MemoValidator.isValidHashMemo(tooShort))
+    }
+
+    @Test
+    fun `isValidHashMemo rejects too long`() {
+        val tooLong = "a".repeat(65)
+        assertFalse(MemoValidator.isValidHashMemo(tooLong))
+    }
+
+    @Test
+    fun `isValidHashMemo rejects non-hex characters`() {
+        val nonHex = "G".repeat(64) // G is not in hex
+        assertFalse(MemoValidator.isValidHashMemo(nonHex))
+    }
+}

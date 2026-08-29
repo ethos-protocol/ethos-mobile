@@ -1,9 +1,59 @@
 package com.ethosprotocol.models
 
 /**
- * Validates Stellar addresses: both ed25519 public keys (G..., 56 chars) and
- * muxed accounts (M..., 69 chars per SEP-0023).
+ * Represents an optional Stellar memo attached to a beneficiary account.
  *
+ * Per SEP-0023 and Stellar documentation, memos enable proper fund routing for
+ * exchanges and custodial wallets. Four types are supported:
+ * - NONE: No memo (default)
+ * - TEXT: Human-readable text, up to 28 UTF-8 bytes
+ * - ID: Numeric memo ID, 0 to 2^64-1
+ * - HASH: SHA-256 hash, exactly 32 bytes (64 hex chars)
+ */
+sealed class StellarMemo {
+    object None : StellarMemo()
+    data class Text(val value: String) : StellarMemo()
+    data class ID(val value: Long) : StellarMemo()
+    data class Hash(val value: String) : StellarMemo() // 64-char hex string
+    
+    fun toDisplayString(): String = when (this) {
+        is None -> "(no memo)"
+        is Text -> "Text: $value"
+        is ID -> "ID: $value"
+        is Hash -> "Hash: ${value.take(16)}..."
+    }
+}
+
+object MemoValidator {
+    /**
+     * Validates a text memo (max 28 UTF-8 bytes).
+     */
+    fun isValidTextMemo(text: String): Boolean {
+        return text.toByteArray(Charsets.UTF_8).size <= 28
+    }
+    
+    /**
+     * Validates an ID memo (must be parseable as non-negative long).
+     */
+    fun isValidIDMemo(idStr: String): Boolean {
+        return try {
+            val value = idStr.toLong()
+            value >= 0
+        } catch (e: NumberFormatException) {
+            false
+        }
+    }
+    
+    /**
+     * Validates a hash memo (must be exactly 64 hex characters).
+     */
+    fun isValidHashMemo(hashHex: String): Boolean {
+        if (hashHex.length != 64) return false
+        return hashHex.all { it in "0123456789abcdefABCDEF" }
+    }
+}
+
+
  * Implements the algorithm specified in `shared/stellar-validation-spec.md` (#264, #113).
  * Dependency-free: no external Stellar SDK — only the checks the app needs.
  *
