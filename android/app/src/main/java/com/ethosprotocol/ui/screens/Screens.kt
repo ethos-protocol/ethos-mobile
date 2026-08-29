@@ -438,6 +438,10 @@ private fun VaultCard(
     }
 }
 
+// #a11y-touch-targets: SuggestionChip's default height (32dp) is below the 48dp minimum
+// touch target for Android (WCAG 2.5.5 / Material accessibility guidelines). Wrapping in a
+// Box that enforces a 48dp minimum height keeps the visually-compact chip while giving
+// TalkBack/switch-access users a tap target that meets the platform minimum.
 @Composable
 private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
     val (label, color) = when (status) {
@@ -446,11 +450,16 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
         com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
         com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
     }
-    SuggestionChip(
-        onClick = {},
-        label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
-    )
+    Box(
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        SuggestionChip(
+            onClick = {},
+            label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+        )
+    }
 }
 
 // MARK: - Beneficiary Acceptance Screen
