@@ -6,14 +6,20 @@ Checks that aren't covered by automated tests and should be run by hand before r
 
 Covers Android issue #android-a11y-font-scale (mirrors iOS #45).
 
+**Android font-scale layout coverage (vault list, deposit, withdraw) is now automated** — see
+`ScreenshotFontScaleTest.kt` (`ScreenshotFontScaleTest`, `ScreenshotFontScaleLargeTest`,
+`ScreenshotFontScaleMaxTest`), which snapshots those flows at 1.0x/1.3x/2.0x font scale via
+Paparazzi and runs on every PR through the existing `verifyPaparazziDebug` CI step. A clipped or
+overlapping layout at any scale step now fails the build instead of requiring a manual pass.
+
+Still manual:
+
 - [ ] iOS: set Settings > Accessibility > Display & Text Size > Larger Text to the maximum
-      (Accessibility Sizes), then walk through the vault list, vault detail, and 2FA flows.
-- [ ] Android: set Settings > Accessibility > Display size and text > Font size to the largest
-      step (or `adb shell settings put system font_scale 2.0`), then walk through the same flows:
-  - Vault list (`VaultListScreen`) — id + `StatusChip` row on `VaultCard`, "Expiring soon!" row
-  - 2FA setup and verify screens (`TwoFactorSetupScreen`, `TwoFactorVerifyScreen`) — OTP field
-- [ ] Confirm no truncated-ID/chip rows clip or overlap, and no interactive control becomes
-      unreachable or unreadable at 200% scale.
+      (Accessibility Sizes), then walk through the vault list, vault detail, and 2FA flows (no
+      iOS snapshot-test tooling is wired up yet — tracked as a follow-up).
+- [ ] Android: spot-check the 2FA setup/verify screens (`TwoFactorSetupScreen`,
+      `TwoFactorVerifyScreen`) at max font scale — not yet covered by the automated matrix — and
+      confirm the OTP field remains usable.
 
 ## TalkBack / VoiceOver pass
 
