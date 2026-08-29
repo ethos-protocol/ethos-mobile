@@ -16,6 +16,20 @@ enum StellarAddress {
     private static let ed25519PublicKeyVersionByte: UInt8 = 6 << 3        // 0x30
     private static let muxedAccountVersionByte: UInt8 = 12 << 3           // 0x60
 
+    /// Sanitizes a Stellar address by removing leading/trailing whitespace and
+    /// common invisible characters before validation. Call this when accepting
+    /// user input (especially from clipboard paste) before passing to [isValidPublicKey].
+    static func sanitize(_ input: String) -> String {
+        return input
+            .trimmingCharacters(in: .whitespaces)
+            // Remove common invisible/zero-width characters
+            .replacingOccurrences(of: "\u{200B}", with: "") // Zero-width space
+            .replacingOccurrences(of: "\u{200C}", with: "") // Zero-width non-joiner
+            .replacingOccurrences(of: "\u{200D}", with: "") // Zero-width joiner
+            .replacingOccurrences(of: "\u{200E}", with: "") // Left-to-right mark
+            .replacingOccurrences(of: "\u{200F}", with: "") // Right-to-left mark
+    }
+
     static func isValidPublicKey(_ value: String) -> Bool {
         guard value.count == 56, value.hasPrefix("G") else {
             // Try muxed account validation if not a G-address

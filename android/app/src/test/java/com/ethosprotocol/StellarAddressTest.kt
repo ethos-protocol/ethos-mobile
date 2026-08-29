@@ -159,8 +159,50 @@ class StellarAddressTest {
         assertFalse(StellarAddress.isValidPublicKey("not-a-stellar-address"))
     }
 
+    // -------------------------------------------------------------------------
+    // Sanitization
+    // -------------------------------------------------------------------------
+
     @Test
-    fun `isValidPublicKey rejects blank whitespace string`() {
-        assertFalse(StellarAddress.isValidPublicKey("   "))
+    fun `sanitize removes leading and trailing whitespace`() {
+        val sanitized = StellarAddress.sanitize("  GA7Q  ")
+        assertTrue(sanitized.startsWith("GA7Q"))
+        assertTrue(!sanitized.startsWith(" "))
+        assertTrue(!sanitized.endsWith(" "))
     }
-}
+
+    @Test
+    fun `sanitize removes zero-width space`() {
+        val withZWS = "GA7Q\u200BYNF7"
+        val sanitized = StellarAddress.sanitize(withZWS)
+        assertEquals("GA7QYNF7", sanitized)
+    }
+
+    @Test
+    fun `sanitize removes zero-width joiner and non-joiner`() {
+        val withInvisible = "GA7Q\u200C\u200DYNF7"
+        val sanitized = StellarAddress.sanitize(withInvisible)
+        assertEquals("GA7QYNF7", sanitized)
+    }
+
+    @Test
+    fun `sanitize removes direction marks`() {
+        val withDirMarks = "\u200EGA7Q\u200FYNF7"
+        val sanitized = StellarAddress.sanitize(withDirMarks)
+        assertEquals("GA7QYNF7", sanitized)
+    }
+
+    @Test
+    fun `isValidPublicKey rejects addresses with leading whitespace`() {
+        // Validator expects pre-sanitized input
+        assertFalse(StellarAddress.isValidPublicKey(
+            " GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey works after sanitize`() {
+        val messy = "  GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF  "
+        val sanitized = StellarAddress.sanitize(messy)
+        assertTrue(StellarAddress.isValidPublicKey(sanitized))
+    }

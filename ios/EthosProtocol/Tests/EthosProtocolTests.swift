@@ -1061,6 +1061,48 @@ final class StellarAddressTests: XCTestCase {
     func test_isValidPublicKey_rejectsEmptyString() {
         XCTAssertFalse(StellarAddress.isValidPublicKey(""))
     }
+
+    // -------------------------------------------------------------------------
+    // Sanitization
+    // -------------------------------------------------------------------------
+
+    func test_sanitize_removesLeadingAndTrailingWhitespace() {
+        let sanitized = StellarAddress.sanitize("  GA7Q  ")
+        XCTAssert(sanitized.hasPrefix("GA7Q"))
+        XCTAssertFalse(sanitized.hasPrefix(" "))
+        XCTAssertFalse(sanitized.hasSuffix(" "))
+    }
+
+    func test_sanitize_removesZeroWidthSpace() {
+        let withZWS = "GA7Q\u{200B}YNF7"
+        let sanitized = StellarAddress.sanitize(withZWS)
+        XCTAssertEqual(sanitized, "GA7QYNF7")
+    }
+
+    func test_sanitize_removesZeroWidthJoinerAndNonJoiner() {
+        let withInvisible = "GA7Q\u{200C}\u{200D}YNF7"
+        let sanitized = StellarAddress.sanitize(withInvisible)
+        XCTAssertEqual(sanitized, "GA7QYNF7")
+    }
+
+    func test_sanitize_removesDirectionMarks() {
+        let withDirMarks = "\u{200E}GA7Q\u{200F}YNF7"
+        let sanitized = StellarAddress.sanitize(withDirMarks)
+        XCTAssertEqual(sanitized, "GA7QYNF7")
+    }
+
+    func test_isValidPublicKey_rejectsAddressesWithLeadingWhitespace() {
+        // Validator expects pre-sanitized input
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            " GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    func test_isValidPublicKey_worksAfterSanitize() {
+        let messy = "  GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF  "
+        let sanitized = StellarAddress.sanitize(messy)
+        XCTAssertTrue(StellarAddress.isValidPublicKey(sanitized))
+    }
 }
 
 // MARK: - #18 Retry With Exponential Backoff Tests
@@ -1437,24 +1479,34 @@ final class VaultAmountTests: XCTestCase {
 
 final class BeneficiaryUpdateTests: XCTestCase {
 
-    func test_isValidNewBeneficiary_differentAddress_returnsTrue() {
-        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("GNEW123", currentBeneficiary: "GOLD456"))
+    func test_isValidNewBeneficiary_differentAddressValidAddress_returnsTrue() {
+        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary(
+            "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX",
+            currentBeneficiary: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
     }
 
     func test_isValidNewBeneficiary_sameAddress_returnsFalse() {
-        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("GOLD456", currentBeneficiary: "GOLD456"))
+        let address = "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX"
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary(address, currentBeneficiary: address))
     }
 
     func test_isValidNewBeneficiary_emptyInput_returnsFalse() {
-        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("", currentBeneficiary: "GOLD456"))
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("", currentBeneficiary: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"))
     }
 
     func test_isValidNewBeneficiary_whitespaceOnly_returnsFalse() {
-        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("   ", currentBeneficiary: "GOLD456"))
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("   ", currentBeneficiary: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"))
     }
 
-    func test_isValidNewBeneficiary_trimsWhitespaceBeforeComparison() {
-        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary("  GNEW123  ", currentBeneficiary: "GOLD456"))
+    func test_isValidNewBeneficiary_invalidAddress_returnsFalse() {
+        XCTAssertFalse(BeneficiaryUpdate.isValidNewBeneficiary("NOT_VALID_ADDRESS", currentBeneficiary: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"))
+    }
+
+    func test_isValidNewBeneficiary_sanitizesAndValidates() {
+        // With leading/trailing whitespace
+        let messy = "  GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX  "
+        XCTAssertTrue(BeneficiaryUpdate.isValidNewBeneficiary(messy, currentBeneficiary: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"))
     }
 }
 

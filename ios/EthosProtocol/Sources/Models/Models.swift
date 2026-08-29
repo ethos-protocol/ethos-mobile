@@ -119,11 +119,13 @@ enum UsernameValidation {
 }
 
 enum BeneficiaryUpdate {
-    /// A new beneficiary address is only valid if it's non-empty (after trimming)
-    /// and actually differs from the vault's current beneficiary.
+    /// A new beneficiary address is valid if it's a syntactically valid Stellar address
+    /// (after sanitization) and differs from the vault's current beneficiary.
     static func isValidNewBeneficiary(_ input: String, currentBeneficiary: String) -> Bool {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != currentBeneficiary
+        let sanitized = StellarAddress.sanitize(input)
+        return !sanitized.isEmpty && 
+               sanitized != currentBeneficiary &&
+               StellarAddress.isValidPublicKey(sanitized)
     }
 }
 

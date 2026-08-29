@@ -28,11 +28,29 @@ object StellarAddress {
     private const val MUXED_VERSION_BYTE: Byte = (12 shl 3).toByte() // 0x60 = 96
 
     /**
+     * Sanitizes a Stellar address by removing leading/trailing whitespace and
+     * common invisible characters before validation. Call this when accepting
+     * user input (especially from clipboard paste) before passing to [isValidPublicKey].
+     */
+    fun sanitize(input: String): String {
+        return input
+            .trim() // Remove leading/trailing whitespace
+            // Remove common invisible/zero-width characters
+            .replace("\u200B", "") // Zero-width space
+            .replace("\u200C", "") // Zero-width non-joiner
+            .replace("\u200D", "") // Zero-width joiner
+            .replace("\u200E", "") // Left-to-right mark
+            .replace("\u200F", "") // Right-to-left mark
+    }
+
+    /**
      * Returns `true` if [value] is a syntactically valid Stellar address:
      * - A public key (G-address, 56 chars, ed25519)
      * - A muxed account (M-address, 69 chars, SEP-0023)
      *
      * Both formats are validated with CRC-16/XModem checksum verification.
+     *
+     * **Important:** Call [sanitize] on user input before passing to this function.
      */
     fun isValidPublicKey(value: String): Boolean {
         return when {

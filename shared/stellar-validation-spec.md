@@ -138,6 +138,30 @@ pseudocode:
 
 ---
 
+## Input sanitization
+
+**Important:** When accepting Stellar addresses from user input (especially clipboard paste),
+trim leading/trailing whitespace and strip common invisible/zero-width characters **before**
+running the validation algorithm. This happens at the UI input layer, not inside the validator
+itself, to preserve the validator's strict contract.
+
+### Characters to remove before validation
+
+- Leading/trailing whitespace (space, tab, newline, carriage return)
+- Common invisible characters (zero-width space U+200B, zero-width joiner U+200D, zero-width non-joiner U+200C)
+- Right-to-left and left-to-right direction marks (U+200E, U+200F)
+
+Example: If a user pastes `" GA7Q...UJVSGZ "` (with spaces) or `"GA7Q​...UJVSGZ"` (with zero-width space),
+sanitize to `"GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"` before passing to the validator.
+
+### Validator contract
+
+The `isValidPublicKey` / `isValidAddress` function validates only syntactically correct,
+unsanitized input. The caller (UI layer) is responsible for all trimming and sanitization
+before passing input to the validator.
+
+---
+
 ## Additional backend constraints
 
 The backend enforces no additional constraints on the address beyond the StrKey
