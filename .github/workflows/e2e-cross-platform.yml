@@ -386,12 +386,152 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # 5. Summary — single job reviewers can watch for pass/fail.
+  # 5. Offline → online sync flow — go offline, queue a check-in, come back
+  #    online, verify the *server-side* state matches what was queued.
+  # ---------------------------------------------------------------------------
+  offline-sync-flow-android:
+    name: Android — offline check-in sync flow
+    runs-on: ubuntu-latest
+    needs: preflight
+    defaults:
+      run:
+        working-directory: android
+    env:
+      API_BASE_URL: ${{ needs.preflight.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build debug APK + test APK
+        run: |
+          ./gradlew assembleDebug assembleDebugAndroidTest \
+            -Pe2eApiBaseUrl="$API_BASE_URL"
+
+      - name: Enable KVM for hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Real WorkManager scheduling (not the unit-test WorkManager test
+      # driver) is what actually enqueues PendingActionSyncWorker while the
+      # emulator's network is toggled off/on via `adb shell svc`. Unit
+      # tests mock this scheduling away entirely, so this is the only place
+      # that exercises the real constraint (NetworkType.CONNECTED) firing
+      # the worker once connectivity returns.
+      - name: Run offline/online check-in sync E2E test on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: Nexus 6
+          disable-animations: true
+          script: |
+            cd android
+            adb shell svc data disable
+            adb shell svc wifi disable
+            ./gradlew connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.class=com.ethosprotocol.e2e.OfflineCheckInSyncE2ETest#testCheckInQueuedOfflineSyncsWhenBackOnline \
+              -Pe2eApiBaseUrl="$API_BASE_URL"
+            adb shell svc data enable
+            adb shell svc wifi enable
+
+      - name: Upload offline-sync E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-offline-sync-e2e-results
+          path: android/app/build/reports/androidTests/connected/
+          if-no-files-found: ignore
+
+  offline-sync-flow-ios:
+    name: iOS — offline check-in sync flow
+    runs-on: macos-latest
+    needs: preflight
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    env:
+      API_BASE_URL: ${{ needs.preflight.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
+
+      - name: Build E2E app for iOS Simulator
+        run: |
+          xcodebuild build-for-testing \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -skipMacroValidation \
+            API_BASE_URL="$API_BASE_URL"
+
+      # `simctl` network toggling for BGProcessingTask is a proxy: BGTask
+      # scheduling itself cannot be fully forced in CI, so the test invokes
+      # the real BGProcessingTaskScheduler registration/handler pair
+      # directly (as Apple's own testing guidance recommends) while the
+      # simulator is network-disabled, then re-enables networking and
+      # confirms the task drains the real queue against the real API.
+      - name: Disable simulator network
+        run: xcrun simctl status_bar "iPhone 16" override --cellularBars 0 || true
+
+      - name: Run offline/online check-in sync E2E test (CheckInSyncTask)
+        run: |
+          xcodebuild test-without-building \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -only-testing:EthosProtocolE2ETests/OfflineCheckInSyncE2ETests/testCheckInQueuedOfflineSyncsWhenBackOnline \
+            -skipMacroValidation \
+            E2E_API_BASE_URL="$API_BASE_URL" \
+            TEST_RUNNER_E2E_API_BASE_URL="$API_BASE_URL"
+
+      # NOTE: deposit/withdraw offline queuing is intentionally not covered
+      # here yet — tracked behind #240. Once #240 ships, add a
+      # `testDepositQueuedOfflineSyncsWhenBackOnline` case following the
+      # same pattern as the check-in test above, reusing this same job.
+
+  # ---------------------------------------------------------------------------
+  # 6. Summary — single job reviewers can watch for pass/fail.
   # ---------------------------------------------------------------------------
   e2e-summary:
     name: E2E summary
     runs-on: ubuntu-latest
-    needs: [ios-e2e, android-e2e, acceptance-flow-ios, acceptance-flow-android]
+    needs:
+      [
+        ios-e2e,
+        android-e2e,
+        acceptance-flow-ios,
+        acceptance-flow-android,
+        offline-sync-flow-android,
+        offline-sync-flow-ios,
+      ]
     if: always()
     steps:
       - name: Report result
@@ -400,11 +540,15 @@ jobs:
           ANDROID="${{ needs.android-e2e.result }}"
           ACCEPTANCE_IOS="${{ needs.acceptance-flow-ios.result }}"
           ACCEPTANCE_ANDROID="${{ needs.acceptance-flow-android.result }}"
-          echo "iOS E2E:                $IOS"
-          echo "Android E2E:             $ANDROID"
-          echo "iOS acceptance flow:     $ACCEPTANCE_IOS"
-          echo "Android acceptance flow: $ACCEPTANCE_ANDROID"
-          for r in "$IOS" "$ANDROID" "$ACCEPTANCE_IOS" "$ACCEPTANCE_ANDROID"; do
+          OFFLINE_ANDROID="${{ needs.offline-sync-flow-android.result }}"
+          OFFLINE_IOS="${{ needs.offline-sync-flow-ios.result }}"
+          echo "iOS E2E:                  $IOS"
+          echo "Android E2E:               $ANDROID"
+          echo "iOS acceptance flow:       $ACCEPTANCE_IOS"
+          echo "Android acceptance flow:   $ACCEPTANCE_ANDROID"
+          echo "Android offline sync flow: $OFFLINE_ANDROID"
+          echo "iOS offline sync flow:     $OFFLINE_IOS"
+          for r in "$IOS" "$ANDROID" "$ACCEPTANCE_IOS" "$ACCEPTANCE_ANDROID" "$OFFLINE_ANDROID" "$OFFLINE_IOS"; do
             if [ "$r" != "success" ]; then
               echo "❌ One or more E2E suites failed."
               exit 1
