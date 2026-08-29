@@ -120,6 +120,9 @@ inputs produce the same result on iOS and Android.
 | `GAAAAAAAAAAAAAAAAAAAAAAAAAAA1AAAAAAAAAAAAAAAAAAAAAAAAAWHF` | Contains `1` (not in base32 alphabet) |
 | `` (empty string) | Length check fails |
 | `not-a-stellar-address` | Length check fails |
+| `GEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBDI` | Correct prefix/length/charset and an internally-consistent checksum, but decodes to version byte `0x31`, not `0x30` — added to isolate the version-byte check (step 5) from the prefix check (step 2); see [`MUTATION_TESTING.md`](./MUTATION_TESTING.md) |
+| `GAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAWHF` | Checksum corrupted via a character in the middle of the payload (index 27), not the trailing checksum characters — isolates step 6 from the "last char changed" fixture above |
+| `GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0` | Contains `0` as the **last** character — guards against an off-by-one boundary mutant in the character-set scan |
 
 ---
 
