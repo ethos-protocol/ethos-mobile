@@ -59,6 +59,12 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // #269: Prevent screenshots and screen-recording on all screens in this Activity.
+        // Screens showing vault balances, TOTP secrets, and recovery codes are all
+        // presented inside this single-Activity Compose navigation graph, so a single
+        // FLAG_SECURE covers every sensitive screen without per-screen opt-in.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
         // Only handle the launch intent on a fresh start (savedInstanceState == null).
         // On recreation (config change or process death), SavedStateHandle already holds
         // the pending state — re-parsing the original launch intent would overwrite it.

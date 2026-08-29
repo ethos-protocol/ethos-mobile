@@ -6,3 +6,12 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Swift snapshot testing golden images — recorded locally, not committed.
+# Regenerate with: swift test --filter RecordMode or via Xcode.
+**/__Snapshots__/
+**/ReferenceImages/
+**/SnapshotArtifacts/
+
+# macOS metadata
+.DS_Store

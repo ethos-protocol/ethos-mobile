@@ -26,6 +26,7 @@ import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
+import com.ethosprotocol.services.SensitiveClipboard
 import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
@@ -837,6 +838,9 @@ private fun ManageBeneficiaryDialog(
     onDismiss: () -> Unit
 ) {
     var beneficiary by remember { mutableStateOf(currentBeneficiary) }
+    // #268: Detect federation-address shape for a specific hint.
+    val isFederationAddress = StellarAddress.isFederationAddress(beneficiary)
+    val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Manage Beneficiary") },
@@ -851,7 +855,18 @@ private fun ManageBeneficiaryDialog(
                 OutlinedTextField(
                     value = beneficiary, onValueChange = { beneficiary = it },
                     label = { Text("Beneficiary address") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    isError = beneficiary.isNotEmpty() && beneficiary != currentBeneficiary && !isBeneficiaryValid,
+                    supportingText = {
+                        if (beneficiary.isNotEmpty() && beneficiary != currentBeneficiary && !isBeneficiaryValid) {
+                            // #268: Federation-address shape gets its own explanation.
+                            if (isFederationAddress) {
+                                Text("Federation addresses (e.g. user*domain.com) are not supported. Enter the resolved G… public key instead.")
+                            } else {
+                                Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            }
+                        }
+                    }
                 )
             }
         },
@@ -872,6 +887,8 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
 
     // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
     val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
+    // #268: Detect federation-address shape for a specific hint.
+    val isFederationAddress = StellarAddress.isFederationAddress(beneficiary)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -887,7 +904,12 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
                     isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
                     supportingText = {
                         if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
-                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            // #268: Federation-address shape gets its own explanation.
+                            if (isFederationAddress) {
+                                Text("Federation addresses (e.g. user*domain.com) are not supported. Enter the resolved G… public key instead.")
+                            } else {
+                                Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            }
                         }
                     }
                 )
@@ -1310,6 +1332,26 @@ private fun TwoFactorVerifyScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // #270: Copy provisioning URI via SensitiveClipboard so it is
+                // auto-cleared after 60 s — the same policy applied to all secrets.
+                val context = LocalContext.current
+                TextButton(
+                    onClick = {
+                        SensitiveClipboard.copy(
+                            context,
+                            provisioningUri ?: "",
+                            label = "TOTP provisioning URI"
+                        )
+                    }
+                ) {
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Copy URI", style = MaterialTheme.typography.labelSmall)
+                }
             }
             method == TwoFactorMethod.totp -> {
                 // Re-verification: no provisioning data — the user must open their

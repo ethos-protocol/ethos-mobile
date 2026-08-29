@@ -118,7 +118,9 @@ struct CopyableIDView: View {
     }
 
     private func copyToClipboard() {
-        UIPasteboard.general.string = fullID
+        // #270: Route all sensitive copies through SensitiveClipboard so the
+        // auto-clear policy is applied consistently across every copy site.
+        SensitiveClipboard.copy(fullID)
         showCopiedFeedback = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             showCopiedFeedback = false
@@ -728,10 +730,19 @@ struct CreateVaultView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                    // #268: Surface a federation-address-specific explanation before
+                    // falling through to the generic invalid-address error, since
+                    // user*domain.com is a common shape in wallet UIs.
                     if !beneficiary.isEmpty && !isBeneficiaryValid {
-                        Text("Enter a valid Stellar address (56 characters, starting with G).")
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                        if StellarAddress.isFederationAddress(beneficiary) {
+                            Text("Federation addresses (e.g. user*domain.com) are not supported. Please enter the resolved G… public key instead.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
                 Section("Check-in Interval") {
@@ -930,6 +941,18 @@ struct ManageBeneficiaryView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
+                // #268: Federation-address specific hint before generic error.
+                if !newBeneficiary.isEmpty && !isAddressValid {
+                    if StellarAddress.isFederationAddress(newBeneficiary) {
+                        Text("Federation addresses (e.g. user*domain.com) are not supported. Please enter the resolved G… public key instead.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
             if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
         }
@@ -1099,6 +1122,12 @@ struct TwoFactorVerifyView: View {
     let secret: String?
     let onVerified: () -> Void
     @Environment(\.dismiss) var dismiss
+    // #269: Blur the TOTP secret/URI when the app is not in the foreground so
+    // the system app-switcher snapshot and screen-recording apps cannot capture it.
+    // The app-wide PrivacyOverlayView already covers the vault list on backgrounding;
+    // this adds a targeted blur specifically for the raw TOTP secret text that is
+    // visible during 2FA setup — the most sensitive moment for screen exfiltration.
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var otp = ""
     @State private var isVerifying = false
@@ -1123,14 +1152,30 @@ struct TwoFactorVerifyView: View {
             VStack(spacing: 8) {
                 if method == .totp, let uri = provisioningUri {
                     Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
-                    Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                    if let secret {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            Label(secret, systemImage: "key.fill")
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
+                    // #269: Blur the provisioning URI and secret when the app is backgrounded
+                    // so the system app-switcher snapshot and screen-recording apps cannot
+                    // capture raw TOTP secret material.
+                    Group {
+                        Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        if let secret {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                Label(secret, systemImage: "key.fill")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .lineLimit(1)
+                            }
+                            // #270: Copy the TOTP secret via SensitiveClipboard so it is
+                            // auto-cleared after 60 s — the same policy applied to vault IDs.
+                            Button {
+                                SensitiveClipboard.copy(secret)
+                            } label: {
+                                Label("Copy Secret", systemImage: "doc.on.doc")
+                                    .font(.caption)
+                            }
+                            .accessibilityLabel("Copy TOTP secret to clipboard")
                         }
                     }
+                    .blur(radius: scenePhase == .active ? 0 : 12)
+                    .accessibilityHidden(scenePhase != .active)
                 } else if method == .totp {
                     Text("Enter the 6-digit code from your authenticator app.").foregroundStyle(.secondary)
                 } else {

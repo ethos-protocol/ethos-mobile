@@ -1,4 +1,20 @@
-
 # Byte-compiled CI helper scripts
 __pycache__/
 *.pyc
+
+# macOS metadata
+.DS_Store
+
+# Editor / IDE
+.idea/
+*.iml
+.vscode/
+
+# Secrets and local config (never commit these)
+google-services.json
+*.keystore
+*.jks
+*.p12
+*.cer
+*.mobileprovision
+local.properties

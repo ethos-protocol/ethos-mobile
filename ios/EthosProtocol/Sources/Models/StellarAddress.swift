@@ -11,6 +11,19 @@ enum StellarAddress {
     private static let base32Alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
     private static let ed25519PublicKeyVersionByte: UInt8 = 6 << 3
 
+    // #268: Detects the federation-address shape (user*domain.com).
+    // Federation addresses use a `*` separator between the local name and the
+    // home domain. This check runs before the generic validation so the UI can
+    // surface a specific explanation instead of a generic "invalid address" error.
+    static func isFederationAddress(_ value: String) -> Bool {
+        // Must contain exactly one '*' and have non-empty parts on both sides.
+        let parts = value.split(separator: "*", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        let localPart = parts[0]
+        let domain = parts[1]
+        return !localPart.isEmpty && !domain.isEmpty
+    }
+
     static func isValidPublicKey(_ value: String) -> Bool {
         guard value.count == 56, value.hasPrefix("G") else { return false }
         guard let decoded = base32Decode(value), decoded.count == 35 else { return false }

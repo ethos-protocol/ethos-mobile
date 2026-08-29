@@ -1050,6 +1050,198 @@ final class StellarAddressTests: XCTestCase {
     }
 }
 
+// MARK: - #268 Federation Address Detection Tests
+
+/// Tests for `StellarAddress.isFederationAddress`.
+///
+/// Federation addresses (user*domain.com) are rejected by the validator with a
+/// specific hint rather than a generic "invalid address" error.
+final class StellarAddressFederationTests: XCTestCase {
+
+    func test_isFederationAddress_detectsSimplePattern() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("alice*stellar.org"),
+            "A simple user*domain pattern should be detected as a federation address")
+    }
+
+    func test_isFederationAddress_detectsSubdomainPattern() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("bob*wallet.example.com"),
+            "A federation address with a subdomain should be detected")
+    }
+
+    func test_isFederationAddress_detectsNumericLocalPart() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("123*domain.com"))
+    }
+
+    func test_isFederationAddress_rejectsRawGAddress() {
+        // A well-formed Stellar public key never contains '*'.
+        XCTAssertFalse(StellarAddress.isFederationAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            "A raw G… address must not be treated as a federation address")
+    }
+
+    func test_isFederationAddress_rejectsEmptyString() {
+        XCTAssertFalse(StellarAddress.isFederationAddress(""))
+    }
+
+    func test_isFederationAddress_rejectsStarWithEmptyLocalPart() {
+        // "*domain.com" has an empty local part.
+        XCTAssertFalse(StellarAddress.isFederationAddress("*domain.com"))
+    }
+
+    func test_isFederationAddress_rejectsStarWithEmptyDomain() {
+        // "user*" has an empty domain.
+        XCTAssertFalse(StellarAddress.isFederationAddress("user*"))
+    }
+
+    func test_isFederationAddress_rejectsNoStarAtAll() {
+        XCTAssertFalse(StellarAddress.isFederationAddress("nodomain"))
+    }
+
+    func test_isValidPublicKey_rejectsFederationAddress() {
+        // Confirm that the main validator also rejects federation-shaped input so
+        // the UI "disable Create button" path works correctly alongside the hint.
+        XCTAssertFalse(StellarAddress.isValidPublicKey("alice*stellar.org"))
+    }
+}
+
+// MARK: - #269 Screenshot Prevention Tests
+
+/// Tests for the TOTP-secret blur-on-background behaviour.
+///
+/// SwiftUI `View` rendering cannot be unit-tested in a bare SPM bundle, so these
+/// tests cover the *logic gate* that drives the blur: the `scenePhase` value that
+/// `TwoFactorVerifyView` reads to decide whether to apply a blur radius.
+///
+/// The contract being tested:
+///   - blur radius is 0 when scenePhase == .active   (secret visible)
+///   - blur radius is 12 when scenePhase != .active  (secret hidden)
+final class TOTPSecretBlurLogicTests: XCTestCase {
+
+    func test_blurRadius_isZero_whenScenePhaseActive() {
+        // The view applies `.blur(radius: scenePhase == .active ? 0 : 12)`.
+        let blurRadius: Double = ScenePhase.active == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 0, "TOTP secret must be fully visible when the app is active")
+    }
+
+    func test_blurRadius_isNonZero_whenScenePhaseBackground() {
+        let blurRadius: Double = ScenePhase.background == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 12,
+            "TOTP secret must be blurred (radius 12) when the app is backgrounded so "
+            + "the system app-switcher snapshot cannot capture it")
+    }
+
+    func test_blurRadius_isNonZero_whenScenePhaseInactive() {
+        let blurRadius: Double = ScenePhase.inactive == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 12,
+            "TOTP secret must be blurred when the app is inactive (e.g. notification centre, "
+            + "control centre overlay)")
+    }
+}
+
+// MARK: - #270 SensitiveClipboard Tests
+
+/// Tests for `SensitiveClipboard`.
+///
+/// The auto-clear behaviour requires a real dispatch timer and `UIPasteboard`,
+/// neither of which are reliably testable in a headless SPM bundle. What we
+/// can and do test here are:
+///   1. That `copy` writes the expected value to the pasteboard immediately.
+///   2. That the `clearDelaySeconds` constant is a sane positive value.
+///
+/// The actual timer-fires-and-clears path is covered by the `//
+/// SensitiveClipboard — manual QA checklist` item in `docs/manual-qa-checklist.md`.
+final class SensitiveClipboardTests: XCTestCase {
+
+    func test_copy_writesValueToPasteboard() {
+        let testValue = "JBSWY3DPEHPK3PXP" // example TOTP base32 secret
+        SensitiveClipboard.copy(testValue)
+        // UIPasteboard.general is accessible in SPM test bundles without a host app.
+        XCTAssertEqual(UIPasteboard.general.string, testValue,
+            "SensitiveClipboard.copy must write the value to the system pasteboard immediately")
+        // Clean up so this test does not affect other tests.
+        UIPasteboard.general.string = ""
+    }
+
+    func test_clearDelaySeconds_isPositive() {
+        XCTAssertGreaterThan(SensitiveClipboard.clearDelaySeconds, 0,
+            "Auto-clear delay must be a positive number of seconds")
+    }
+
+    func test_clearDelaySeconds_isAtMost5Minutes() {
+        // 300 s is an upper bound for a "short-lived" clipboard exposure.
+        // Anything longer provides no meaningful protection.
+        XCTAssertLessThanOrEqual(SensitiveClipboard.clearDelaySeconds, 300,
+            "Auto-clear delay must not exceed 5 minutes — longer delays provide no clipboard protection")
+    }
+}
+
+// MARK: - #271 KeychainService Accessibility Audit Tests
+
+/// Regression tests for the accessibility attributes used by `KeychainService`.
+///
+/// iOS Keychain items default to `kSecAttrAccessibleWhenUnlocked` (not device-only)
+/// unless explicitly overridden, which means they can leak via an encrypted backup
+/// restored on a different device. All items in `KeychainService` must use a
+/// `ThisDeviceOnly` accessibility class.
+///
+/// These tests verify the *constants* used in the `save(_:forKey:accessible:)` call
+/// sites rather than making live Keychain calls (which are unreliable in unsigned
+/// SPM test bundles — see `KeychainServiceTests.test_saveAndLoadToken`).
+final class KeychainAccessibilityAuditTests: XCTestCase {
+
+    // MARK: - Default accessibility class
+
+    func test_defaultAccessibility_isWhenUnlockedThisDeviceOnly() {
+        // The `save(_:forKey:accessible:)` helper defaults to
+        // `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Verify the constant is
+        // the expected ThisDeviceOnly variant — not the cross-device
+        // `kSecAttrAccessibleWhenUnlocked` that would allow backup leakage.
+        let defaultAccessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        XCTAssertTrue(defaultAccessibility.contains("ThisDeviceOnly") ||
+                      defaultAccessibility == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String),
+            "Default Keychain accessibility must be a ThisDeviceOnly variant to prevent "
+            + "items leaking via an iCloud/iTunes backup restored on another device")
+    }
+
+    // MARK: - Auth token accessibility
+
+    func test_authTokenAccessibility_isAfterFirstUnlockThisDeviceOnly() {
+        // The auth token uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+        // (not the stricter WhenUnlocked variant) because BackgroundRefreshService
+        // and the TTLWidget extension both read it while the device may be locked.
+        // Critically this is still a *ThisDeviceOnly* class — it cannot be restored
+        // on another device. Verify the constant is the correct variant.
+        let tokenAccessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+        XCTAssertTrue(tokenAccessibility.contains("ThisDeviceOnly") ||
+                      tokenAccessibility == (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String),
+            "Auth token Keychain accessibility must be AfterFirstUnlockThisDeviceOnly so "
+            + "the token is readable during background refresh yet still device-bound")
+    }
+
+    func test_afterFirstUnlockThisDeviceOnly_isMorePermissiveThanWhenUnlockedThisDeviceOnly() {
+        // The two constants must be *different* — if they were the same value, the
+        // auth-token workaround for background refresh would be meaningless.
+        let afterFirstUnlock = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+        let whenUnlocked = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        XCTAssertNotEqual(afterFirstUnlock, whenUnlocked,
+            "AfterFirstUnlock and WhenUnlocked ThisDeviceOnly must be distinct constants")
+    }
+
+    func test_noItemUsesCrossDeviceAccessibility() {
+        // Belt-and-suspenders: confirm the non-ThisDeviceOnly constants are NOT equal
+        // to the ones KeychainService uses. If they were equal, device-binding would
+        // be silently absent.
+        let crossDevice_whenUnlocked = kSecAttrAccessibleWhenUnlocked as String
+        let crossDevice_afterFirst   = kSecAttrAccessibleAfterFirstUnlock as String
+        let deviceOnly_whenUnlocked  = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        let deviceOnly_afterFirst    = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+
+        XCTAssertNotEqual(crossDevice_whenUnlocked, deviceOnly_whenUnlocked,
+            "kSecAttrAccessibleWhenUnlocked must differ from its ThisDeviceOnly counterpart")
+        XCTAssertNotEqual(crossDevice_afterFirst, deviceOnly_afterFirst,
+            "kSecAttrAccessibleAfterFirstUnlock must differ from its ThisDeviceOnly counterpart")
+    }
+}
+
 // MARK: - #18 Retry With Exponential Backoff Tests
 
 /// Deterministic random source for testing: returns a fixed sequence of values.

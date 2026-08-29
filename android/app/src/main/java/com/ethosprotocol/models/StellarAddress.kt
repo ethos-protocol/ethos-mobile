@@ -20,6 +20,24 @@ object StellarAddress {
     private const val ED25519_VERSION_BYTE: Byte = (6 shl 3).toByte() // 0x30 = 48
 
     /**
+     * #268: Returns `true` when [value] has the federation-address shape
+     * (`localpart*home.domain`). Federation addresses are common in wallet UIs
+     * but cannot be used directly — the resolved G… public key is required.
+     *
+     * Detection rule: exactly one `*` separating two non-empty substrings.
+     * This runs before [isValidPublicKey] so the UI can surface a specific
+     * explanation rather than a generic "invalid address" error.
+     */
+    fun isFederationAddress(value: String): Boolean {
+        val starIndex = value.indexOf('*')
+        if (starIndex < 0) return false          // no '*' at all
+        if (value.indexOf('*', starIndex + 1) >= 0) return false  // more than one '*'
+        val localPart = value.substring(0, starIndex)
+        val domain = value.substring(starIndex + 1)
+        return localPart.isNotEmpty() && domain.isNotEmpty()
+    }
+
+    /**
      * Returns `true` if [value] is a syntactically valid Stellar ed25519 public
      * key (StrKey format with correct CRC-16/XModem checksum).
      *

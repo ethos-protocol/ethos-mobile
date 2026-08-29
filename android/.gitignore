@@ -10,3 +10,16 @@
 local.properties
 **/build/
 /dependency-check-data/
+
+# Paparazzi / screenshot test golden images — recorded locally, not committed.
+# Run `./gradlew recordPaparazziDebug` to regenerate them.
+**/snapshots/
+**/snapshots/images/
+**/__snapshots__/
+
+# Android signing artifacts — never commit
+*.keystore
+*.jks
+
+# Google Services — added per-developer, never committed
+google-services.json
