@@ -116,3 +116,15 @@ cd android
 ./gradlew connectedAndroidTest  # Instrumented tests (device/emulator)
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
+
+### Dependency vulnerability scanning
+The repo runs a dependency scan for both platforms with the same trigger model:
+- `push` to `main` when dependency manifests change
+- `pull_request` to `main` for the same dependency-focused paths
+- weekly `schedule` runs to catch newly disclosed CVEs between dependency bumps
+
+Workflow files:
+- Android: `.github/workflows/android-dependency-check.yml`
+- iOS: `.github/workflows/ios-dependency-check.yml`
+
+Both workflows treat dependency-scan failures as a consistent, human-readable warning in the job log and create a scheduled-run issue alert when the scan fails outside a PR context.
