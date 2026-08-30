@@ -116,3 +116,39 @@ cd android
 ./gradlew connectedAndroidTest  # Instrumented tests (device/emulator)
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
+
+#### Flakiness Detection and Quarantine (#295)
+
+Instrumented tests (running on a real emulator/device) are prone to flakiness due to timing, resource contention, or device state. This project maintains a process to identify, quarantine, and track flaky tests separately from genuine regressions.
+
+**Identifying Flaky Tests:**
+- If `./gradlew connectedDebugAndroidTest` fails intermittently on the same test across multiple CI runs, it may be flaky
+- Enable rerun-on-failure via the `@Flaky` annotation to log multiple attempts:
+  ```kotlin
+  @Flaky(maxAttempts = 3)  // Retry up to 3 times
+  @Test
+  fun testVaultListRefresh() { ... }
+  ```
+- Check CI logs and test reports for patterns (same test failing ~X% of runs)
+
+**Quarantine Process:**
+1. Tag confirmed-flaky tests with `@Ignore("Flaky: <issue-number>")` to disable them temporarily
+2. File a GitHub issue describing the flakiness (e.g., "VaultListPullToRefreshTest intermittent timeout")
+3. Add a comment referencing the issue:
+   ```kotlin
+   @Ignore("Flaky: #300 — intermittent timeout on emulator resource contention")
+   @Test
+   fun testVaultListRefresh() { ... }
+   ```
+4. List the issue in `.github/FLAKY_TESTS.md` with reproduction steps
+5. Fix the root cause (e.g., add explicit waits, reduce test timing dependencies)
+6. Re-enable and verify on CI
+
+**CI Configuration:**
+The `android-ci.yml` job `instrumented-tests` runs `./gradlew connectedDebugAndroidTest`, which fails fast on the first failing test. Future enhancements (when flaky tests are widespread) can add retry logic:
+```yaml
+- name: Run instrumented tests with flakiness detection
+  run: |
+    ./gradlew connectedDebugAndroidTest --fail-fast=false 2>&1 | tee test-output.log
+    python3 .github/scripts/analyze_test_flakiness.py test-output.log
+```
