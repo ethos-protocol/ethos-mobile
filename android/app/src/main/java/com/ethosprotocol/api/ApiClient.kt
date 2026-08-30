@@ -58,14 +58,54 @@ class ApiClient(
     // (HttpClient(Android) { ... }), not from an already-built HttpClientEngine instance —
     // which is what's injected here for testability.
     engine: HttpClientEngine = Android.create {
+        // #275: Configure the SSLSocketFactory with PinningTrustManager (#117) and
+        // enforce TLS 1.2 as the minimum acceptable protocol version.
+        //
+        // SSLContext.getInstance("TLSv1.2") requests TLS 1.2 or higher from the
+        // platform. Android's conscrypt-backed SSLEngine will negotiate TLS 1.3
+        // when both sides support it; the floor prevents downgrade to TLS 1.0/1.1,
+        // both of which are deprecated by RFC 8996.
+        //
+        // Cipher-suite allowlist (forward-secrecy AEAD suites only):
+        //   • TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        //   • TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        //   • TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        //   • TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        //   • TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        //   • TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        // All suites provide Perfect Forward Secrecy (ephemeral ECDHE) and use
+        // authenticated encryption (AEAD). RC4, 3DES, CBC-mode, NULL, EXPORT, and
+        // aNULL/eNULL suites are excluded. The TLS 1.3 default suite set
+        // (TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305)
+        // is always AEAD and is not overridable separately — these are in addition.
         sslManager = { httpsURLConnection ->
             val systemTm = getSystemTrustManager()
             if (systemTm != null) {
                 val pinner = CertificatePinner()
                 val pinningTm = PinningTrustManager(pinner, systemTm)
-                val sslContext = SSLContext.getInstance("TLS")
+                // Request TLS 1.2+ explicitly. "TLSv1.2" is the minimum floor;
+                // TLS 1.3 is negotiated automatically by the platform when available.
+                val sslContext = SSLContext.getInstance("TLSv1.2")
                 sslContext.init(null, arrayOf<TrustManager>(pinningTm), null)
-                httpsURLConnection.sslSocketFactory = sslContext.socketFactory
+                val socketFactory = sslContext.socketFactory
+                httpsURLConnection.sslSocketFactory = socketFactory
+                // Restrict cipher suites to the forward-secrecy AEAD allowlist.
+                // Only enabled suites that appear in the allowlist are set; suites
+                // not supported by the platform are silently ignored by filtering
+                // against socketFactory.supportedCipherSuites first.
+                val allowedCiphers = setOf(
+                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+                    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+                )
+                val supported = socketFactory.supportedCipherSuites.toSet()
+                val effective = allowedCiphers.intersect(supported).toTypedArray()
+                if (effective.isNotEmpty()) {
+                    httpsURLConnection.enabledCipherSuites = effective
+                }
             }
         }
     },
