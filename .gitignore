@@ -1,4 +1,49 @@
-
 # Byte-compiled CI helper scripts
 __pycache__/
 *.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Test snapshots
+**/__Snapshots__/
+**/snapshots/
+**/*.png.snap
+**/ReferenceImages/
+android/app/src/test/snapshots/
+
+# Build artifacts
+build/
+*.o
+*.class
+*.jar
+!gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Android
+android/local.properties
+android/app/google-services.json
+android/.gradle/
+
+# iOS Xcode generated
+ios/EthosProtocol/Xcode/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+DerivedData/
+
+# Secrets / credentials
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+keystore.jks
+google-services.json
+GoogleService-Info.plist

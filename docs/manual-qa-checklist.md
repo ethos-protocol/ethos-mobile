@@ -24,3 +24,36 @@ Covers Android issue #android-a11y-content-descriptions (mirrors iOS #44).
       icons (offline, warning, lock/security context) are announced, and decorative icons are
       silently skipped.
 - [ ] iOS: run the equivalent VoiceOver pass per #44.
+
+## App Switcher Privacy Overlay
+
+Covers iOS #277 (`PrivacyOverlayModifier`) and Android #277 (`FLAG_SECURE`).
+
+### iOS — Privacy Overlay
+
+- [ ] Build and run the app on a real device (Simulator does not snapshot the app switcher).
+- [ ] Navigate to a vault detail screen so sensitive data (balance, TTL, beneficiary) is visible.
+- [ ] Swipe up to open the app switcher (or double-press Home on Touch ID devices).
+- [ ] **Expected**: the Ethos Protocol app card shows a blank screen with the lock-shield icon
+      and "Ethos Protocol" label — **no vault data, balances, or addresses should be visible**.
+- [ ] Tap the app card to return to the foreground.
+- [ ] **Expected**: the privacy overlay disappears immediately and the vault detail is visible again.
+- [ ] Repeat with `scenePhase == .inactive` (e.g. pull down Control Centre while the app is in
+      the foreground) — the overlay should also appear during transient inactivity.
+
+### Android — FLAG_SECURE (Recent Apps + Screenshot)
+
+- [ ] Build and install the debug APK on a real device or emulator.
+- [ ] Navigate to the vault list or vault detail screen.
+- [ ] Open the Recent Apps screen (square button or swipe gesture).
+- [ ] **Expected**: the Ethos Protocol card shows a blank/greyed-out preview — no vault data
+      should be visible in the thumbnail.
+- [ ] Return to the app and attempt a screenshot (Power + Volume Down).
+- [ ] **Expected**: the screenshot is blank/black, **not** a capture of the app content.
+      The system typically shows a toast: "Can't take screenshot due to security policy."
+- [ ] Verify the flag does not interfere with normal app use (touch, scrolling, navigation).
+
+### Both platforms — Release build verification
+
+- [ ] Confirm the overlay / FLAG_SECURE behaviour is present in a **Release** build, not just
+      Debug — some vendors strip window flags differently in production vs. development.

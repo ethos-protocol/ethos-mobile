@@ -22,10 +22,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.ethosprotocol.security.AppLifecycleObserver
+import com.ethosprotocol.security.SignatureResult
+import com.ethosprotocol.security.SignatureVerifier
+import com.ethosprotocol.security.TamperWarningDialog
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkParser
@@ -49,6 +54,9 @@ class MainActivity : FragmentActivity() {
 
     private var showPermissionRationale by mutableStateOf(false)
 
+    // #278: Whether to show the tamper-warning dialog (APK signature mismatch).
+    private var showTamperWarning by mutableStateOf(false)
+
     private val authVm: AuthViewModel by viewModels()
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -58,6 +66,10 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // #276: Register the process-level lifecycle observer so SessionLockManager
+        // receives foreground/background transitions for the whole app process.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(AppLifecycleObserver())
 
         // Only handle the launch intent on a fresh start (savedInstanceState == null).
         // On recreation (config change or process death), SavedStateHandle already holds
@@ -72,6 +84,11 @@ class MainActivity : FragmentActivity() {
                     .collectAsStateWithLifecycle()
                 val vaultDeepLink by deepLinkViewModel.pendingVaultDeepLink
                     .collectAsStateWithLifecycle()
+
+                // #278: Show tamper-warning dialog if the APK signing cert doesn't match.
+                if (showTamperWarning) {
+                    TamperWarningDialog(onDismiss = { showTamperWarning = false })
+                }
 
                 NotificationPermissionEffect(
                     showRationale = showPermissionRationale,
@@ -90,6 +107,19 @@ class MainActivity : FragmentActivity() {
                     onVaultDeepLinkConsumed = { deepLinkViewModel.consumeVaultDeepLink() }
                 )
             }
+        }
+
+        // #277: Prevent sensitive content from appearing in the system app-switcher
+        // thumbnail or being captured by screenshots / screen recordings.
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
+
+        // #278: Check APK signing certificate. Show a non-blocking warning if the
+        // app has been repackaged/sideloaded. Consistent with #118 (jailbreak warning).
+        if (SignatureVerifier().verify(this) is SignatureResult.Mismatch) {
+            showTamperWarning = true
         }
 
         requestNotificationPermissionIfNeeded()

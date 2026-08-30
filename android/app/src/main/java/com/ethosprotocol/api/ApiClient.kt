@@ -83,12 +83,16 @@ class ApiClient(
             json(Json { ignoreUnknownKeys = true; isLenient = true })
         }
         install(Logging) {
-            // Logging Redaction Policy (#111) — see shared/api-contract.md §Logging Redaction Policy.
+            // Logging Redaction Policy (#111, #279) — see shared/api-contract.md §Logging Redaction Policy.
             // Full request/response bodies (bearer token, 2FA secrets, vault balances, beneficiary
             // addresses, acceptance tokens) must never be written to logcat in any build.
             // LogLevel.INFO logs only HTTP method + URL + status — no body, no sensitive headers.
             // LogLevel.NONE in release ensures zero leakage even if a future log level change
             // is accidentally introduced in debug code that ships to release.
+            //
+            // If this level is ever raised to LogLevel.HEADERS or LogLevel.ALL (debug only),
+            // wrap output through LogRedactor.redactHeaders() / LogRedactor.redactString()
+            // (see com.ethosprotocol.security.LogRedactor) before any write to logcat.
             level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
         }
         // No timeouts were configured previously, so a stalled connection (e.g. dead wifi

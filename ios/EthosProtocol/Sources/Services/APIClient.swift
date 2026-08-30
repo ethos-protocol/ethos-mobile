@@ -289,7 +289,7 @@ public final class APIClient {
         _ = try await execute(req)
     }
 
-    // MARK: - Logging Redaction Audit (#111)
+    // MARK: - Logging Redaction Audit (#111, #279)
     //
     // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.
     // No request or response body, header, or sensitive field is written to os_log, print,
@@ -301,6 +301,12 @@ public final class APIClient {
     //   2. Log only HTTP method, path (no query strings bearing tokens), and status code —
     //      never request/response bodies, Authorization headers, 2FA secrets, vault balances,
     //      beneficiary/owner wallet addresses, or acceptance tokens.
+    //   3. Wrap any header dictionary with `LogRedactor.redactHeaders(_:)` before logging.
+    //   4. Wrap any URL/body string with `LogRedactor.redactString(_:)` before logging.
+    //
+    // `DecodingFailureLogger.log(path:expectedType:responseBody:)` already passes
+    // the path through `LogRedactor.redactString` (#279) so Bearer tokens or nonces
+    // in query strings are stripped at the log-write site.
     //
     // See shared/api-contract.md §Logging Redaction Policy (#111) for the authoritative
     // cross-platform policy.
