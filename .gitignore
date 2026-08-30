@@ -2,3 +2,61 @@
 # Byte-compiled CI helper scripts
 __pycache__/
 *.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# Build outputs
+build/
+.build/
+DerivedData/
+*.o
+*.a
+
+# Test snapshots
+__Snapshots__/
+*/__Snapshots__/
+**/__Snapshots__/
+*.snapshotArtifacts
+
+# Generated Xcode project (use xcodegen)
+ios/EthosProtocol/Xcode/
+
+# Android secrets
+google-services.json
+
+# Gradle
+.gradle/
+
+# Credentials / secrets
+*.keystore
+*.jks
+*.p12
+*.p8
+AuthKey_*.p8
+.env
+.env.*
+!.env.example
+
+# Dependency check reports
+dependency-check-report.*
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+
+# CocoaPods (not used but guard)
+Podfile.lock
+Pods/
