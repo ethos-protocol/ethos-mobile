@@ -12,6 +12,7 @@ import contextlib
 import plistlib
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "check_tls_pinning.py"
@@ -78,6 +79,25 @@ class CheckTargetTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("passed", output)
+
+    def test_warns_before_certificate_expiry_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist_path = write_plist(Path(tmp), "Info.plist", {
+                **BASE_PLIST,
+                "TLS_PUBLIC_KEY_PINS": ["k1Vw6WsE9scmn9tRAWjOTNTWyfPpWWx3fV1c/dCLwyQ="],
+            })
+            expiry = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+
+            code, output = run_main([
+                "--configuration", "Release",
+                "--target", f"EthosProtocol:{plist_path}",
+                "--certificate-expiry", expiry,
+                "--expiry-warning-days", "60",
+            ])
+
+            self.assertEqual(code, 0)
+            self.assertIn("warning", output.lower())
+            self.assertIn("expires", output.lower())
 
     def test_fails_when_pins_array_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
