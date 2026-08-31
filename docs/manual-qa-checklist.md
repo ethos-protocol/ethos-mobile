@@ -24,3 +24,15 @@ Covers Android issue #android-a11y-content-descriptions (mirrors iOS #44).
       icons (offline, warning, lock/security context) are announced, and decorative icons are
       silently skipped.
 - [ ] iOS: run the equivalent VoiceOver pass per #44.
+
+## OTP field accessibility (TalkBack / VoiceOver)
+
+Covers issue #230.
+
+- [ ] iOS: In TwoFactorVerifyView, activate VoiceOver and focus the OTP code field.
+      Confirm VoiceOver announces "OTP code field" and the entry progress
+      (e.g. "3 of 6 digits entered") as digits are typed.
+- [ ] Android: Enable TalkBack and focus the OTP code field in TwoFactorVerifyScreen.
+      Confirm TalkBack reads "OTP code field, 3 of 6 digits entered" as digits are typed.
+- [ ] Confirm the field is not split into multiple unlabelled boxes that TalkBack/VoiceOver
+      would read without positional context.

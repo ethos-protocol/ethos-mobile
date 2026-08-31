@@ -18,6 +18,7 @@ class TTLFirebaseMessagingService : FirebaseMessagingService() {
     @Inject lateinit var tokenProvider: TokenProvider
 
     override fun onNewToken(token: String) {
+        // locale is included in PushRegistration so the server can localise push payloads per-user
         tokenProvider.pushToken = token
         CoroutineScope(Dispatchers.IO).launch {
             apiClient.registerPushToken(token)
@@ -28,6 +29,8 @@ class TTLFirebaseMessagingService : FirebaseMessagingService() {
         val vaultId = message.data["vault_id"]
         val type = message.data["type"] ?: "reminder"
         val title = message.notification?.title ?: "Ethos-Protocol"
+        // Fallback body strings are English; server-side payloads are localised via the
+        // registered locale. Add res/values-*/strings.xml entries to localise these fallbacks.
         val body = message.notification?.body ?: when (type) {
             "expiry_warning" -> "Your vault is expiring soon. Check in now."
             "released" -> "Your vault has been released to the beneficiary."

@@ -29,7 +29,7 @@ import org.robolectric.annotation.Config
  * Covers:
  * - Network unavailable / API error → returns success without touching the widget
  * - Empty vault list → returns success without touching the widget
- * - Single vault → saveVaultData and refreshAll called with correct values (#79 fix)
+ * - Single vault → saveVaultData and updateWidget called with correct values
  * - Multiple vaults → the most urgent (lowest ttlRemaining) vault is selected (#79)
  */
 @RunWith(RobolectricTestRunner::class)
@@ -48,8 +48,10 @@ class VaultWidgetUpdateWorkerTest {
         // so WorkManagerInitializer's ContentProvider never runs). Initialize a test instance.
         WorkManagerTestInitHelper.initializeTestWorkManager(context)
         mockkObject(VaultStatusWidget)
-        every { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) } just Runs
+        every { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any(), any(), any(), any()) } just Runs
+        every { VaultStatusWidget.updateWidget(any(), any(), any()) } just Runs
         every { VaultStatusWidget.refreshAll(any()) } just Runs
+        every { VaultStatusWidget.getSelectedVaultId(any(), any()) } returns null
         // mockkObject() replaces every Companion function, including formatLastCheckIn — tests
         // below call it directly to compute expected values, so let it run for real.
         every { VaultStatusWidget.formatLastCheckIn(any(), any()) } answers { callOriginal() }
@@ -96,7 +98,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -111,7 +113,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -126,7 +128,7 @@ class VaultWidgetUpdateWorkerTest {
         val result = buildWorker().doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { VaultStatusWidget.refreshAll(any()) }
     }
 
@@ -141,19 +143,18 @@ class VaultWidgetUpdateWorkerTest {
 
         buildWorker().doWork()
 
-        // id.take(12) + "…"
-        val expectedName = "GABCDEFGHIJKL"  // take(12) = "GABCDEFGHIJK" wait — 12 chars
-        // "GABCDEFGHIJKLMNOP".take(12) = "GABCDEFGHIJK" (12 chars) + "…"
-        // Computed outside the verify {} block — a call to the mocked object from inside it
-        // is itself treated as part of what's being verified, not a plain expression.
+        // id.take(12) = "GABCDEFGHIJK" (12 chars) + "…"
         val expectedLastCheckIn = VaultStatusWidget.formatLastCheckIn(v.lastCheckIn)
         verify {
             VaultStatusWidget.saveVaultData(
                 context = any(),
+                widgetId = any(),
                 vaultId = any(),
                 vaultName = "GABCDEFGHIJK…",
                 ttlRemaining = "2d 0h",
-                lastCheckIn = expectedLastCheckIn
+                lastCheckIn = expectedLastCheckIn,
+                balance = any(),
+                beneficiary = any()
             )
         }
     }
@@ -167,7 +168,10 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "1d 1h", lastCheckIn = any())
+            VaultStatusWidget.saveVaultData(
+                context = any(), widgetId = any(), vaultId = any(), vaultName = any(),
+                ttlRemaining = "1d 1h", lastCheckIn = any(), balance = any(), beneficiary = any()
+            )
         }
     }
 
@@ -180,7 +184,10 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "1h", lastCheckIn = any())
+            VaultStatusWidget.saveVaultData(
+                context = any(), widgetId = any(), vaultId = any(), vaultName = any(),
+                ttlRemaining = "1h", lastCheckIn = any(), balance = any(), beneficiary = any()
+            )
         }
     }
 
@@ -192,12 +199,15 @@ class VaultWidgetUpdateWorkerTest {
         buildWorker().doWork()
 
         verify {
-            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = any(), ttlRemaining = "Unknown", lastCheckIn = any())
+            VaultStatusWidget.saveVaultData(
+                context = any(), widgetId = any(), vaultId = any(), vaultName = any(),
+                ttlRemaining = "Unknown", lastCheckIn = any(), balance = any(), beneficiary = any()
+            )
         }
     }
 
     @Test
-    fun `single vault calls refreshAll after saveVaultData`() = runBlocking {
+    fun `single vault calls updateWidget after saveVaultData`() = runBlocking {
         val v = vault("v1")
         coEvery { apiClient.listVaults() } returns ApiResult.Success(listOf(v))
 
@@ -205,8 +215,8 @@ class VaultWidgetUpdateWorkerTest {
 
         assertEquals(ListenableWorker.Result.success(), result)
         verifyOrder {
-            VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any())
-            VaultStatusWidget.refreshAll(any())
+            VaultStatusWidget.saveVaultData(any(), any(), any(), any(), any(), any(), any(), any())
+            VaultStatusWidget.updateWidget(any(), any(), any())
         }
     }
 
@@ -228,25 +238,21 @@ class VaultWidgetUpdateWorkerTest {
         verify {
             VaultStatusWidget.saveVaultData(
                 context = any(),
+                widgetId = any(),
                 vaultId = any(),
                 vaultName = "second-vault…",
                 ttlRemaining = any(),
-                lastCheckIn = expectedLastCheckIn
+                lastCheckIn = expectedLastCheckIn,
+                balance = any(),
+                beneficiary = any()
             )
         }
         verify(exactly = 0) {
-            VaultStatusWidget.saveVaultData(context = any(), vaultId = any(), vaultName = "first-vault…", ttlRemaining = any(), lastCheckIn = any())
+            VaultStatusWidget.saveVaultData(
+                context = any(), widgetId = any(), vaultId = any(), vaultName = "first-vault…",
+                ttlRemaining = any(), lastCheckIn = any(), balance = any(), beneficiary = any()
+            )
         }
-    }
-
-    @Test
-    fun `multiple vaults calls refreshAll exactly once`() = runBlocking {
-        val vaults = listOf(vault("v1"), vault("v2"), vault("v3"))
-        coEvery { apiClient.listVaults() } returns ApiResult.Success(vaults)
-
-        buildWorker().doWork()
-
-        verify(exactly = 1) { VaultStatusWidget.refreshAll(any()) }
     }
 }
 
