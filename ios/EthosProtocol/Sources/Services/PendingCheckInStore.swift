@@ -28,6 +28,7 @@ struct PendingCheckIn: Codable, Equatable {
 /// All mutations are synchronised on a serial queue to avoid data races.
 final class PendingCheckInStore {
     static let shared = PendingCheckInStore()
+    static let maxQueueSize = 50
 
     private let fileURL: URL
     private let queue = DispatchQueue(label: "com.ethosprotocol.PendingCheckInStore")
@@ -60,6 +61,12 @@ final class PendingCheckInStore {
     /// Returns the current queue count (used by the notification badge).
     var count: Int { getAll().count }
 
+    /// Returns true when the queue has reached its maximum capacity.
+    var isAtCapacity: Bool { count >= Self.maxQueueSize }
+
+    /// Returns true when the queue is within 5 items of its maximum capacity.
+    var isNearCapacity: Bool { count >= Self.maxQueueSize - 5 }
+
     /// Enqueue a check-in for `vaultId`. Idempotent — a vault already in the queue
     /// is not duplicated (mirrors Android's `OnConflictStrategy.REPLACE`).
     func insert(_ item: PendingCheckIn) {
@@ -67,6 +74,7 @@ final class PendingCheckInStore {
             var items = load()
             items.removeAll { $0.vaultId == item.vaultId }
             items.append(item)
+            if items.count > Self.maxQueueSize { items.removeFirst(items.count - Self.maxQueueSize) }
             save(items)
         }
     }

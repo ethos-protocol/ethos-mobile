@@ -1,0 +1,34 @@
+name: Staging Smoke Test
+
+# Runs core-flow checks (auth, list vaults, check-in) against the staging
+# environment to catch a backend/client API contract mismatch (see
+# shared/api-contract.md) before a release build is cut.
+#
+# No release workflow exists yet in this repo (android-ci.yml / ios-ci.yml
+# only build/test/lint). This is exposed via workflow_call so that whichever
+# workflow eventually cuts a release build can gate on it with:
+#   jobs:
+#     smoke-test:
+#       uses: ./.github/workflows/staging-smoke-test.yml
+#       secrets: inherit
+#     release:
+#       needs: smoke-test
+#       ...
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    name: Smoke test staging (auth, list vaults, check-in)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run staging smoke tests
+        env:
+          STAGING_API_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
+          STAGING_SMOKE_TOKEN: ${{ secrets.STAGING_SMOKE_TOKEN }}
+          STAGING_SMOKE_VAULT_ID: ${{ secrets.STAGING_SMOKE_VAULT_ID }}
+        run: ./scripts/smoke_test_staging.sh

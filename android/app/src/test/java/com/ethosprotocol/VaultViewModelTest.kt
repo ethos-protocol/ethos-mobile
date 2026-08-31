@@ -8,6 +8,7 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.services.ConnectionState
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -21,6 +22,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
@@ -44,7 +47,9 @@ class VaultViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        every { vaultEventSocket.events(any()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<String>()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<List<String>>()) } returns emptyFlow()
+        every { vaultEventSocket.connectionState } returns MutableStateFlow(ConnectionState.DISCONNECTED).asStateFlow()
         vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
     }
 
@@ -345,6 +350,39 @@ class VaultViewModelTest {
         vm.clearBeneficiaryUpdated()
 
         assertFalse(vm.state.value.beneficiaryUpdated)
+    }
+
+    // #218: label update mirrors updateBeneficiary's flag-and-reload pattern.
+    @Test
+    fun `updateLabel success sets labelUpdated and reloads vaults`() = runTest {
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        val labeled = v1.copy(label = "Emergency Fund")
+        coEvery { apiClient.updateVaultLabel("v1", "Emergency Fund") } returns ApiResult.Success(labeled)
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(labeled), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", "Emergency Fund")
+
+        coVerify { apiClient.updateVaultLabel("v1", "Emergency Fund") }
+        assertTrue(vm.state.value.labelUpdated)
+        assertEquals("Emergency Fund", vm.state.value.vaults.first().label)
+    }
+
+    @Test
+    fun `updateLabel with null clears the label`() = runTest {
+        val v1 = makeVault("v1").copy(label = "Old Label")
+        coEvery { apiClient.updateVaultLabel("v1", null) } returns ApiResult.Success(v1.copy(label = null))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1.copy(label = null)), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", null)
+
+        coVerify { apiClient.updateVaultLabel("v1", null) }
+        assertNull(vm.state.value.vaults.first().label)
     }
 
     @Test

@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import os.log
 
 // MARK: - CheckInSyncTask
 
@@ -22,9 +23,16 @@ final class CheckInSyncTask {
     static let shared = CheckInSyncTask()
     static let taskIdentifier = "app.ethos-protocol.checkin-sync"
 
+    // #204: see docs/background-task-scheduling.md — used to compare requested vs.
+    // real-world observed cadence against BackgroundRefreshService's separate scheduling pool.
+    private static let log = OSLog(subsystem: "app.ethos-protocol", category: "background-scheduling")
+
     // Error codes where the server has definitively rejected the check-in. Matches
     // PendingActionSyncWorker.NON_RETRYABLE_ERROR_CODES on Android exactly.
-    static let nonRetryableErrorCodes: Set<Int> = [400, 404, 410]
+    static let nonRetryableErrorCodes: Set<Int> = [400, 404]
+
+    // HTTP 410 Gone — vault has already expired; handled separately to surface a notification.
+    static let vaultExpiredCode = 410
 
     // Injected for testing
     var apiClient: APIClientProtocol = APIClient.shared
@@ -53,6 +61,7 @@ final class CheckInSyncTask {
         request.requiresExternalPower = false
         // Submit best-effort; ignore if background tasks are disabled (simulator, low power mode).
         try? BGTaskScheduler.shared.submit(request)
+        Self.log.log("scheduled: requiresNetworkConnectivity=true")
     }
 
     // MARK: - Sync logic
@@ -74,7 +83,10 @@ final class CheckInSyncTask {
             case .networkUnavailable:
                 hasRetryableFailure = true
             case .serverError(let code, _):
-                if Self.nonRetryableErrorCodes.contains(code) {
+                if code == Self.vaultExpiredCode {
+                    store.delete(item)
+                    NotificationService.shared.showVaultExpiredNotification(vaultId: item.vaultId)
+                } else if Self.nonRetryableErrorCodes.contains(code) {
                     // Server has permanently rejected this check-in — drop it.
                     store.delete(item)
                 } else {
@@ -93,6 +105,7 @@ final class CheckInSyncTask {
     // MARK: - BGProcessingTask handler
 
     private func handleSync(task: BGProcessingTask) {
+        Self.log.log("invoked")
         // Re-schedule before doing the work so a gap never opens up.
         scheduleSync()
 

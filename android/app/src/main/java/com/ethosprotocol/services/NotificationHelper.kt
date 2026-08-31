@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import com.ethosprotocol.services.PendingActionType
 import com.ethosprotocol.ui.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -20,6 +21,8 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         const val QUEUED_CHANNEL_ID = "ttl_queued"
         const val QUEUED_CHANNEL_NAME = "Queued Requests"
         const val QUEUED_NOTIFICATION_ID = 9_001
+        const val EXPIRED_CHANNEL_ID = "vault_expired"
+        const val EXPIRED_CHANNEL_NAME = "Vault Expiry Alerts"
 
         // Reserved range for per-vault notification IDs, kept clear of QUEUED_NOTIFICATION_ID
         // and NO_VAULT_NOTIFICATION_ID below.
@@ -42,6 +45,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
     init {
         createChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
         createChannel(QUEUED_CHANNEL_ID, QUEUED_CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT)
+        createChannel(EXPIRED_CHANNEL_ID, EXPIRED_CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
     }
 
     @Synchronized
@@ -104,6 +108,32 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
 
     fun cancelQueuedActions() {
         context.getSystemService(NotificationManager::class.java).cancel(QUEUED_NOTIFICATION_ID)
+    }
+
+    fun showVaultExpiredNotification(vaultId: String, actionType: PendingActionType) {
+        val actionLabel = if (actionType == PendingActionType.CHECK_IN) "check-in" else "request"
+        val body = "A queued $actionLabel was discarded because this vault already expired " +
+            "while you were offline. The vault may have released funds to the beneficiary."
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (vaultId.isNotEmpty())
+                data = android.net.Uri.parse("ethosprotocol://vault/$vaultId/view-details")
+        }
+        val pi = PendingIntent.getActivity(
+            context, vaultId.hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(context, EXPIRED_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+            .setContentTitle("Check-in Failed \u2014 Vault Expired")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        context.getSystemService(NotificationManager::class.java)
+            .notify(notificationIdFor(vaultId.ifEmpty { null }), notification)
     }
 
     private fun createChannel(id: String, name: String, importance: Int) {

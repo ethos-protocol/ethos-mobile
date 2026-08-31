@@ -168,3 +168,83 @@ final class OfflineCacheSignOutTests: XCTestCase {
         XCTAssertNil(OfflineCache.shared.load(for: key))
     }
 }
+
+// MARK: - Issue #244: Concurrent Read/Write Tests
+
+final class OfflineCacheConcurrencyTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        OfflineCache.shared.clearAll()
+    }
+
+    override func tearDown() {
+        OfflineCache.shared.clearAll()
+        super.tearDown()
+    }
+
+    func test_concurrentReadWrite_doesNotCorruptCache() {
+        let iterations = 50
+        let writeExpectation = expectation(description: "writer done")
+        let readExpectation = expectation(description: "reader done")
+        var writeError: Error?
+        var readError: Error?
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                for i in 0..<iterations {
+                    let data = Data("{\"i\":\(i)}".utf8)
+                    OfflineCache.shared.save(data, for: "concurrent-key")
+                }
+            } catch {
+                writeError = error
+            }
+            writeExpectation.fulfill()
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                for _ in 0..<iterations {
+                    _ = OfflineCache.shared.load(for: "concurrent-key")
+                }
+            } catch {
+                readError = error
+            }
+            readExpectation.fulfill()
+        }
+
+        wait(for: [writeExpectation, readExpectation], timeout: 10)
+        XCTAssertNil(writeError, "Writer should not throw")
+        XCTAssertNil(readError, "Reader should not throw")
+        // Final state must be readable — not a torn write
+        let result = OfflineCache.shared.load(for: "concurrent-key")
+        XCTAssertNotNil(result, "Cache should have a valid entry after concurrent access")
+    }
+
+    func test_twoInstancesConcurrently_trackDifferentKeys() {
+        // Simulates two widget instances writing their own vault data simultaneously
+        let exp1 = expectation(description: "vault-1 done")
+        let exp2 = expectation(description: "vault-2 done")
+
+        DispatchQueue.global().async {
+            for _ in 0..<20 {
+                OfflineCache.shared.save(Data("{\"vault\":\"v1\"}".utf8), for: "widget-vault-1")
+            }
+            exp1.fulfill()
+        }
+        DispatchQueue.global().async {
+            for _ in 0..<20 {
+                OfflineCache.shared.save(Data("{\"vault\":\"v2\"}".utf8), for: "widget-vault-2")
+            }
+            exp2.fulfill()
+        }
+
+        wait(for: [exp1, exp2], timeout: 10)
+        let d1 = OfflineCache.shared.load(for: "widget-vault-1")
+        let d2 = OfflineCache.shared.load(for: "widget-vault-2")
+        XCTAssertNotNil(d1, "vault-1 entry should exist")
+        XCTAssertNotNil(d2, "vault-2 entry should exist")
+        // Keys must not bleed into each other
+        XCTAssertNotEqual(d1, d2)
+    }
+}
