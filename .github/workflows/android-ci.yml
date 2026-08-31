@@ -120,12 +120,16 @@ jobs:
         env:
           ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
           ANDROID_KEYSTORE_PATH: ${{ secrets.ANDROID_KEYSTORE_PATH }}
+          ETHOS_CERTIFICATE_EXPIRY: ${{ vars.ETHOS_CERTIFICATE_EXPIRY }}
         run: |
           python3 ../.github/scripts/test_verify_cert_pins.py
 
           ARGS=""
           if [ -z "$ETHOS_CERT_PINS" ] && [ -z "$ANDROID_KEYSTORE_PATH" ]; then
             ARGS="--warn-if-unconfigured"
+          fi
+          if [ -n "$ETHOS_CERTIFICATE_EXPIRY" ]; then
+            ARGS="$ARGS --certificate-expiry $ETHOS_CERTIFICATE_EXPIRY"
           fi
 
           python3 ../.github/scripts/verify_cert_pins.py \
