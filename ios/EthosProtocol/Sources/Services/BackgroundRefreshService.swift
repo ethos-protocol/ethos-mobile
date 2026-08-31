@@ -1,5 +1,6 @@
 import BackgroundTasks
 import Foundation
+import os.log
 
 // Protocol for testable refresh task lifecycle
 protocol BackgroundRefreshTask {
@@ -16,6 +17,10 @@ typealias VaultListProvider = () async throws -> [Vault]
 final class BackgroundRefreshService {
     static let shared = BackgroundRefreshService()
     static let taskIdentifier = "app.ethos-protocol.vault-ttl-refresh"
+
+    // #204: see docs/background-task-scheduling.md — used to compare requested vs.
+    // real-world observed cadence against CheckInSyncTask's separate scheduling pool.
+    private static let log = OSLog(subsystem: "app.ethos-protocol", category: "background-scheduling")
 
     // Injected dependency for testing; defaults to APIClient.shared.listAllVaults()
     // — every page, not just the first (#21), so a TTL warning isn't missed for
@@ -51,6 +56,8 @@ final class BackgroundRefreshService {
         let request = BGAppRefreshTaskRequest(identifier: Self.taskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 3_600) // poll every hour
         try? BGTaskScheduler.shared.submit(request)
+        // #204: lets a multi-day Console.app trace compare requested vs. observed cadence.
+        Self.log.log("scheduled: earliestBeginDate=+3600s")
     }
 
     /// Cancels the pending BGAppRefreshTaskRequest (used on sign-out, so a stale
@@ -60,6 +67,7 @@ final class BackgroundRefreshService {
     }
 
     func handleRefresh(task: BackgroundRefreshTask) {
+        Self.log.log("invoked")
         scheduleAppRefresh()
 
         // Register the expiration handler before kicking off the async work so there's no

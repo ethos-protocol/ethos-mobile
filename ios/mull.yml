@@ -1,0 +1,41 @@
+# Scoped Mull mutation-testing config for StellarAddress only.
+#
+# Not wired into CI yet (mutation runs are slow and meant to be triggered
+# deliberately) — see shared/MUTATION_TESTING.md for rationale, install
+# instructions, and the current baseline of gaps this config was created to
+# close.
+#
+# Usage (after installing Mull via https://mull.readthedocs.io):
+#   cd ios/EthosProtocol
+#   xcodebuild test-without-building \
+#     -project Xcode/EthosProtocol.xcodeproj -scheme EthosProtocol \
+#     -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+#     -only-testing:EthosProtocolTests/StellarAddressTests \
+#     -enableCodeCoverage YES
+#   mull-runner-19 --config mull.yml build/EthosProtocol.xctest
+
+project:
+  # Only mutate the validator under spec — mutating the whole app would be
+  # slow and produce noise unrelated to shared/stellar-validation-spec.md.
+  paths_to_mutate:
+    - "EthosProtocol/Sources/Models/StellarAddress.swift"
+  paths_to_ignore:
+    - "Tests/**"
+
+mutators:
+  - cxx_comparison_operator_mutators
+  - cxx_boundary_mutators
+  - cxx_logical_operator_mutators
+  - cxx_remove_negation_mutators
+
+test:
+  # Only run the Stellar suite — no need to re-run the full app test target
+  # per mutant.
+  filter: "EthosProtocolTests/StellarAddressTests"
+
+reporters:
+  - IDE
+  - SQLite
+
+# Threshold is intentionally not enforced yet (no automated run has
+# established a real baseline) — see shared/MUTATION_TESTING.md.

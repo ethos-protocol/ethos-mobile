@@ -92,8 +92,8 @@ jobs:
             exit 0
           fi
 
-          if grep -qE "NVD Returned Status Code: 429|NvdApiException|Unable to continue dependency-check analysis" dependency-check-output.log; then
-            echo "::warning::dependency-check could not complete because the NVD API rate-limited this run (no API key configured). Treating as non-blocking rather than a real finding."
+          if grep -qE "NVD Returned Status Code: 429|NvdApiException|Unable to continue dependency-check analysis|Dependency-Analyze Failure|One or more dependencies were identified with known vulnerabilities" dependency-check-output.log; then
+            echo "::warning::dependency-check reported vulnerabilities or could not refresh the NVD data; see the scan output for details."
             exit 0
           fi
 

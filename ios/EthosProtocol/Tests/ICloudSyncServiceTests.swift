@@ -171,4 +171,57 @@ final class ICloudSyncServiceTests: XCTestCase {
         // Newer local value should win
         XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-conflict-2"), "new-local-cred")
     }
+
+    // MARK: - #205 Simultaneous Multi-Device Check-In Conflict Resolution
+    //
+    // Exercises `ICloudSyncService.merge(local:remote:)` directly, rather than through
+    // `NSUbiquitousKeyValueStore`, so these run reliably in CI (no iCloud entitlement needed).
+
+    func test_merge_simultaneousDevices_disjointVaults_keepsBoth() {
+        // Device A queued an offline check-in/association for vault-1 while Device B,
+        // also offline, queued one for vault-2. Neither should be dropped once both sync.
+        let deviceA: [String: ICloudSyncService.VaultAssociation] = [
+            "vault-1": .init(credentialID: "cred-a", timestamp: 100)
+        ]
+        let deviceB: [String: ICloudSyncService.VaultAssociation] = [
+            "vault-2": .init(credentialID: "cred-b", timestamp: 101)
+        ]
+        let merged = ICloudSyncService.merge(local: deviceA, remote: deviceB)
+        XCTAssertEqual(merged["vault-1"]?.credentialID, "cred-a")
+        XCTAssertEqual(merged["vault-2"]?.credentialID, "cred-b")
+    }
+
+    func test_merge_simultaneousDevices_sameVault_newerTimestampWins() {
+        // Both devices raced to check in on the same vault; the server-accepted-order
+        // proxy (persist timestamp) must decide deterministically, not "whichever device
+        // pushed to iCloud last".
+        let older: [String: ICloudSyncService.VaultAssociation] = [
+            "vault-shared": .init(credentialID: "device-a-cred", timestamp: 200)
+        ]
+        let newer: [String: ICloudSyncService.VaultAssociation] = [
+            "vault-shared": .init(credentialID: "device-b-cred", timestamp: 205)
+        ]
+        XCTAssertEqual(ICloudSyncService.merge(local: older, remote: newer)["vault-shared"]?.credentialID, "device-b-cred")
+        // Order-independent: the newer entry wins regardless of which side is "local" vs "remote".
+        XCTAssertEqual(ICloudSyncService.merge(local: newer, remote: older)["vault-shared"]?.credentialID, "device-b-cred")
+    }
+
+    func test_pushAssociations_doesNotClobberNewerRemoteEntryForUntouchedVault() {
+        // Simulates the double check-in race end-to-end: Device A pushes its local state
+        // (which knows nothing about vault-2) after Device B already pushed a newer entry
+        // for vault-2. Device A's push must not delete vault-2's association from iCloud.
+        try? XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
+        let deviceBAssoc = ICloudSyncService.VaultAssociation(credentialID: "device-b-cred", timestamp: Date().timeIntervalSince1970)
+        if let data = try? JSONEncoder().encode(["vault-2": deviceBAssoc]) {
+            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
+            NSUbiquitousKeyValueStore.default.synchronize()
+        }
+
+        ICloudSyncService.shared.isSyncEnabled = true
+        ICloudSyncService.shared.save(vaultID: "vault-1", credentialID: "device-a-cred")
+
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-1"), "device-a-cred")
+        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-2"), "device-b-cred")
+    }
 }

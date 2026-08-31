@@ -88,6 +88,17 @@
                 android:resource="@xml/vault_widget_info" />
         </receiver>
 
+        <!-- Widget configuration activity: shown when the user adds a new vault widget (#245) -->
+        <activity
+            android:name=".widget.VaultWidgetConfigActivity"
+            android:exported="true"
+            android:label="@string/widget_configure_title"
+            android:theme="@style/Theme.EthosProtocol">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- Passkey / Digital Asset Links -->
         <meta-data
             android:name="asset_statements"
