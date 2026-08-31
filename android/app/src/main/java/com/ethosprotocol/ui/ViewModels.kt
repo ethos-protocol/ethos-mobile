@@ -27,6 +27,8 @@ import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
 import com.ethosprotocol.services.VaultEventSocket
+import com.ethosprotocol.widget.VaultStatusWidget
+import com.ethosprotocol.widget.VaultWidgetUpdateWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -48,8 +50,14 @@ data class AuthUiState(
     // Set once initiateRecovery() succeeds — its presence means a recovery code has been
     // sent and the UI should show the "finish recovery" step.
     val recoveryToken: String? = null,
-    val cooldownRemainingSeconds: Int = 0
-)
+    val cooldownRemainingSeconds: Int = 0,
+    // #212: Client-side rate limiting for recovery-code submission, mirroring #119's
+    // OTP cooldown schedule — a recovery code is just as brute-forceable as an OTP.
+    val recoveryFailureCount: Int = 0,
+    val recoveryCooldownSeconds: Int = 0
+) {
+    val isRecoveryBlocked: Boolean get() = recoveryCooldownSeconds > 0
+}
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -127,6 +135,20 @@ class AuthViewModel @Inject constructor(
             .onFailure { e -> handleAuthFailure(e) }
     }
 
+    /**
+     * Whether this device's passkey appears to be the only one registered to the account
+     * (#214) — callers should confirm with the user before signing out when this is true,
+     * since with no other device's passkey and no recovery already in hand, signing out
+     * could permanently lock them out of a vault holding real funds.
+     *
+     * Best-effort: a failed lookup (e.g. offline) doesn't block sign-out, so it defaults to
+     * `false` rather than trapping the user in the app.
+     */
+    suspend fun isLastRemainingPasskey(): Boolean {
+        val result = apiClient.getChallenge()
+        return (result as? ApiResult.Success)?.data?.existingCredentialIds?.size?.let { it <= 1 } ?: false
+    }
+
     fun signOut() = viewModelScope.launch {
         // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
         // tokenProvider.token when building the request, so clearing first would send
@@ -149,6 +171,84 @@ class AuthViewModel @Inject constructor(
         consecutiveFailures++
         _state.update { it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e)) }
         startCooldownIfNeeded()
+    }
+
+    // ── #212 Recovery-code rate limiting ────────────────────────────────────
+
+    private var recoveryCooldownJob: Job? = null
+
+    fun initiateRecovery(username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.initiateRecovery(RecoveryInitiateRequest(username))) {
+            is ApiResult.Success -> _state.update {
+                it.copy(isLoading = false, recoveryToken = result.data.recoveryToken)
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun finishRecovery(activity: Activity, username: String) = viewModelScope.launch {
+        if (_state.value.isRecoveryBlocked) return@launch
+        val token = _state.value.recoveryToken ?: return@launch
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.recoverAccount(activity, username, token)
+            .onSuccess {
+                recoveryCooldownJob?.cancel()
+                _state.update {
+                    it.copy(isAuthenticated = true, isLoading = false, recoveryToken = null,
+                        recoveryFailureCount = 0, recoveryCooldownSeconds = 0)
+                }
+            }
+            .onFailure { e ->
+                if (BuildConfig.DEBUG) Log.w(TAG, "recovery failed", e)
+                val newCount = _state.value.recoveryFailureCount + 1
+                val cooldown = recoveryCooldownSeconds(newCount)
+                _state.update {
+                    it.copy(isLoading = false, error = ApiErrorMapper.friendlyMessage(e), recoveryFailureCount = newCount)
+                }
+                if (cooldown > 0) startRecoveryCooldown(cooldown)
+            }
+    }
+
+    /** Discards in-progress recovery state, e.g. when the user dismisses the sheet. */
+    fun dismissRecovery() {
+        recoveryCooldownJob?.cancel()
+        _state.update {
+            it.copy(recoveryToken = null, recoveryFailureCount = 0, recoveryCooldownSeconds = 0, error = null)
+        }
+    }
+
+    /**
+     * Escalating cooldown schedule matching TwoFactorViewModel.otpCooldownSeconds / iOS's
+     * OTPRateLimiter (#119):
+     *   1–2 failures → no cooldown (grace period)
+     *   3 failures   → 30 s
+     *   4 failures   → 60 s
+     *   5+ failures  → 120 s (capped)
+     */
+    internal fun recoveryCooldownSeconds(failures: Int): Int = when {
+        failures < 3  -> 0
+        failures == 3 -> 30
+        failures == 4 -> 60
+        else          -> 120
+    }
+
+    private fun startRecoveryCooldown(seconds: Int) {
+        recoveryCooldownJob?.cancel()
+        _state.update { it.copy(recoveryCooldownSeconds = seconds) }
+        recoveryCooldownJob = viewModelScope.launch {
+            for (remaining in seconds - 1 downTo 0) {
+                delay(1_000)
+                _state.update { it.copy(recoveryCooldownSeconds = remaining) }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cooldownJob?.cancel()
+        recoveryCooldownJob?.cancel()
     }
 
     companion object {
@@ -352,7 +452,8 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    val labelUpdated: Boolean = false
 )
 
 private const val PAGE_SIZE = 20
@@ -470,9 +571,29 @@ class VaultViewModel @Inject constructor(
                 vaultEventSocket.events(id).collect { event ->
                     val updated = event.vault ?: return@collect
                     _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    // #249: Trigger an on-demand widget refresh instead of waiting for the
+                    // next scheduled VaultWidgetUpdateWorker tick. We save the updated
+                    // vault data first, then reschedule the worker to run immediately so
+                    // the widget picks up the new values without delay.
+                    VaultStatusWidget.saveVaultData(
+                        context,
+                        vaultId = updated.id,
+                        vaultName = updated.id.take(12) + "…",
+                        ttlRemaining = formatWidgetTtl(updated.ttlRemaining),
+                        lastCheckIn = VaultStatusWidget.formatLastCheckIn(updated.lastCheckIn)
+                    )
+                    VaultWidgetUpdateWorker.schedule(context, intervalMinutes = 0)
                 }
             }
         }
+    }
+
+    /** Formats a TTL value (seconds) for widget display, matching VaultWidgetUpdateWorker's own formatter. */
+    private fun formatWidgetTtl(seconds: Long?): String {
+        if (seconds == null) return "Unknown"
+        val days = seconds / 86_400
+        val hours = (seconds % 86_400) / 3_600
+        return if (days > 0) "${days}d ${hours}h" else "${hours}h"
     }
 
     override fun onCleared() {
@@ -542,6 +663,23 @@ class VaultViewModel @Inject constructor(
 
     fun clearBeneficiaryUpdated() {
         _state.update { it.copy(beneficiaryUpdated = false) }
+    }
+
+    // #218: sets or clears (via label = null) a vault's display label.
+    fun updateLabel(vaultId: String, label: String?) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null, labelUpdated = false) }
+        when (val result = apiClient.updateVaultLabel(vaultId, label)) {
+            is ApiResult.Success -> {
+                _state.update { it.copy(isLoading = false, labelUpdated = true) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearLabelUpdated() {
+        _state.update { it.copy(labelUpdated = false) }
     }
 
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {
@@ -694,5 +832,62 @@ class WithdrawViewModel @Inject constructor(
         val stroops = value * 10_000_000.0
         if (stroops > Long.MAX_VALUE.toDouble()) return null
         return stroops.toLong()
+    }
+}
+
+// #217: vault activity history — paginated the same way VaultViewModel.loadMore()
+// is, reusing ApiClient's cursor/limit convention for GET /vaults/{id}/history.
+data class VaultHistoryUiState(
+    val events: List<com.ethosprotocol.models.VaultHistoryEvent> = emptyList(),
+    val isLoading: Boolean = false,
+    val isLoadingMore: Boolean = false,
+    val hasMore: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class VaultHistoryViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(VaultHistoryUiState())
+    val state = _state.asStateFlow()
+
+    private var nextCursor: String? = null
+
+    fun load(vaultId: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.getVaultHistory(vaultId)) {
+            is ApiResult.Success -> {
+                nextCursor = result.data.nextCursor
+                _state.update {
+                    it.copy(events = result.data.events, isLoading = false, hasMore = result.data.hasMore)
+                }
+            }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+        }
+    }
+
+    fun loadMore(vaultId: String) {
+        val cursor = nextCursor ?: return
+        if (_state.value.isLoadingMore) return
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingMore = true) }
+            when (val result = apiClient.getVaultHistory(vaultId, after = cursor)) {
+                is ApiResult.Success -> {
+                    nextCursor = result.data.nextCursor
+                    _state.update {
+                        it.copy(
+                            events = it.events + result.data.events,
+                            isLoadingMore = false,
+                            hasMore = result.data.hasMore
+                        )
+                    }
+                }
+                ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoadingMore = false, error = "No network") }
+                is ApiResult.Error -> _state.update { it.copy(isLoadingMore = false, error = result.message) }
+            }
+        }
     }
 }

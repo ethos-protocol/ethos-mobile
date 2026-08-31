@@ -27,6 +27,20 @@ data class VaultDeepLink(val vaultId: String, val action: VaultDeepLinkAction)
  */
 data class BeneficiaryAcceptLink(val vaultId: String, val token: String)
 
+/**
+ * #258: A web-initiated account-recovery link
+ * (https://ethos-protocol.app/auth/recover/link?token={token}).
+ *
+ * The link is emailed to the user's registered address and carries a one-time
+ * [token] that pre-fills the recovery step in the app so the user does not have
+ * to retype the value shown in the browser. This corresponds to
+ * POST /auth/recover/link in shared/api-contract.md.
+ *
+ * [token] follows the same allowlist as vault IDs and acceptance tokens:
+ * [A-Za-z0-9_-]{1,128}.
+ */
+data class RecoveryDeepLink(val token: String)
+
 object VaultDeepLinkParser {
     /**
      * Vault IDs are only ever used to build API request paths (e.g. "/vaults/$vaultId/checkin")
@@ -69,11 +83,36 @@ object VaultDeepLinkParser {
     @Volatile
     var eventLogger: EventLogger = defaultEventLogger
 
+    /**
+     * #259: The set of vault IDs owned by the currently signed-in user.
+     *
+     * When non-null, deep links referencing a vault not in this set are rejected
+     * before any API call is made. The error is intentionally generic — it must
+     * not reveal whether the vault exists — to avoid leaking vault-existence
+     * information via deep-link probing.
+     *
+     * Set to `null` (the default) when the vault list has not been loaded yet;
+     * ownership is then treated as unknown and the check is skipped (the server
+     * will return 403 or 404 if the vault doesn't belong to the caller).
+     *
+     * VaultViewModel or MainActivity should populate this after a successful
+     * listVaults() response and clear it on sign-out.
+     */
+    @Volatile
+    var ownerVaultIds: Set<String>? = null
+
+    /** Returns true if ownership validation should pass for [vaultId]. */
+    private fun isOwnedVault(vaultId: String): Boolean {
+        val owned = ownerVaultIds ?: return true   // unknown — skip check
+        return vaultId in owned
+    }
+
     /** Parses ethosprotocol://vault/{vault_id}/{action} from a URL string or returns null if unrecognised. */
     fun parseUrl(url: String): VaultDeepLink? {
         val match = URL_PATTERN.matchEntire(url.trim()) ?: return null
         val vaultId = match.groupValues[1]
         if (!isValidVaultId(vaultId)) return null
+        if (!isOwnedVault(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(match.groupValues[2]) ?: return null
         eventLogger.onDeepLinkParsed(action)
         return VaultDeepLink(vaultId = vaultId, action = action)
@@ -86,6 +125,7 @@ object VaultDeepLinkParser {
         if (segments.size != 2) return null
         val vaultId = segments[0]
         if (!isValidVaultId(vaultId)) return null
+        if (!isOwnedVault(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(segments[1]) ?: return null
         eventLogger.onDeepLinkParsed(action)
         return VaultDeepLink(vaultId = vaultId, action = action)
@@ -107,6 +147,27 @@ object VaultDeepLinkParser {
         // interpolated into a navigation route before it reaches the API request body.
         val token = uri.getQueryParameter("token")?.takeIf { isValidVaultId(it) } ?: return null
         return BeneficiaryAcceptLink(vaultId = vaultId, token = token)
+    }
+
+    /**
+     * #258: Parses https://ethos-protocol.app/auth/recover/link?token={token}.
+     *
+     * Returns a [RecoveryDeepLink] with the pre-filled recovery token so the user lands
+     * directly in the "finish recovery" step rather than having to retype the value.
+     *
+     * Returns null when:
+     *   - scheme is not https (rejects any custom-scheme forgery)
+     *   - host is not ethos-protocol.app
+     *   - path is not exactly /auth/recover/link
+     *   - the token query parameter is missing or fails the allowlist check
+     */
+    fun parseRecoveryLink(uri: Uri): RecoveryDeepLink? {
+        if (uri.scheme != "https" || uri.host != "ethos-protocol.app") return null
+        val segments = uri.pathSegments
+        // Expect /auth/recover/link — exactly three segments.
+        if (segments.size != 3 || segments[0] != "auth" || segments[1] != "recover" || segments[2] != "link") return null
+        val token = uri.getQueryParameter("token")?.takeIf { isValidVaultId(it) } ?: return null
+        return RecoveryDeepLink(token = token)
     }
 
     private val URL_PATTERN = Regex("^ethosprotocol://vault/([^/]+)/([^/]+)$")

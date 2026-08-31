@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.widget.RemoteViews
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
@@ -27,31 +28,107 @@ class VaultStatusWidget : AppWidgetProvider() {
         widgetIds.forEach { updateWidget(context, manager, it) }
     }
 
+    /** Re-render when the user resizes the widget so the layout adapts to the new size (#247). */
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        manager: AppWidgetManager,
+        widgetId: Int,
+        newOptions: Bundle
+    ) {
+        super.onAppWidgetOptionsChanged(context, manager, widgetId, newOptions)
+        updateWidget(context, manager, widgetId)
+    }
+
     companion object {
-        private const val PREFS = "vault_widget_prefs"
+        // Per-widget shared-prefs key pattern (#246). Each widget instance gets its own
+        // preferences file so different widgets can show different vaults simultaneously.
+        private fun prefsName(widgetId: Int) = "vault_widget_prefs_$widgetId"
+
+        // Shared prefs key used to store the list of all known vault IDs, for use by
+        // VaultWidgetConfigActivity's vault picker (#245).
+        const val PREFS_SHARED = "vault_widget_shared"
+        const val KEY_VAULT_ID_LIST = "vault_id_list"
+
         private const val KEY_VAULT_ID = "vault_id"
         private const val KEY_VAULT_NAME = "vault_name"
         private const val KEY_TTL = "ttl_remaining"
         private const val KEY_LAST_CHECK_IN = "last_check_in"
+        const val KEY_BALANCE = "balance"
+        const val KEY_BENEFICIARY = "beneficiary"
 
-        fun saveVaultData(context: Context, vaultId: String, vaultName: String, ttlRemaining: String, lastCheckIn: String) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        // Selected-vault key stored in per-widget prefs; written by VaultWidgetConfigActivity.
+        private const val KEY_SELECTED_VAULT_ID = "selected_vault_id"
+
+        /**
+         * Saves vault display data to per-widget SharedPreferences (#246).
+         * Each widget ID maps to its own prefs file so data is isolated per instance.
+         */
+        fun saveVaultData(
+            context: Context,
+            widgetId: Int,
+            vaultId: String,
+            vaultName: String,
+            ttlRemaining: String,
+            lastCheckIn: String,
+            balance: String,
+            beneficiary: String
+        ) {
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
                 .putString(KEY_VAULT_ID, vaultId)
                 .putString(KEY_VAULT_NAME, vaultName)
                 .putString(KEY_TTL, ttlRemaining)
                 .putString(KEY_LAST_CHECK_IN, lastCheckIn)
+                .putString(KEY_BALANCE, balance)
+                .putString(KEY_BENEFICIARY, beneficiary)
                 .apply()
+        }
+
+        /**
+         * Returns the vault ID pinned by the user for this widget instance via
+         * VaultWidgetConfigActivity, or null if the user has not made a selection (#245 / #246).
+         */
+        fun getSelectedVaultId(context: Context, widgetId: Int): String? =
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
+                .getString(KEY_SELECTED_VAULT_ID, null)
+                .takeIf { !it.isNullOrEmpty() }
+
+        /**
+         * Persists the user's vault selection for a specific widget instance (#245 / #246).
+         * Called by VaultWidgetConfigActivity when the user picks a vault.
+         */
+        fun saveSelectedVaultId(context: Context, widgetId: Int, vaultId: String) {
+            context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE).edit()
+                .putString(KEY_SELECTED_VAULT_ID, vaultId)
+                .apply()
+        }
+
+        /**
+         * Chooses the correct layout resource based on the widget's current width (#247).
+         * Reads OPTION_APPWIDGET_MIN_WIDTH from the options bundle:
+         *   width < 180dp  → small  (TTL only)
+         *   180 ≤ width < 250dp → medium (TTL + balance)
+         *   width ≥ 250dp  → large  (TTL + balance + beneficiary)
+         */
+        fun selectLayout(options: Bundle): Int {
+            val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0)
+            return when {
+                minWidth >= 250 -> R.layout.vault_widget_large
+                minWidth >= 180 -> R.layout.vault_widget_medium
+                else -> R.layout.vault_widget_small
+            }
         }
 
         /** Builds the deep link used to open a widget tap directly onto the vault it displayed. */
         internal fun deepLinkUri(vaultId: String): String = "ethosprotocol://vault/$vaultId/view-details"
 
         fun updateWidget(context: Context, manager: AppWidgetManager, widgetId: Int) {
-            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val prefs = context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
             val vaultId = prefs.getString(KEY_VAULT_ID, null)
             val vaultName = prefs.getString(KEY_VAULT_NAME, "—") ?: "—"
             val ttl = prefs.getString(KEY_TTL, "Unknown") ?: "Unknown"
             val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, "Never") ?: "Never"
+            val balance = prefs.getString(KEY_BALANCE, "—") ?: "—"
+            val beneficiary = prefs.getString(KEY_BENEFICIARY, "—") ?: "—"
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -60,14 +137,22 @@ class VaultStatusWidget : AppWidgetProvider() {
                 }
             }
             val pendingIntent = PendingIntent.getActivity(
-                context, 0, openIntent,
+                context, widgetId, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val views = RemoteViews(context.packageName, R.layout.vault_widget).apply {
+            // Pick layout based on current widget size options (#247).
+            val options = manager.getAppWidgetOptions(widgetId)
+            val layoutId = selectLayout(options)
+
+            val views = RemoteViews(context.packageName, layoutId).apply {
                 setTextViewText(R.id.widget_vault_name, vaultName)
                 setTextViewText(R.id.widget_ttl, "TTL: $ttl")
-                setTextViewText(R.id.widget_last_check_in, "Last check-in: $lastCheckIn")
+                // Medium and large layouts include balance / beneficiary views.
+                // setTextViewText on a view that doesn't exist in the current layout is a no-op
+                // for RemoteViews, so these calls are safe across all layout sizes.
+                setTextViewText(R.id.widget_balance, balance)
+                setTextViewText(R.id.widget_beneficiary, beneficiary)
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
             }
             manager.updateAppWidget(widgetId, views)
@@ -104,28 +189,50 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        // Pick the active vault with the lowest ttlRemaining — the same
-        // "most urgent vault" selection that iOS TTLTimelineProvider uses
-        // (min(by:) on ttlRemaining). Using firstOrNull() would show a
-        // different vault than iOS for accounts with multiple vaults.
-        val vault = (apiClient.listVaults() as? ApiResult.Success)?.data
-            ?.filter { it.status == VaultStatus.active }
-            ?.minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
+        val result = apiClient.listVaults()
+        if (result is ApiResult.Success) {
+            val vaults = result.data.filter { it.status == VaultStatus.active }
 
-        if (vault != null) {
-            VaultStatusWidget.saveVaultData(
-                applicationContext,
-                vaultId = vault.id,
-                vaultName = vault.id.take(12) + "…",
-                ttlRemaining = formatTtl(vault.ttlRemaining),
-                lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
+            // Pick the active vault with the lowest ttlRemaining as the urgency fallback.
+            // Individual widget instances may override this with a pinned vault ID (#245/#246).
+            val urgentVault = vaults.minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
+                ?: return Result.success()
+
+            // Save the full vault ID list so VaultWidgetConfigActivity can populate
+            // the picker (#245).
+            val vaultIdList = vaults.joinToString(",") { it.id }
+            applicationContext.getSharedPreferences(
+                VaultStatusWidget.PREFS_SHARED, Context.MODE_PRIVATE
+            ).edit().putString(VaultStatusWidget.KEY_VAULT_ID_LIST, vaultIdList).apply()
+
+            // Update each widget instance independently (#246).
+            // If the user has pinned a specific vault, use that; otherwise fall back to urgentVault.
+            val manager = AppWidgetManager.getInstance(applicationContext)
+            val ids = manager.getAppWidgetIds(
+                ComponentName(applicationContext, VaultStatusWidget::class.java)
             )
-            VaultStatusWidget.refreshAll(applicationContext)
-        }
+            ids.forEach { widgetId ->
+                val pinnedId = VaultStatusWidget.getSelectedVaultId(applicationContext, widgetId)
+                val vault = if (pinnedId != null) {
+                    vaults.find { it.id == pinnedId } ?: urgentVault
+                } else {
+                    urgentVault
+                }
+                VaultStatusWidget.saveVaultData(
+                    applicationContext,
+                    widgetId = widgetId,
+                    vaultId = vault.id,
+                    vaultName = vault.id.take(12) + "…",
+                    ttlRemaining = formatTtl(vault.ttlRemaining),
+                    lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn),
+                    balance = vault.formattedBalance,
+                    beneficiary = vault.beneficiary.take(12) + "…"
+                )
+                VaultStatusWidget.updateWidget(applicationContext, manager, widgetId)
+            }
 
-        // Always queue the next run — this worker is its own scheduler, so skipping it on an
-        // error or an empty vault list would stop the widget updating for good.
-        schedule(applicationContext, determineUpdateInterval(vault?.ttlRemaining))
+            schedule(applicationContext, determineUpdateInterval(urgentVault.ttlRemaining))
+        }
         return Result.success()
     }
 
@@ -139,52 +246,32 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME = "vault_widget_update"
 
-        // Refresh interval tiers ported from iOS TTLWidget.computeNextUpdateInterval (#199):
-        // the closer a vault is to expiring, the more often the widget is refreshed. The
-        // 60-minute idle tier is Android-only — a vault more than a day from expiry moves too
-        // slowly to be worth an hourly-or-better wake-up on a battery-budgeted device.
-        private const val IDLE_INTERVAL_MINUTES = 60L
-        private const val NORMAL_INTERVAL_MINUTES = 15L
-        private const val ELEVATED_INTERVAL_MINUTES = 10L
-        private const val URGENT_INTERVAL_MINUTES = 5L
-        private const val CRITICAL_INTERVAL_MINUTES = 2L
-
-        private const val IDLE_THRESHOLD_SECONDS = 86_400L    // 24h, matches Vault.isExpiringSoon
-        private const val NORMAL_THRESHOLD_SECONDS = 21_600L  // 6h
-        private const val ELEVATED_THRESHOLD_SECONDS = 3_600L // 1h
-        private const val URGENT_THRESHOLD_SECONDS = 1_800L   // 30m
+        // WorkManager enforces a 15-minute floor on periodic work, so that's the shortest
+        // interval available for a vault close to expiring. Once it's not urgent, back off
+        // to a much longer interval to conserve battery (coordinated with iOS's #33 gap).
+        private const val URGENT_INTERVAL_MINUTES = 15L
+        private const val NORMAL_INTERVAL_MINUTES = 60L
+        private const val URGENCY_THRESHOLD_SECONDS = 86_400L // 24h, matches Vault.isExpiringSoon
 
         /** Picks the widget refresh interval based on how close the most urgent vault is to expiring. */
-        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long {
-            val ttl = ttlRemainingSeconds ?: return IDLE_INTERVAL_MINUTES
-            return when {
-                ttl >= IDLE_THRESHOLD_SECONDS -> IDLE_INTERVAL_MINUTES
-                ttl >= NORMAL_THRESHOLD_SECONDS -> NORMAL_INTERVAL_MINUTES
-                ttl >= ELEVATED_THRESHOLD_SECONDS -> ELEVATED_INTERVAL_MINUTES
-                ttl >= URGENT_THRESHOLD_SECONDS -> URGENT_INTERVAL_MINUTES
-                else -> CRITICAL_INTERVAL_MINUTES
+        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long =
+            if ((ttlRemainingSeconds ?: Long.MAX_VALUE) < URGENCY_THRESHOLD_SECONDS) {
+                URGENT_INTERVAL_MINUTES
+            } else {
+                NORMAL_INTERVAL_MINUTES
             }
-        }
 
-        /**
-         * Queues the next widget refresh [intervalMinutes] from now.
-         *
-         * One-time work rather than periodic work: WorkManager enforces a 15-minute floor on
-         * periodic intervals, which is too coarse for the near-expiry tiers. Each run
-         * re-schedules the next one, mirroring iOS's `.after(nextUpdate)` timeline policy.
-         */
-        fun schedule(context: Context, intervalMinutes: Long = IDLE_INTERVAL_MINUTES) {
-            val request = OneTimeWorkRequestBuilder<VaultWidgetUpdateWorker>()
-                .setInitialDelay(intervalMinutes, TimeUnit.MINUTES)
+        fun schedule(context: Context, intervalMinutes: Long = NORMAL_INTERVAL_MINUTES) {
+            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
+                ExistingPeriodicWorkPolicy.UPDATE,
                 request
             )
         }

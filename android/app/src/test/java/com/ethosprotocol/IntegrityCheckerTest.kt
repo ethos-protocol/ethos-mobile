@@ -12,6 +12,12 @@ import org.junit.Test
  *
  * Each heuristic is tested in isolation by injecting controlled implementations
  * of the file, package, mounts, build-tags, and system-property readers.
+ *
+ * Tests added in v1.1 (#272) cover the four new heuristics:
+ * - checkWritableSystemPaths
+ * - checkZygiskMagiskPaths
+ * - checkMagiskHiddenPackages
+ * - checkRootBinaries
  */
 class IntegrityCheckerTest {
 
@@ -27,7 +33,8 @@ class IntegrityCheckerTest {
             packageChecker = { false },
             mountsReader = { "" },
             buildTagsReader = { "release-keys" },
-            systemPropertyReader = { "0" }
+            systemPropertyReader = { "0" },
+            canWriteChecker = { false }
         )
     }
 
@@ -149,6 +156,179 @@ class IntegrityCheckerTest {
         assertFalse(checker.checkDebuggableProp())
     }
 
+    // ── checkWritableSystemPaths (v1.1 #272) ──────────────────────────────
+
+    @Test
+    fun `checkWritableSystemPaths system not writable returns false`() {
+        checker.fileExistsChecker = { it == "/system" }
+        checker.canWriteChecker = { false }
+        assertFalse(checker.checkWritableSystemPaths())
+    }
+
+    @Test
+    fun `checkWritableSystemPaths system writable returns true`() {
+        checker.fileExistsChecker = { it == "/system" }
+        checker.canWriteChecker = { it == "/system" }
+        assertTrue(checker.checkWritableSystemPaths())
+    }
+
+    @Test
+    fun `checkWritableSystemPaths system bin writable returns true`() {
+        checker.fileExistsChecker = { it == "/system/bin" }
+        checker.canWriteChecker = { it == "/system/bin" }
+        assertTrue(checker.checkWritableSystemPaths())
+    }
+
+    @Test
+    fun `checkWritableSystemPaths vendor writable returns true`() {
+        checker.fileExistsChecker = { it == "/vendor" }
+        checker.canWriteChecker = { it == "/vendor" }
+        assertTrue(checker.checkWritableSystemPaths())
+    }
+
+    @Test
+    fun `checkWritableSystemPaths path exists but not writable returns false`() {
+        // Path exists but canWrite returns false — healthy read-only partition.
+        checker.fileExistsChecker = { it in listOf("/system", "/system/bin", "/vendor") }
+        checker.canWriteChecker = { false }
+        assertFalse(checker.checkWritableSystemPaths())
+    }
+
+    @Test
+    fun `checkWritableSystemPaths path does not exist returns false`() {
+        checker.fileExistsChecker = { false }
+        checker.canWriteChecker = { true }   // would fire if file existed
+        assertFalse(checker.checkWritableSystemPaths())
+    }
+
+    // ── checkZygiskMagiskPaths (v1.1 #272) ────────────────────────────────
+
+    @Test
+    fun `checkZygiskMagiskPaths no magisk paths exist and no property returns false`() {
+        checker.fileExistsChecker = { false }
+        checker.systemPropertyReader = { "0" }
+        assertFalse(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths data adb magisk exists returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/magisk" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths data adb modules exists returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/modules" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths sbin magisk marker exists returns true`() {
+        checker.fileExistsChecker = { it == "/sbin/.magisk" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths dev magisk marker exists returns true`() {
+        checker.fileExistsChecker = { it == "/dev/.magisk" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths ksu directory exists returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/ksu" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths zygisk enable property set returns true`() {
+        checker.fileExistsChecker = { false }
+        checker.systemPropertyReader = { key -> if (key == "ro.zygisk.enable") "1" else "0" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    @Test
+    fun `checkZygiskMagiskPaths magisk db exists returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/magisk.db" }
+        assertTrue(checker.checkZygiskMagiskPaths())
+    }
+
+    // ── checkMagiskHiddenPackages (v1.1 #272) ─────────────────────────────
+
+    @Test
+    fun `checkMagiskHiddenPackages no suspicious packages returns false`() {
+        checker.packageChecker = { false }
+        assertFalse(checker.checkMagiskHiddenPackages())
+    }
+
+    @Test
+    fun `checkMagiskHiddenPackages huskydg magisk returns true`() {
+        checker.packageChecker = { it == "io.github.huskydg.magisk" }
+        assertTrue(checker.checkMagiskHiddenPackages())
+    }
+
+    @Test
+    fun `checkMagiskHiddenPackages magisk stub package returns true`() {
+        checker.packageChecker = { it == "com.topjohnwu.magisk.stub" }
+        assertTrue(checker.checkMagiskHiddenPackages())
+    }
+
+    @Test
+    fun `checkMagiskHiddenPackages kernelsu manager returns true`() {
+        checker.packageChecker = { it == "me.weishu.kernelsu" }
+        assertTrue(checker.checkMagiskHiddenPackages())
+    }
+
+    @Test
+    fun `checkMagiskHiddenPackages xposed installer returns true`() {
+        checker.packageChecker = { it == "de.robv.android.xposed.installer" }
+        assertTrue(checker.checkMagiskHiddenPackages())
+    }
+
+    // ── checkRootBinaries (v1.1 #272) ─────────────────────────────────────
+
+    @Test
+    fun `checkRootBinaries no root binaries exist returns false`() {
+        checker.fileExistsChecker = { false }
+        assertFalse(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries system bin busybox exists returns true`() {
+        checker.fileExistsChecker = { it == "/system/bin/busybox" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries system xbin busybox exists returns true`() {
+        checker.fileExistsChecker = { it == "/system/xbin/busybox" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries daemonsu exists returns true`() {
+        checker.fileExistsChecker = { it == "/system/bin/daemonsu" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries magiskinit exists returns true`() {
+        checker.fileExistsChecker = { it == "/system/bin/magiskinit" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries data adb magiskinit exists returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/magisk/magiskinit" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
+    @Test
+    fun `checkRootBinaries ksud exists returns true`() {
+        checker.fileExistsChecker = { it == "/system/bin/ksud" }
+        assertTrue(checker.checkRootBinaries())
+    }
+
     // ── isRooted integration ──────────────────────────────────────────────
 
     @Test
@@ -184,6 +364,31 @@ class IntegrityCheckerTest {
     @Test
     fun `isRooted debuggable prop heuristic fires returns true`() {
         checker.systemPropertyReader = { "1" }
+        assertTrue(checker.isRooted)
+    }
+
+    @Test
+    fun `isRooted writable system path fires returns true`() {
+        checker.fileExistsChecker = { it == "/system" }
+        checker.canWriteChecker = { it == "/system" }
+        assertTrue(checker.isRooted)
+    }
+
+    @Test
+    fun `isRooted zygisk path fires returns true`() {
+        checker.fileExistsChecker = { it == "/data/adb/magisk" }
+        assertTrue(checker.isRooted)
+    }
+
+    @Test
+    fun `isRooted magisk hidden package fires returns true`() {
+        checker.packageChecker = { it == "io.github.huskydg.magisk" }
+        assertTrue(checker.isRooted)
+    }
+
+    @Test
+    fun `isRooted root binary fires returns true`() {
+        checker.fileExistsChecker = { it == "/system/xbin/busybox" }
         assertTrue(checker.isRooted)
     }
 }

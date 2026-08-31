@@ -11,6 +11,8 @@ final class MockWebSocketTask: WebSocketTasking {
     private(set) var resumeCallCount = 0
     private(set) var cancelCallCount = 0
     private var receiveHandler: ((Result<URLSessionWebSocketTask.Message, Error>) -> Void)?
+    // #257: close code exposed so tests can inspect it and simulateClose can set it.
+    private(set) var closeCode: URLSessionWebSocketTask.CloseCode = .invalid
 
     func resume() { resumeCallCount += 1 }
 
@@ -28,6 +30,15 @@ final class MockWebSocketTask: WebSocketTasking {
 
     func simulateMessage(_ message: URLSessionWebSocketTask.Message) {
         receiveHandler?(.success(message))
+    }
+
+    /// #257: Simulate the server closing the socket with the given close code.
+    /// VaultEventSocket inspects the `closeCode` on the underlying URLSessionWebSocketTask;
+    /// this helper delivers a failure (matching what URLSession actually does) and sets the
+    /// close code so the socket can read it back.
+    func simulateClose(code: URLSessionWebSocketTask.CloseCode) {
+        closeCode = code
+        receiveHandler?(.failure(URLError(.networkConnectionLost)))
     }
 }
 
@@ -423,6 +434,104 @@ final class VaultEventSocketTests: XCTestCase {
         let received = await waitUntil { receivedEvent != nil }
         XCTAssertTrue(received, "unrecognized type should still fire onEvent with .unknown")
         XCTAssertEqual(receivedEvent, .unknown)
+    }
+
+    // MARK: - #257 WebSocket close code 4401 handling
+
+    func test_4401Close_withSuccessfulRefresh_reconnectsAndContinues() async {
+        // Arrange: first task closes with 4401; after refresh, second task receives a message.
+        var tasks: [MockWebSocketTask] = []
+        var refreshCallCount = 0
+        let socket = VaultEventSocket(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            maxReconnectAttempts: 5,
+            backoff: ReconnectBackoff(baseDelay: 0, maxDelay: 0, randomSource: DeterministicRandomSource([0.0]), sleep: { _ in }),
+            makeTask: { _ in
+                let task = MockWebSocketTask()
+                tasks.append(task)
+                return task
+            },
+            tokenRefresh: {
+                refreshCallCount += 1
+                return "refreshed-token-xyz"
+            }
+        )
+
+        var receivedEvent: VaultEventSocket.VaultEvent?
+        socket.onEvent = { receivedEvent = $0 }
+        socket.connect(vaultID: "vault-1")
+
+        // Simulate the server closing with 4401.
+        tasks[0].simulateClose(code: URLSessionWebSocketTask.CloseCode(rawValue: 4401) ?? .invalid)
+
+        // Wait for the refresh to fire and a second task to be created.
+        let reconnected = await waitUntil { tasks.count == 2 }
+        XCTAssertTrue(reconnected, "should open a new task after successful token refresh")
+        XCTAssertEqual(refreshCallCount, 1, "should attempt refresh exactly once")
+        XCTAssertNotEqual(socket.state, .authFailure, "state must not be authFailure after a successful refresh")
+
+        // Second task delivers a real event.
+        tasks[1].simulateMessage(.string(#"{"type": "ping"}"#))
+        let gotEvent = await waitUntil { receivedEvent != nil }
+        XCTAssertTrue(gotEvent, "should receive events after reconnecting with refreshed token")
+    }
+
+    func test_4401Close_withFailedRefresh_transitionsToAuthFailure() async {
+        // Arrange: the refresh endpoint rejects the token (401 / token fully revoked).
+        var tasks: [MockWebSocketTask] = []
+        let socket = VaultEventSocket(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            maxReconnectAttempts: 5,
+            backoff: ReconnectBackoff(baseDelay: 0, maxDelay: 0, randomSource: DeterministicRandomSource([0.0]), sleep: { _ in }),
+            makeTask: { _ in
+                let task = MockWebSocketTask()
+                tasks.append(task)
+                return task
+            },
+            tokenRefresh: {
+                throw URLError(.userAuthenticationRequired)
+            }
+        )
+
+        var stateChanges: [VaultEventSocket.ConnectionState] = []
+        socket.onStateChange = { stateChanges.append($0) }
+        socket.connect(vaultID: "vault-1")
+
+        tasks[0].simulateClose(code: URLSessionWebSocketTask.CloseCode(rawValue: 4401) ?? .invalid)
+
+        let fellToAuthFailure = await waitUntil { socket.state == .authFailure }
+        XCTAssertTrue(fellToAuthFailure, "should transition to .authFailure when refresh fails after 4401")
+        // Must not open a further reconnect task once auth fails.
+        let taskCountAtFailure = tasks.count
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(tasks.count, taskCountAtFailure, "must not attempt further reconnects after .authFailure")
+    }
+
+    func test_nonAuth_closeCode_doesNotTriggerRefresh() async {
+        // A normal 1001 (Going Away) or 1000 (Normal Closure) must not call the refresh endpoint.
+        var tasks: [MockWebSocketTask] = []
+        var refreshCallCount = 0
+        let socket = VaultEventSocket(
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            maxReconnectAttempts: 5,
+            backoff: ReconnectBackoff(baseDelay: 0, maxDelay: 0, randomSource: DeterministicRandomSource([0.0]), sleep: { _ in }),
+            makeTask: { _ in
+                let task = MockWebSocketTask()
+                tasks.append(task)
+                return task
+            },
+            tokenRefresh: {
+                refreshCallCount += 1
+                return "should-not-be-called"
+            }
+        )
+
+        socket.connect(vaultID: "vault-1")
+        tasks[0].simulateFailure() // Generic failure, not a 4401 close.
+
+        let reconnected = await waitUntil { tasks.count == 2 }
+        XCTAssertTrue(reconnected, "should reconnect after a non-4401 drop")
+        XCTAssertEqual(refreshCallCount, 0, "refresh must not be called for non-4401 failures")
     }
 }
 

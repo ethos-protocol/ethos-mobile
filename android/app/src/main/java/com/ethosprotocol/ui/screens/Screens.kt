@@ -1,9 +1,11 @@
 package com.ethosprotocol.ui.screens
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -206,6 +208,9 @@ fun VaultListScreen(
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
     var biometricError by remember { mutableStateOf<String?>(null) }
+    // #219: search/filter over the vaults already fetched into state.vaults.
+    var searchText by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf(com.ethosprotocol.models.VaultListFilter.ALL) }
 
     // #118: Non-blocking root warning. Shown once per session; does not block access.
     var showRootWarning by remember {
@@ -215,6 +220,23 @@ fun VaultListScreen(
     }
 
     LaunchedEffect(Unit) { vm.load() }
+
+    // #a11y-live-region: OfflineBanner being present/labeled is not enough — TalkBack only
+    // announces a view when it first appears or when an explicit accessibility event fires.
+    // Toggling isOffline swaps the banner's presence but, without this, that swap is silent to a
+    // screen-reader user unless they happen to be scrolled to that part of the list. Fire an
+    // explicit announcement via View.announceForAccessibility on every offline<->online
+    // transition (skipping the very first composition, which is not a transition).
+    val localView = androidx.compose.ui.platform.LocalView.current
+    var previousIsOffline by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(state.isOffline) {
+        val prev = previousIsOffline
+        if (prev != null && prev != state.isOffline) {
+            val message = if (state.isOffline) "Offline — showing cached data" else "Back online"
+            localView.announceForAccessibility(message)
+        }
+        previousIsOffline = state.isOffline
+    }
 
     // #118: Non-blocking root warning dialog.
     if (showRootWarning) {
@@ -258,6 +280,11 @@ fun VaultListScreen(
     }
 
 
+    val filteredVaults = remember(state.vaults, searchText, statusFilter) {
+        com.ethosprotocol.models.filterVaults(state.vaults, searchText, statusFilter)
+    }
+    val isFiltering = searchText.isNotBlank() || statusFilter != com.ethosprotocol.models.VaultListFilter.ALL
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
@@ -274,6 +301,36 @@ fun VaultListScreen(
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
+                    Column(Modifier.fillMaxSize()) {
+                        OutlinedTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            label = { Text("Search by label or ID") },
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+                                .testTag("vaultSearchField")
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            com.ethosprotocol.models.VaultListFilter.entries.forEach { filter ->
+                                FilterChip(
+                                    selected = statusFilter == filter,
+                                    onClick = { statusFilter = filter },
+                                    label = { Text(filter.label) }
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        if (filteredVaults.isEmpty()) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("No matching vaults. Try a different search or filter.",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        } else {
                     // Ties the pull gesture to the same VaultViewModel.load() used for the initial
                     // fetch, so state.isLoading naturally drives the pull indicator too.
                     PullToRefreshBox(
@@ -285,6 +342,11 @@ fun VaultListScreen(
                             if (state.isOffline) item {
                                 OfflineBanner()
                             }
+                            if (state.queueAtCapacity) item {
+                                QueueCapacityBanner(atCapacity = true)
+                            } else if (state.queueNearCapacity) item {
+                                QueueCapacityBanner(atCapacity = false)
+                            }
                             val errorMsg = biometricError ?: state.error
                             errorMsg?.let { err ->
                                 item {
@@ -292,14 +354,17 @@ fun VaultListScreen(
                                         modifier = Modifier.padding(16.dp))
                                 }
                             }
-                            items(state.vaults, key = { it.id }) { vault ->
+                            items(filteredVaults, key = { it.id }) { vault ->
                                 VaultCard(
                                     vault = vault,
                                     onClick = { onVaultClick(vault.id) },
                                     onCheckIn = { pendingCheckIn = vault },
+                                    onRename = { newLabel -> vm.updateLabel(vault.id, newLabel) },
                                 )
                             }
-                            if (state.hasMore) item {
+                            // Load More only makes sense against the unfiltered list — a
+                            // filtered view already searched everything fetched so far.
+                            if (state.hasMore && !isFiltering) item {
                                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                     if (state.isLoadingMore) {
                                         CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
@@ -308,6 +373,8 @@ fun VaultListScreen(
                                     }
                                 }
                             }
+                        }
+                    }
                         }
                     }
                 }
@@ -347,9 +414,43 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
     )
 }
 
+// #218: rename/label dialog, reachable from VaultCard's edit icon.
 @Composable
-private fun OfflineBanner(cachedAt: Long? = null) {
-    val message = if (cachedAt != null) {
+private fun RenameVaultDialog(currentLabel: String?, onConfirm: (String?) -> Unit, onDismiss: () -> Unit) {
+    var labelText by remember { mutableStateOf(currentLabel ?: "") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (currentLabel == null) "Add Label" else "Rename Vault") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = labelText,
+                    onValueChange = { labelText = it },
+                    label = { Text("Label") },
+                    placeholder = { Text("e.g. Emergency Fund") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Shown instead of the vault ID in your vault list. Leave blank to clear it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val trimmed = labelText.trim()
+                onConfirm(trimmed.ifEmpty { null })
+            }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun OfflineBanner(cachedAt: Long? = null) {    val message = if (cachedAt != null) {
         "Offline — showing cached data (as of ${formatCacheAge(cachedAt)} ago)"
     } else {
         "Offline — showing cached data"
@@ -370,8 +471,28 @@ private fun OfflineBanner(cachedAt: Long? = null) {
     }
 }
 
-private fun formatCacheAge(cachedAt: Long): String {
-    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
+@Composable
+private fun QueueCapacityBanner(atCapacity: Boolean) {
+    val color = if (atCapacity) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.tertiaryContainer
+    val textColor = if (atCapacity) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onTertiaryContainer
+    val message = if (atCapacity) "Offline queue full — oldest request replaced"
+                  else "Offline queue nearly full"
+    Surface(color = color) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp).semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = if (atCapacity) "Queue full" else "Queue nearly full",
+                tint = textColor)
+            Spacer(Modifier.width(8.dp))
+            Text(message, color = textColor, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private fun formatCacheAge(cachedAt: Long): String {    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
     val minutes = elapsedSeconds / 60
     val hours = minutes / 60
     val days = hours / 24
@@ -389,16 +510,31 @@ private fun VaultCard(
     onClick: () -> Unit,
     onCheckIn: () -> Unit,
     onDeposit: () -> Unit = {},
-    onWithdraw: () -> Unit = {}
+    onWithdraw: () -> Unit = {},
+    onRename: (String?) -> Unit = {}
 ) {
+    var showRenameDialog by remember { mutableStateOf(false) }
+    if (showRenameDialog) {
+        RenameVaultDialog(
+            currentLabel = vault.label,
+            onConfirm = { newLabel -> showRenameDialog = false; onRename(newLabel) },
+            onDismiss = { showRenameDialog = false }
+        )
+    }
+
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
             // At the largest font scale a full-length id + chip in one row will clip rather than
             // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
+                // #218: prefer the user-set label; fall back to the truncated ID.
+                Text(vault.displayName, style = MaterialTheme.typography.titleMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f))
+                IconButton(onClick = { showRenameDialog = true }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = if (vault.label == null) "Add label" else "Rename vault",
+                        modifier = Modifier.size(16.dp))
+                }
                 StatusChip(vault.status)
             }
             Spacer(Modifier.height(4.dp))
@@ -438,6 +574,10 @@ private fun VaultCard(
     }
 }
 
+// #a11y-touch-targets: SuggestionChip's default height (32dp) is below the 48dp minimum
+// touch target for Android (WCAG 2.5.5 / Material accessibility guidelines). Wrapping in a
+// Box that enforces a 48dp minimum height keeps the visually-compact chip while giving
+// TalkBack/switch-access users a tap target that meets the platform minimum.
 @Composable
 private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
     val (label, color) = when (status) {
@@ -446,11 +586,16 @@ private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
         com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
         com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
     }
-    SuggestionChip(
-        onClick = {},
-        label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
-    )
+    Box(
+        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        SuggestionChip(
+            onClick = {},
+            label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+        )
+    }
 }
 
 // MARK: - Beneficiary Acceptance Screen
@@ -555,9 +700,11 @@ fun ManageBeneficiaryScreen(
     var newBeneficiary by remember { mutableStateOf("") }
     var showConfirmation by remember { mutableStateOf(false) }
 
-    // The server rejects an address that is empty or unchanged. Mirror the same
-    // validation used by iOS BeneficiaryUpdate.isValidNewBeneficiary().
-    val isAddressValid = newBeneficiary.trim().isNotEmpty() && newBeneficiary.trim() != vault.beneficiary
+    // The server rejects an address that is empty, unchanged, or not a syntactically valid
+    // Stellar StrKey address. Mirror the same validation used by CreateVaultDialog (#113) and
+    // iOS BeneficiaryUpdate.isValidNewBeneficiary().
+    val isAddressValid = StellarAddress.isValidPublicKey(newBeneficiary.trim()) &&
+        newBeneficiary.trim() != vault.beneficiary
 
     LaunchedEffect(state.beneficiaryUpdated) {
         if (state.beneficiaryUpdated) {
@@ -629,7 +776,7 @@ fun ManageBeneficiaryScreen(
                 modifier = Modifier.fillMaxWidth(),
                 isError = newBeneficiary.isNotEmpty() && !isAddressValid,
                 supportingText = if (newBeneficiary.isNotEmpty() && !isAddressValid) {
-                    { Text("Enter a non-empty address that differs from the current beneficiary.") }
+                    { Text("Enter a valid Stellar address that differs from the current beneficiary.") }
                 } else null
             )
             state.error?.let {
@@ -649,6 +796,30 @@ fun ManageBeneficiaryScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Cancel") }
         }
+    }
+}
+
+/**
+ * Loads [vaultId]'s current [Vault] before handing off to [ManageBeneficiaryScreen], which
+ * needs the full vault (for the current beneficiary) rather than just its id.
+ */
+@Composable
+fun ManageBeneficiaryRoute(
+    vaultId: String,
+    onDone: () -> Unit,
+    vm: VaultViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val vault = state.vaults.find { it.id == vaultId }
+
+    LaunchedEffect(Unit) { vm.load() }
+
+    if (vault == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+    } else {
+        ManageBeneficiaryScreen(vault = vault, onDone = onDone, vm = vm)
     }
 }
 
@@ -871,7 +1042,9 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
     var days by remember { mutableStateOf(30f) }
 
     // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
-    val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
+    // Sanitize input (trim whitespace, remove invisible characters) before validation.
+    val sanitizedBeneficiary = StellarAddress.sanitize(beneficiary)
+    val isBeneficiaryValid = StellarAddress.isValidPublicKey(sanitizedBeneficiary)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -887,7 +1060,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
                     isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
                     supportingText = {
                         if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
-                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            Text("Enter a valid Stellar address.")
                         }
                     }
                 )
@@ -898,7 +1071,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
+            TextButton(onClick = { onCreate(sanitizedBeneficiary, days.toInt()) },
                 enabled = isBeneficiaryValid) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
@@ -1050,22 +1223,54 @@ fun WithdrawScreen(
         "%.7f XLM".format(vaultBalanceStroops / 10_000_000.0)
     }
 
+    val amountStroops = (amountInput.toDoubleOrNull())?.let { (it * 10_000_000.0).toLong() }
+    val isLarge = amountStroops?.let {
+        com.ethosprotocol.models.isLargeWithdrawal(
+            it, vaultBalanceStroops, com.ethosprotocol.models.WithdrawalThreshold.LARGE_WITHDRAWAL_BPS
+        )
+    } ?: false
+    var showLargeWithdrawalConfirmation by remember { mutableStateOf(false) }
+
+    fun startBiometricWithdraw() {
+        biometricError = null
+        BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
+            title = "Confirm Withdrawal",
+            subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
+            onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
+            onError = { err -> biometricError = err }
+        )
+    }
+
+    // #216: a large withdrawal needs an explicit extra tap before the biometric
+    // gate even runs, on top of the biometric confirmation every withdrawal
+    // already requires.
+    if (showLargeWithdrawalConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showLargeWithdrawalConfirmation = false },
+            title = { Text("Withdraw $amountInput XLM?") },
+            text = { Text("This withdraws a large share of the vault's balance. This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLargeWithdrawalConfirmation = false
+                    startBiometricWithdraw()
+                }) { Text("Withdraw") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLargeWithdrawalConfirmation = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     WithdrawScreenContent(
         vaultId = vaultId,
         availableBalance = availableBalance,
         amountInput = amountInput,
         isLoading = state.isLoading,
         error = state.error ?: biometricError,
+        isLargeWithdrawal = isLarge,
         onAmountChange = { amountInput = it },
         onWithdraw = {
-            // Biometric gate is required before dispatching a withdrawal.
-            biometricError = null
-            BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                title = "Confirm Withdrawal",
-                subtitle = "Withdraw $amountInput XLM from vault ${vaultId.take(12)}…",
-                onSuccess = { vm.withdraw(vaultId, amountInput, vaultBalanceStroops) },
-                onError = { err -> biometricError = err }
-            )
+            if (isLarge) showLargeWithdrawalConfirmation = true else startBiometricWithdraw()
         },
         onDone = onDone
     )
@@ -1082,6 +1287,7 @@ fun WithdrawScreenContent(
     amountInput: String,
     isLoading: Boolean,
     error: String?,
+    isLargeWithdrawal: Boolean = false,
     onAmountChange: (String) -> Unit,
     onWithdraw: () -> Unit,
     onDone: () -> Unit
@@ -1137,6 +1343,12 @@ fun WithdrawScreenContent(
                 Text(
                     "Enter a valid positive XLM amount.",
                     color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else if (isLargeWithdrawal) {
+                Text(
+                    "This is a large withdrawal relative to the vault's balance.",
+                    color = MaterialTheme.colorScheme.tertiary,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -1395,15 +1607,25 @@ private fun TwoFactorVerifyScreen(
 fun VaultDetailScreen(
     vaultId: String,
     onBack: () -> Unit,
-    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+    onDeposit: () -> Unit = {},
+    onWithdraw: (Long) -> Unit = {},
+    onManageBeneficiary: () -> Unit = {},
+    twoFactorVm: TwoFactorViewModel = hiltViewModel(),
+    vaultVm: VaultViewModel = hiltViewModel()
 ) {
     val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val vaultState by vaultVm.state.collectAsStateWithLifecycle()
+    val vault = vaultState.vaults.find { it.id == vaultId }
     val context = LocalContext.current
     var showSetup by remember { mutableStateOf(false) }
     var showVerify by remember { mutableStateOf(false) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+    // Vaults are shown in this screen via balance/beneficiary fields that VaultListScreen's
+    // already-loaded state doesn't carry across (a new VaultViewModel instance is created for
+    // this destination), so this screen loads them itself, matching VaultListScreen's own load().
+    LaunchedEffect(Unit) { vaultVm.load() }
 
     if (showSetup) {
         TwoFactorSetupScreen(
@@ -1430,6 +1652,36 @@ fun VaultDetailScreen(
                 .padding(16.dp)
                 .fillMaxSize()
         ) {
+            Text("Funds", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            vault?.let {
+                Text("Balance: ${it.formattedBalance}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            Button(onClick = onDeposit, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
+                Text("Deposit")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { vault?.let { onWithdraw(it.balance) } },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = vault != null
+            ) {
+                Text("Withdraw")
+            }
+            Spacer(Modifier.height(24.dp))
+
+            Text("Beneficiary", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            vault?.let {
+                Text(it.beneficiary, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(8.dp))
+            }
+            OutlinedButton(onClick = onManageBeneficiary, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
+                Text("Manage Beneficiary")
+            }
+            Spacer(Modifier.height(24.dp))
+
             Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
 
@@ -1493,5 +1745,88 @@ fun VaultDetailScreen(
                 }
             }
         }
+    }
+}
+
+// MARK: - Vault History (#217)
+
+@Composable
+fun VaultHistoryScreen(
+    vaultId: String,
+    onBack: () -> Unit,
+    vm: com.ethosprotocol.ui.VaultHistoryViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    LaunchedEffect(vaultId) { vm.load(vaultId) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Activity") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            when {
+                state.isLoading && state.events.isEmpty() ->
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                state.error != null && state.events.isEmpty() ->
+                    Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(state.error ?: "", color = MaterialTheme.colorScheme.error)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = { vm.load(vaultId) }) { Text("Retry") }
+                    }
+                state.events.isEmpty() ->
+                    Text("No activity yet. Check-ins, deposits, and withdrawals will show up here.",
+                        Modifier.align(Alignment.Center).padding(32.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> {
+                    LazyColumn {
+                        items(state.events) { event ->
+                            VaultHistoryRow(event)
+                            HorizontalDivider()
+                        }
+                        if (state.hasMore) item {
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                if (state.isLoadingMore) {
+                                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                } else {
+                                    OutlinedButton(onClick = { vm.loadMore(vaultId) }) { Text("Load more") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VaultHistoryRow(event: com.ethosprotocol.models.VaultHistoryEvent) {
+    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+        Text(event.displayTitle, style = MaterialTheme.typography.titleSmall)
+        event.amount?.let { amount ->
+            Text(
+                "%.7f XLM".format(amount / 10_000_000.0),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        event.beneficiary?.let { beneficiary ->
+            Text(
+                "New beneficiary: $beneficiary",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
+            event.timestamp,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
