@@ -27,6 +27,8 @@ import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
 import com.ethosprotocol.services.VaultEventSocket
+import com.ethosprotocol.widget.VaultStatusWidget
+import com.ethosprotocol.widget.VaultWidgetUpdateWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -470,9 +472,29 @@ class VaultViewModel @Inject constructor(
                 vaultEventSocket.events(id).collect { event ->
                     val updated = event.vault ?: return@collect
                     _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    // #249: Trigger an on-demand widget refresh instead of waiting for the
+                    // next scheduled VaultWidgetUpdateWorker tick. We save the updated
+                    // vault data first, then reschedule the worker to run immediately so
+                    // the widget picks up the new values without delay.
+                    VaultStatusWidget.saveVaultData(
+                        context,
+                        vaultId = updated.id,
+                        vaultName = updated.id.take(12) + "…",
+                        ttlRemaining = formatWidgetTtl(updated.ttlRemaining),
+                        lastCheckIn = VaultStatusWidget.formatLastCheckIn(updated.lastCheckIn)
+                    )
+                    VaultWidgetUpdateWorker.schedule(context, intervalMinutes = 0)
                 }
             }
         }
+    }
+
+    /** Formats a TTL value (seconds) for widget display, matching VaultWidgetUpdateWorker's own formatter. */
+    private fun formatWidgetTtl(seconds: Long?): String {
+        if (seconds == null) return "Unknown"
+        val days = seconds / 86_400
+        val hours = (seconds % 86_400) / 3_600
+        return if (days > 0) "${days}d ${hours}h" else "${hours}h"
     }
 
     override fun onCleared() {

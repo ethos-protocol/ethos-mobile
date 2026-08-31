@@ -76,8 +76,9 @@ struct TTLTimelineProvider: TimelineProvider {
     }
 }
 
-// MARK: - Widget View
+// MARK: - Widget Views
 
+/// Home-screen (systemSmall / systemMedium) widget view.
 struct TTLWidgetView: View {
     let entry: VaultEntry
 
@@ -104,7 +105,11 @@ struct TTLWidgetView: View {
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
-        .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        // #248: Deep-link carries the displayed vault's ID so the app opens directly to
+        // that vault's detail screen. If vaultID is empty the vault no longer exists and
+        // the app falls back to the vault list (handled by UniversalLinkRouter on the
+        // receiving side when no matching vault is found for the given ID).
+        .widgetURL(vaultDeepLink(for: entry.vaultID))
     }
 
     private func formatDuration(_ seconds: UInt64) -> String {
@@ -115,6 +120,84 @@ struct TTLWidgetView: View {
     }
 }
 
+/// Lock-screen / StandBy `.accessoryRectangular` view — shows vault name and TTL countdown
+/// without any balance or sensitive data, appropriate for public display (#250).
+struct TTLAccessoryRectangularView: View {
+    let entry: VaultEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Label(entry.vaultName, systemImage: "lock.shield.fill")
+                .font(.caption.bold())
+                .lineLimit(1)
+            if let ttl = entry.ttlRemaining {
+                Text(formatDuration(ttl))
+                    .font(.caption2)
+                    .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+            } else {
+                Text("—").font(.caption2).foregroundStyle(.secondary)
+            }
+            if entry.isExpiringSoon {
+                Label("Expires soon", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .containerBackground(.clear, for: .widget)
+        .widgetURL(vaultDeepLink(for: entry.vaultID))
+    }
+
+    private func formatDuration(_ seconds: UInt64) -> String {
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        if days > 0 { return "\(days)d \(hours)h" }
+        return "\(hours)h"
+    }
+}
+
+/// Lock-screen / StandBy `.accessoryCircular` view — glanceable TTL countdown gauge (#250).
+/// Omits vault name and balance entirely; only the urgency-coloured countdown is shown.
+struct TTLAccessoryCircularView: View {
+    let entry: VaultEntry
+
+    var body: some View {
+        ZStack {
+            AccessoryWidgetBackground()
+            VStack(spacing: 0) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.caption2)
+                if let ttl = entry.ttlRemaining {
+                    Text(shortDuration(ttl))
+                        .font(.caption2.bold())
+                        .foregroundStyle(entry.isExpiringSoon ? .orange : .primary)
+                        .minimumScaleFactor(0.7)
+                } else {
+                    Text("—").font(.caption2)
+                }
+            }
+        }
+        .containerBackground(.clear, for: .widget)
+        .widgetURL(vaultDeepLink(for: entry.vaultID))
+    }
+
+    private func shortDuration(_ seconds: UInt64) -> String {
+        let days = seconds / 86_400
+        let hours = (seconds % 86_400) / 3_600
+        if days > 0 { return "\(days)d" }
+        return "\(hours)h"
+    }
+}
+
+// MARK: - Deep-Link Helper
+
+/// #248: Builds a deep link to the specific vault displayed by the widget.
+/// When `vaultID` is empty (vault was deleted / no active vault), returns nil so
+/// WidgetKit falls back to opening the app's default route (vault list).
+private func vaultDeepLink(for vaultID: String) -> URL? {
+    guard !vaultID.isEmpty else { return nil }
+    return URL(string: "ethosprotocol://vault/\(vaultID)/view-details")
+}
+
 // MARK: - Widget Definition
 
 struct TTLWidget: Widget {
@@ -122,11 +205,31 @@ struct TTLWidget: Widget {
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: TTLTimelineProvider()) { entry in
-            TTLWidgetView(entry: entry)
+            TTLWidgetEntryView(entry: entry)
         }
         .configurationDisplayName("TTL Vault Status")
         .description("Shows your most urgent vault's TTL countdown.")
+        // #250: .accessoryRectangular and .accessoryCircular enable Lock Screen and
+        // StandBy mode placements. Views are compact — no balance data, just vault
+        // name + TTL — appropriate for public-facing lock-screen display.
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular, .accessoryCircular])
+    }
+}
+
+/// #250: Dispatches to the appropriate view based on the widget family.
+struct TTLWidgetEntryView: View {
+    @Environment(\.widgetFamily) var family
+    let entry: VaultEntry
+
+    var body: some View {
+        switch family {
+        case .accessoryRectangular:
+            TTLAccessoryRectangularView(entry: entry)
+        case .accessoryCircular:
+            TTLAccessoryCircularView(entry: entry)
+        default:
+            TTLWidgetView(entry: entry)
+        }
     }
 }
 
