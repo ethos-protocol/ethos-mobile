@@ -15,6 +15,9 @@ final class UniversalLinkRouter {
         case vaultInvitation(vaultID: String)
         case beneficiaryAcceptance(vaultID: String, token: String)
         case vaultAction(vaultID: String, action: VaultAction)
+        /// #258: Web-initiated account recovery — opened from an emailed link.
+        /// The `token` pre-fills the "finish recovery" screen so the user doesn't retype it.
+        case recoveryLink(token: String)
     }
 
     private static let validationRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{1,128}$")
@@ -25,6 +28,23 @@ final class UniversalLinkRouter {
         return Self.validationRegex.firstMatch(in: value, range: range) != nil
     }
 
+    // #259: Vault IDs owned by the currently signed-in user.
+    //
+    // When non-nil, deep links referencing a vault not in this set are rejected
+    // client-side before any API call is made. The rejection is intentionally
+    // generic — it must not reveal whether the vault exists — to avoid leaking
+    // vault-existence information via deep-link probing.
+    //
+    // Set to nil (the default) when the vault list has not been loaded yet;
+    // ownership is treated as unknown and the check is skipped. The server
+    // will return 403/404 if the vault doesn't belong to the caller.
+    var ownerVaultIDs: Set<String>? = nil
+
+    private func isOwnedVault(_ vaultID: String) -> Bool {
+        guard let owned = ownerVaultIDs else { return true }  // unknown — skip check
+        return owned.contains(vaultID)
+    }
+
     /// Parses a universal link or custom-scheme URL into a typed DeepLink, or returns nil if unrecognised.
     func parse(url: URL) -> DeepLink? {
         // ethosprotocol://vault/{vault_id}/{action}
@@ -32,16 +52,12 @@ final class UniversalLinkRouter {
             let parts = url.pathComponents.filter { $0 != "/" }
             guard parts.count == 2, let action = VaultAction(rawValue: parts[1]) else { return nil }
             guard isValidIdentifier(parts[0]) else { return nil }
+            guard isOwnedVault(parts[0]) else { return nil }
             let link = DeepLink.vaultAction(vaultID: parts[0], action: action)
             logDeepLink(link)
             return link
         }
 
-        // Require both scheme and host to match — host alone is insufficient because the
-        // custom ethosprotocol:// scheme can be invoked by any app with no domain-ownership
-        // verification, unlike https:// Universal Links whose routing is gated by iOS's
-        // AASA verification. Matching Android's extractBeneficiaryAccept check in
-        // MainActivity.kt (uri.scheme != "https" || uri.host != "ethos-protocol.app").
         guard url.scheme == "https", url.host == "ethos-protocol.app" else { return nil }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let parts = url.pathComponents.filter { $0 != "/" }
@@ -49,6 +65,7 @@ final class UniversalLinkRouter {
         // /vaults/{vaultID}/invite
         if parts.count == 3, parts[0] == "vaults", parts[2] == "invite" {
             guard isValidIdentifier(parts[1]) else { return nil }
+            guard isOwnedVault(parts[1]) else { return nil }
             let link = DeepLink.vaultInvitation(vaultID: parts[1])
             logDeepLink(link)
             return link
@@ -57,13 +74,22 @@ final class UniversalLinkRouter {
         // /vaults/{vaultID}/accept?token={token}
         if parts.count == 3, parts[0] == "vaults", parts[2] == "accept" {
             guard isValidIdentifier(parts[1]) else { return nil }
+            guard isOwnedVault(parts[1]) else { return nil }
             let token = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
-            // A missing/empty token still routes to the acceptance screen (with an empty
-            // token) so the app can show an explicit "missing token" error there, rather
-            // than silently failing to open the link at all. Only a malformed non-empty
-            // token is rejected as an invalid link.
             guard token.isEmpty || isValidIdentifier(token) else { return nil }
             let link = DeepLink.beneficiaryAcceptance(vaultID: parts[1], token: token)
+            logDeepLink(link)
+            return link
+        }
+
+        // #258: /auth/recover/link?token={token}
+        if parts.count == 3, parts[0] == "auth", parts[1] == "recover", parts[2] == "link" {
+            let token = components?.queryItems?.first(where: { $0.name == "token" })?.value ?? ""
+            // Recovery tokens must always be present and well-formed — a missing or
+            // malformed token cannot pre-fill the recovery step, so return nil to avoid
+            // routing into an unrecoverable broken state.
+            guard !token.isEmpty, isValidIdentifier(token) else { return nil }
+            let link = DeepLink.recoveryLink(token: token)
             logDeepLink(link)
             return link
         }
@@ -78,6 +104,8 @@ final class UniversalLinkRouter {
             event = .vaultInvitation
         case .beneficiaryAcceptance:
             event = .beneficiaryAcceptance
+        case .recoveryLink:
+            event = .recoveryLink
         case .vaultAction(_, let action):
             switch action {
             case .checkIn:

@@ -784,6 +784,99 @@ final class UniversalLinkRouterTests: XCTestCase {
         XCTAssertEqual(events[1].event, .vaultActionCheckIn)
         XCTAssertEqual(events[2].event, .beneficiaryAcceptance)
     }
+
+    // MARK: - #258 Recovery deep-link tests
+
+    func test_parse_recoveryLink_wellFormed_returnsRecoveryLink() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=rec-token-123")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .recoveryLink(token: "rec-token-123"))
+    }
+
+    func test_parse_recoveryLink_missingToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_emptyToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_invalidTokenChars_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=bad@token")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_oversizedToken_returnsNil() {
+        let big = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=\(big)")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_wrongHost_returnsNil() {
+        let url = URL(string: "https://evil.com/auth/recover/link?token=rec-token-123")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_customScheme_returnsNil() {
+        let url = URL(string: "ethosprotocol://ethos-protocol.app/auth/recover/link?token=rec-token-123")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=rec-token-log")!
+        _ = router.parse(url: url)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .recoveryLink)
+    }
+
+    // MARK: - #259 Vault ID ownership validation
+
+    override func setUp() {
+        super.setUp()
+        // Reset ownership state before each test so tests are independent.
+        router.ownerVaultIDs = nil
+    }
+
+    func test_parse_vaultAction_ownedVault_succeeds() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "ethosprotocol://vault/vault-mine/check-in")!
+        XCTAssertEqual(router.parse(url: url), .vaultAction(vaultID: "vault-mine", action: .checkIn))
+    }
+
+    func test_parse_vaultAction_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "ethosprotocol://vault/vault-theirs/check-in")!
+        // Must return nil without revealing whether the vault exists.
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultAction_ownerVaultIDsNil_skipsCheck() {
+        router.ownerVaultIDs = nil   // vault list not yet loaded
+        let url = URL(string: "ethosprotocol://vault/vault-any/check-in")!
+        XCTAssertNotNil(router.parse(url: url),
+                        "ownership check must be skipped when vault list is not yet loaded")
+    }
+
+    func test_parse_vaultInvitation_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-other/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-other/accept?token=tok")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_emptyOwnerSet_rejectsAllVaultLinks() {
+        router.ownerVaultIDs = []
+        let url = URL(string: "ethosprotocol://vault/vault-any/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
 }
 
 // MARK: - #39 / #115 Two-Factor Verification Copy Tests
