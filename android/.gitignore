@@ -10,3 +10,4 @@
 local.properties
 **/build/
 /dependency-check-data/
+src/test/snapshots/

@@ -14,6 +14,11 @@ public struct Vault: Codable, Identifiable, Equatable {
     public let lastCheckIn: Date
     public let ttlRemaining: UInt64?
     public let status: VaultStatus
+    /// Optional owner-set display name (#218). `nil` until set via
+    /// `APIClient.updateVaultLabel`. Absent on the wire (every vault created
+    /// before this shipped) decodes to `nil` the same way any other missing
+    /// optional key would.
+    public let label: String? = nil
 
     public enum VaultStatus: String, Codable {
         case active, expired, released, paused
@@ -27,6 +32,13 @@ public struct Vault: Codable, Identifiable, Equatable {
     public var formattedBalance: String {
         let xlm = Double(balance) / 10_000_000
         return String(format: "%.7f XLM", xlm)
+    }
+
+    /// Display name for list/detail UI (#218): the user-set `label` if present,
+    /// else a truncated `id` — never the raw full ID, which is unwieldy at a
+    /// glance across many vaults.
+    public var displayName: String {
+        label ?? String(id.prefix(12))
     }
 }
 
@@ -48,6 +60,76 @@ enum VaultAmount {
     static func hasSufficientBalance(amount: Int64, vaultBalance: Int64) -> Bool {
         amount > 0 && amount <= vaultBalance
     }
+
+    /// Whether `amount` is large enough relative to `vaultBalance` to warrant an
+    /// extra confirmation step before withdrawing (#216) — reduces fat-finger risk
+    /// on a product holding funds meant for a beneficiary. `thresholdBps` is the
+    /// percentage of the vault's balance (in basis points, 10_000 = 100%) at or
+    /// above which the warning triggers; configurable via
+    /// `WithdrawalThreshold.largeWithdrawalBps` rather than hardcoded here, so it
+    /// can be tuned without touching call sites.
+    static func isLargeWithdrawal(amount: Int64, vaultBalance: Int64, thresholdBps: Int) -> Bool {
+        guard vaultBalance > 0, amount > 0 else { return false }
+        // A UI-only confirmation nudge, not a funds-moving calculation — Double's
+        // precision is more than sufficient here, and avoids Int64 overflow that
+        // `amount * 10_000` could hit for very large stroop values.
+        let ratio = Double(amount) / Double(vaultBalance)
+        return ratio * 10_000 >= Double(thresholdBps)
+    }
+}
+
+/// Status filter chips for the vault list (#219).
+public enum VaultListFilter: String, CaseIterable, Identifiable {
+    case all, active, expiringSoon, expired
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .all: return "All"
+        case .active: return "Active"
+        case .expiringSoon: return "Expiring Soon"
+        case .expired: return "Expired"
+        }
+    }
+
+    fileprivate func matches(_ vault: Vault) -> Bool {
+        switch self {
+        case .all: return true
+        case .active: return vault.status == .active
+        case .expiringSoon: return vault.status == .active && vault.isExpiringSoon
+        case .expired: return vault.status == .expired
+        }
+    }
+}
+
+/// Client-side search/filter over an already-fetched vault list (#219) — works
+/// across every page already pulled in via `VaultStore.load`/`loadAll`, since
+/// it's a pure filter over whatever `vaults` currently holds rather than a
+/// server request.
+enum VaultListFiltering {
+    /// Filters `vaults` by `statusFilter`, then by `searchText` matched
+    /// case-insensitively against the vault's `label` (if set) or `id`.
+    /// Blank `searchText` (after trimming) matches everything.
+    static func filter(_ vaults: [Vault], searchText: String, statusFilter: VaultListFilter) -> [Vault] {
+        let statusFiltered = vaults.filter { statusFilter.matches($0) }
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return statusFiltered }
+        return statusFiltered.filter { vault in
+            vault.id.range(of: trimmed, options: .caseInsensitive) != nil
+                || (vault.label?.range(of: trimmed, options: .caseInsensitive) != nil)
+        }
+    }
+}
+
+/// Configurable threshold for the "large withdrawal" confirmation step (#216).
+/// A single tunable knob rather than a literal scattered across call sites —
+/// change `largeWithdrawalBps` here to retune without touching WithdrawView.
+enum WithdrawalThreshold {
+    /// Percentage of the vault's balance (basis points, 10_000 = 100%) at or
+    /// above which a withdrawal is considered "large" and prompts an extra
+    /// confirmation step. Defaults to 80%.
+    static let largeWithdrawalBps = 8_000
 }
 
 /// Structured, user-facing presentation of an error — derived from APIError when
@@ -119,11 +201,58 @@ enum UsernameValidation {
 }
 
 enum BeneficiaryUpdate {
-    /// A new beneficiary address is only valid if it's non-empty (after trimming)
-    /// and actually differs from the vault's current beneficiary.
+    /// A new beneficiary address is valid if it's a syntactically valid Stellar address
+    /// (after sanitization) and differs from the vault's current beneficiary.
     static func isValidNewBeneficiary(_ input: String, currentBeneficiary: String) -> Bool {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != currentBeneficiary
+        let sanitized = StellarAddress.sanitize(input)
+        return !sanitized.isEmpty && 
+               sanitized != currentBeneficiary &&
+               StellarAddress.isValidPublicKey(sanitized)
+    }
+}
+
+// MARK: - Memo Field Support
+
+/// Represents an optional Stellar memo attached to a beneficiary account.
+///
+/// Per SEP-0023 and Stellar documentation, memos enable proper fund routing for
+/// exchanges and custodial wallets. Four types are supported:
+/// - none: No memo (default)
+/// - text: Human-readable text, up to 28 UTF-8 bytes
+/// - id: Numeric memo ID, 0 to 2^64-1
+/// - hash: SHA-256 hash, exactly 32 bytes (64 hex chars)
+enum StellarMemo {
+    case none
+    case text(String)
+    case id(UInt64)
+    case hash(String) // 64-char hex string
+    
+    func displayString() -> String {
+        switch self {
+        case .none: return "(no memo)"
+        case .text(let value): return "Text: \(value)"
+        case .id(let value): return "ID: \(value)"
+        case .hash(let value): return "Hash: \(String(value.prefix(16)))..."
+        }
+    }
+}
+
+enum MemoValidator {
+    /// Validates a text memo (max 28 UTF-8 bytes).
+    static func isValidTextMemo(_ text: String) -> Bool {
+        return text.utf8.count <= 28
+    }
+    
+    /// Validates an ID memo (0 to 2^64-1).
+    static func isValidIDMemo(_ idStr: String) -> Bool {
+        guard let value = UInt64(idStr) else { return false }
+        return true // UInt64 already guarantees 0..2^64-1
+    }
+    
+    /// Validates a hash memo (must be exactly 64 hex characters).
+    static func isValidHashMemo(_ hashHex: String) -> Bool {
+        guard hashHex.count == 64 else { return false }
+        return hashHex.allSatisfy { "0123456789abcdefABCDEF".contains($0) }
     }
 }
 
@@ -162,9 +291,22 @@ struct AccountRecoveryProof: Codable {
     let backupCode: String
 }
 
+/// One of possibly several passkeys registered to the authenticated account (#206, #207) —
+/// an account is not limited to a single credential, so this is always modeled as a list
+/// (`[PasskeyCredential]`), never a lone value.
+struct PasskeyCredential: Codable, Identifiable, Equatable {
+    let credentialId: String
+    let deviceLabel: String?
+    let createdAt: Date
+    let lastUsedAt: Date?
+
+    var id: String { credentialId }
+}
+
 struct PushRegistration: Codable {
     let token: String
     let platform: String  // "ios" | "android"
+    let locale: String    // BCP 47 language tag, e.g. "en-US"
 }
 
 /// A device currently holding a valid JWT for this account (#208). Drives SessionsView's
@@ -210,6 +352,47 @@ struct Enable2FAResponse: Codable {
 
 struct Verify2FARequest: Codable {
     let otp: String
+}
+
+// MARK: - Vault History (#217)
+
+/// A single past action against a vault (check-in, deposit, withdrawal,
+/// beneficiary change, creation). See api-contract.md §VaultHistoryEvent.
+struct VaultHistoryEvent: Codable, Identifiable, Equatable {
+    enum EventType: String, Codable {
+        case checkIn = "check_in"
+        case deposit
+        case withdrawal
+        case beneficiaryChanged = "beneficiary_changed"
+        case created
+    }
+
+    let eventType: EventType
+    let timestamp: Date
+    /// Present for `.deposit`/`.withdrawal` (stroops), `nil` otherwise.
+    let amount: Int64?
+    /// Present only for `.beneficiaryChanged` (the new beneficiary), `nil` otherwise.
+    let beneficiary: String?
+
+    /// Synthesized rather than server-provided — history entries have no
+    /// natural unique ID field on the wire, and List/ForEach need Identifiable.
+    var id: String { "\(eventType.rawValue)-\(timestamp.timeIntervalSince1970)" }
+
+    var displayTitle: String {
+        switch eventType {
+        case .checkIn: return "Checked In"
+        case .deposit: return "Deposit"
+        case .withdrawal: return "Withdrawal"
+        case .beneficiaryChanged: return "Beneficiary Changed"
+        case .created: return "Vault Created"
+        }
+    }
+}
+
+/// A page of vault history events, mirroring `VaultPage`'s cursor pattern (#217).
+struct VaultHistoryPage {
+    let events: [VaultHistoryEvent]
+    let nextCursor: String?
 }
 
 // MARK: - Pagination Models (#112)

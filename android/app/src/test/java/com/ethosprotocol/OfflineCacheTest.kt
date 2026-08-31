@@ -8,6 +8,8 @@ import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class OfflineCacheTest {
 
@@ -99,5 +101,35 @@ class OfflineCacheTest {
 
         assertNull(cache.load("/a"))
         assertNull(cache.load("/b"))
+    }
+
+    @Test
+    fun `concurrent reads and writes do not corrupt cache entries`() {
+        val cache = newCache()
+        val iterations = 50
+        val latch = CountDownLatch(2)
+        var writeException: Throwable? = null
+        var readException: Throwable? = null
+
+        val writer = Thread {
+            try {
+                repeat(iterations) { i -> cache.save("/vaults", "{\"i\":$i}") }
+            } catch (e: Throwable) { writeException = e }
+            finally { latch.countDown() }
+        }
+        val reader = Thread {
+            try {
+                repeat(iterations) { cache.load("/vaults") }
+            } catch (e: Throwable) { readException = e }
+            finally { latch.countDown() }
+        }
+
+        writer.start(); reader.start()
+        assertTrue("threads did not finish in time", latch.await(10, TimeUnit.SECONDS))
+        assertNull("writer threw: $writeException", writeException)
+        assertNull("reader threw: $readException", readException)
+        // Final state must be a valid cache entry (not a torn write)
+        val result = cache.load("/vaults")
+        assertNotNull("cache should have an entry after concurrent writes", result)
     }
 }

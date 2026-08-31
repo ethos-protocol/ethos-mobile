@@ -66,8 +66,8 @@ Last audited: 2026-07-27
 | Offline queue badge / notification | ❌ | ✅ | |
 | **Widget** | | | |
 | Home-screen vault TTL widget | ✅ | ✅ | iOS: WidgetKit TTLWidget; Android: VaultStatusWidget (Glance) |
-| TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (#TBD) |
-| Widget urgency selection (which vault to surface) | ❌ | ❌ | Both platforms always show the first vault (#TBD) |
+| TTL-aware refresh policy | ✅ | ✅ | Android VaultWidgetUpdateWorker uses determineUpdateInterval for urgency-scaled refresh (#247) |
+| Widget urgency selection (which vault to surface) | ✅ | ✅ | Both platforms show the most-urgent vault by default; users can pin a specific vault via VaultSelectionIntent (iOS) or VaultWidgetConfigActivity (Android) (#245 #246) |
 | **WebSocket / real-time** | | | |
 | Live vault updates via WebSocket | ✅ | ✅ | iOS: VaultEventSocket.swift; Android: VaultEventSocket.kt, both wired into their vault store/ViewModel with reconnect backoff |
 | **Background refresh** | | | |
@@ -97,8 +97,8 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Check-in reminder lead-time scaling | Android | TBD |
 | Actionable push notification action (CHECK_IN) | Android | TBD |
 | Offline check-in queue | iOS | TBD |
-| TTL-aware widget refresh policy | Android | TBD |
-| Widget urgency / vault selection | Both | TBD |
+| TTL-aware widget refresh policy | Android | Resolved in #247 |
+| Widget urgency / vault selection | Both | Resolved in #245 / #246 |
 | iCloud / cross-device sync | Android | TBD |
 
 ---

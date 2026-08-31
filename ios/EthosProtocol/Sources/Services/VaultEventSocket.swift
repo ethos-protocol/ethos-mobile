@@ -7,9 +7,15 @@ protocol WebSocketTasking: AnyObject {
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func receive(completionHandler: @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+    /// #257: The close code set by the server when it closes the socket. Returns `.invalid`
+    /// before the socket is closed. Exposed on the protocol so MockWebSocketTask can
+    /// simulate a 4401 close without a real URLSessionWebSocketTask.
+    var closeCode: URLSessionWebSocketTask.CloseCode { get }
 }
 
-extension URLSessionWebSocketTask: WebSocketTasking {}
+extension URLSessionWebSocketTask: WebSocketTasking {
+    // URLSessionWebSocketTask already has a `closeCode` property — no need to add it.
+}
 
 /// Exponential backoff for WebSocket reconnect attempts, capped at `maxDelay`,
 /// with randomized jitter to reduce synchronized reconnect storms.
@@ -62,6 +68,9 @@ final class VaultEventSocket {
         case connecting
         case connected
         case fallbackToPolling
+        /// #257: The server closed with 4401 and a token refresh could not recover the session.
+        /// The user must sign in again.
+        case authFailure
     }
 
     enum VaultEvent: Equatable {
@@ -95,6 +104,11 @@ final class VaultEventSocket {
     var backoff: ReconnectBackoff
     let maxReconnectAttempts: Int
 
+    // #257: Injectable token-refresh closure. In production this calls APIClient to get
+    // a fresh JWT; in tests a fake is injected to simulate refresh success or failure.
+    // Throws on failure (e.g. the backend returned 401 — token is invalid, not just expired).
+    var tokenRefresh: () async throws -> String
+
     private let baseURL: URL
     private let decoder: JSONDecoder
     private var task: WebSocketTasking?
@@ -105,7 +119,8 @@ final class VaultEventSocket {
     init(baseURL: URL,
          maxReconnectAttempts: Int = 5,
          backoff: ReconnectBackoff = .socketDefault,
-         makeTask: ((URLRequest) -> WebSocketTasking)? = nil) {
+         makeTask: ((URLRequest) -> WebSocketTasking)? = nil,
+         tokenRefresh: ((() async throws -> String))? = nil) {
         self.baseURL = baseURL
         self.maxReconnectAttempts = maxReconnectAttempts
         self.backoff = backoff
@@ -114,6 +129,11 @@ final class VaultEventSocket {
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
         self.makeTask = makeTask ?? { request in URLSession.shared.webSocketTask(with: request) }
+        self.tokenRefresh = tokenRefresh ?? {
+            // Production: call the shared APIClient to refresh the JWT and return the raw token string.
+            let authToken = try await APIClient.shared.refreshToken()
+            return authToken.token
+        }
     }
 
     /// Connects (or reconnects from scratch, resetting the backoff counter) to
@@ -197,8 +217,43 @@ final class VaultEventSocket {
             reconnectAttempt = 0
             handle(message: message)
             listen()
-        case .failure:
-            handleFailure()
+        case .failure(let error):
+            // #257: Inspect the URLSessionWebSocketTask close code when the receive
+            // call fails. URLSession surfaces a 4401 custom close code as an
+            // NSError with the close code accessible via the underlying
+            // URLSessionWebSocketTask. We detect it via the task's closeCode
+            // property — by the time the receive handler fires with a failure, the
+            // task has already transitioned to the closed state.
+            let closeCode = task?.closeCode ?? .invalid
+            if closeCode.rawValue == 4401 {
+                handleAuth4401()
+            } else {
+                handleFailure()
+            }
+        }
+    }
+
+    // #257: The server closed with 4401 (authentication failure). Attempt one silent
+    // token refresh. If it succeeds, store the new token and reconnect immediately
+    // (no backoff — the token was just refreshed, so this should succeed). If it
+    // fails, the token is invalid/revoked and requires re-login: transition to
+    // .authFailure so the UI can sign the user out.
+    private func handleAuth4401() {
+        guard !isStopped else { return }
+        state = .disconnected
+        reconnectTask = Task { @MainActor [weak self] in
+            guard let self, !self.isStopped else { return }
+            do {
+                let newToken = try await self.tokenRefresh()
+                guard !Task.isCancelled, !self.isStopped else { return }
+                KeychainService.shared.saveToken(newToken)
+                self.reconnectAttempt = 0
+                self.openSocket()
+            } catch {
+                guard !Task.isCancelled else { return }
+                // Refresh failed — signal permanent auth failure.
+                self.state = .authFailure
+            }
         }
     }
 
