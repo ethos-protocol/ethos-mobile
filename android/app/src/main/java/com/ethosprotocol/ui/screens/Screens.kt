@@ -325,6 +325,11 @@ fun VaultListScreen(
                             if (state.isOffline) item {
                                 OfflineBanner()
                             }
+                            if (state.queueAtCapacity) item {
+                                QueueCapacityBanner(atCapacity = true)
+                            } else if (state.queueNearCapacity) item {
+                                QueueCapacityBanner(atCapacity = false)
+                            }
                             val errorMsg = biometricError ?: state.error
                             errorMsg?.let { err ->
                                 item {
@@ -428,8 +433,7 @@ private fun RenameVaultDialog(currentLabel: String?, onConfirm: (String?) -> Uni
 }
 
 @Composable
-private fun OfflineBanner(cachedAt: Long? = null) {
-    val message = if (cachedAt != null) {
+private fun OfflineBanner(cachedAt: Long? = null) {    val message = if (cachedAt != null) {
         "Offline — showing cached data (as of ${formatCacheAge(cachedAt)} ago)"
     } else {
         "Offline — showing cached data"
@@ -450,8 +454,28 @@ private fun OfflineBanner(cachedAt: Long? = null) {
     }
 }
 
-private fun formatCacheAge(cachedAt: Long): String {
-    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
+@Composable
+private fun QueueCapacityBanner(atCapacity: Boolean) {
+    val color = if (atCapacity) MaterialTheme.colorScheme.errorContainer
+                else MaterialTheme.colorScheme.tertiaryContainer
+    val textColor = if (atCapacity) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onTertiaryContainer
+    val message = if (atCapacity) "Offline queue full — oldest request replaced"
+                  else "Offline queue nearly full"
+    Surface(color = color) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp).semantics(mergeDescendants = true) {},
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Warning, contentDescription = if (atCapacity) "Queue full" else "Queue nearly full",
+                tint = textColor)
+            Spacer(Modifier.width(8.dp))
+            Text(message, color = textColor, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+private fun formatCacheAge(cachedAt: Long): String {    val elapsedSeconds = ((System.currentTimeMillis() - cachedAt) / 1000).coerceAtLeast(0)
     val minutes = elapsedSeconds / 60
     val hours = minutes / 60
     val days = hours / 24

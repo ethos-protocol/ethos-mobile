@@ -294,14 +294,18 @@ public final class APIClient {
     // MARK: - Push Notifications
 
     func registerPushToken(_ token: String) async throws {
-        let body = PushRegistration(token: token, platform: "ios")
+        let body = PushRegistration(
+            token: token,
+            platform: "ios",
+            locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
+        )
         let _: EmptyBody = try await post(path: "/notifications/register", body: body)
     }
 
     func unregisterPushToken(_ token: String) async throws {
         var req = request(path: "/notifications/register")
         req.httpMethod = "DELETE"
-        req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios"))
+        req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios", locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-")))
         // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
         for (field, value) in Self.makeAntiReplayHeaders() {
             req.setValue(value, forHTTPHeaderField: field)
