@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
     alias(libs.plugins.paparazzi)
+    jacoco
 }
 
 // Release signing credentials come from the environment (CI) or gradle.properties
@@ -275,4 +276,47 @@ dependencies {
     // @HiltAndroidTest / HiltAndroidRule, used by the instrumented tests under androidTest/.
     androidTestImplementation(libs.hilt.android.testing)
     kspAndroidTest(libs.hilt.compiler)
+}
+
+// JaCoCo code coverage configuration
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+tasks.withType<Test>().configureEach {
+    jacoco {
+        isIncludeNoLocationClasses = true
+    }
+}
+
+task<JacocoReport>("jacocoTestReport") {
+    dependsOn(tasks.testDebugUnitTest)
+    group = "Coverage"
+    description = "Generate JaCoCo coverage report for unit tests"
+
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+
+    sourceDirectories.setFrom(
+        files(
+            "${project.projectDir}/src/main/java",
+            "${project.projectDir}/src/main/kotlin"
+        )
+    )
+
+    classDirectories.setFrom(
+        files(
+            fileTree("${project.buildDir}/intermediates/classes/debug/"),
+            fileTree("${project.buildDir}/tmp/kotlin-classes/debug/")
+        )
+    )
+
+    executionData.setFrom(
+        files(
+            "${project.buildDir}/jacoco/testDebugUnitTest.exec"
+        )
+    )
 }

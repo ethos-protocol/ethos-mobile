@@ -97,6 +97,32 @@ jobs:
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest
 
+      - name: Generate code coverage report (JaCoCo)
+        run: ./gradlew jacocoTestReport
+
+      - name: Check code coverage threshold (30% minimum)
+        run: |
+          python3 << 'EOF'
+          import re
+          import sys
+
+          # Extract coverage percentage from JaCoCo HTML report
+          with open('android/app/build/reports/jacoco/jacocoTestReport/html/index.html', 'r') as f:
+              content = f.read()
+              # Look for pattern like "Total<br />20%"
+              match = re.search(r'Total[^>]*>\s*(\d+)%', content, re.IGNORECASE)
+              if match:
+                  coverage = int(match.group(1))
+                  print(f"Code coverage: {coverage}%")
+                  if coverage < 30:
+                      print(f"::warning::Code coverage ({coverage}%) is below 30% threshold. Please add tests to improve coverage.")
+                  else:
+                      print(f"✓ Code coverage meets minimum threshold (30%)")
+              else:
+                  print("::error::Could not parse coverage percentage from report")
+                  sys.exit(1)
+          EOF
+
       - name: Verify Paparazzi screenshots
         run: ./gradlew verifyPaparazziDebug
 
@@ -185,6 +211,14 @@ jobs:
           name: android-unit-test-reports
           path: android/app/build/reports/tests/testDebugUnitTest
           if-no-files-found: ignore
+
+      - name: Upload code coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-coverage-report
+          path: android/app/build/reports/jacoco/jacocoTestReport
+          if-no-files-found: warn
 
       - name: Upload Paparazzi diff report
         if: failure()
