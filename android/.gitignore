@@ -10,4 +10,18 @@
 local.properties
 **/build/
 /dependency-check-data/
-src/test/snapshots/
+
+# Test snapshots (Paparazzi / Shot)
+**/snapshots/
+**/__Snapshots__/
+**/*.png.snap
+**/ReferenceImages/
+app/src/test/snapshots/
+
+# Secrets
+google-services.json
+*.p12
+*.jks
+*.keystore
+.env
+.env.*
