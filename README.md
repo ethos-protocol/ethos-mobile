@@ -109,6 +109,26 @@ XcodeGen-generated project; CI runs this the same way, via `xcodebuild test` aga
 an iOS Simulator destination (`swift test` alone defaults to macOS, which can't build
 the app's iOS-only framework imports).
 
+#### iOS SPM Dependency Vulnerability Scanning
+CI runs a weekly (and per-PR on `Package.swift` / `Package.resolved` changes) vulnerability
+scan against all pinned SPM dependencies using [osv-scanner](https://github.com/google/osv-scanner),
+querying the [OSV database](https://osv.dev). The scan fails the build for any dependency
+with a published CVE at CVSS ≥ 7.0 (high or critical). This mirrors the Android
+`android-dependency-check.yml` OWASP scan.
+
+Workflow: `.github/workflows/ios-dependency-check.yml`
+
+False-positive suppressions: `ios/EthosProtocol/spm-vulnerability-suppressions.toml`
+(follows the same pattern as `android/dependency-check-suppressions.xml` — each entry
+requires a documented rationale).
+
+To run locally:
+```bash
+brew install osv-scanner
+cd ios/EthosProtocol
+osv-scanner --lockfile "swift:Package.resolved" --fail-on-severity HIGH
+```
+
 ### Android
 ```bash
 cd android

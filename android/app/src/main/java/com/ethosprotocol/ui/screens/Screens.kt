@@ -383,8 +383,9 @@ private fun formatCacheAge(cachedAt: Long): String {
     }
 }
 
+// Internal (not private) so screenshot tests can render VaultCard at max font scale (#281).
 @Composable
-private fun VaultCard(
+internal fun VaultCard(
     vault: Vault,
     onClick: () -> Unit,
     onCheckIn: () -> Unit,
@@ -393,12 +394,23 @@ private fun VaultCard(
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(16.dp)) {
-            // At the largest font scale a full-length id + chip in one row will clip rather than
-            // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(vault.id.take(12) + "…", style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f))
+            // At 200% font scale a full-length id + chip in one row will clip rather than
+            // wrap; weight(1f) on the id text lets it shrink/ellipsize while the chip
+            // keeps its intrinsic width.  wrapContentWidth(unbounded=false) on the chip
+            // column prevents it from growing wider than the remaining space and clipping
+            // outside the card bounds (#281).
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    vault.id.take(12) + "…",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
                 StatusChip(vault.status)
             }
             Spacer(Modifier.height(4.dp))
@@ -407,16 +419,29 @@ private fun VaultCard(
             if (vault.isExpiringSoon) {
                 Spacer(Modifier.height(4.dp))
                 // mergeDescendants groups the icon + label into a single TalkBack stop instead of two.
+                // weight(1f) on the Text lets it shrink/ellipsize at large font scales instead of
+                // pushing the fixed-size Warning icon out of the row bounds (#281).
                 Row(
-                    Modifier.semantics(mergeDescendants = true) {},
+                    Modifier
+                        .fillMaxWidth()
+                        .semantics(mergeDescendants = true) {},
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Warning, contentDescription = "Warning", tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(14.dp))
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Warning",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(14.dp)
+                    )
                     Spacer(Modifier.width(4.dp))
-                    Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
+                    Text(
+                        "Expiring soon!",
+                        color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {

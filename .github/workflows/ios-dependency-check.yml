@@ -1,0 +1,118 @@
+name: iOS SPM Dependency Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only re-run when the dependency graph can actually change — Package.swift
+      # declares all SPM dependencies, Package.resolved pins their exact versions.
+      # Everything else (app code, docs, other CI files) cannot move the result.
+      - "ios/EthosProtocol/Package.swift"
+      - "ios/EthosProtocol/Package.resolved"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ios/EthosProtocol/Package.swift"
+      - "ios/EthosProtocol/Package.resolved"
+  # Weekly scheduled run catches newly-disclosed CVEs against dependency
+  # versions that haven't changed (mirrors android-dependency-check.yml's cadence).
+  schedule:
+    - cron: "0 7 * * 1"   # 07:00 UTC every Monday (staggered 1 h after Android scan)
+  workflow_dispatch:        # allow manual re-runs
+
+defaults:
+  run:
+    working-directory: ios/EthosProtocol
+
+jobs:
+  spm-dependency-check:
+    runs-on: macos-latest
+    permissions:
+      issues: write   # needed by "Alert on failure" step to file a GitHub issue
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # Resolve SPM dependencies so Package.resolved is up to date before
+      # the graph dump below (no-op when it is already current).
+      - name: Resolve package dependencies
+        run: xcodebuild -resolvePackageDependencies
+
+      # Dump the full resolved dependency graph (name, URL, exact version for
+      # each pinned package) to a JSON file for the audit step that follows.
+      # `swift package show-dependencies --format json` is stable since
+      # Swift 5.6 and produces machine-readable output.
+      - name: Dump resolved SPM dependency graph
+        run: swift package show-dependencies --format json > spm-dependencies.json
+
+      # Install the `osv-scanner` CLI (Google's OSV vulnerability scanner).
+      # It queries the Open Source Vulnerabilities database (https://osv.dev)
+      # — the same data source backing GitHub's own dependency review action —
+      # and returns a non-zero exit code if any dependency has a published CVE
+      # at CVSS >= 7.0 (high or critical).
+      #
+      # osv-scanner accepts a `--lockfile` argument pointing to Package.resolved
+      # (SwiftPM's pip-lockfile equivalent), which lists every pinned transitive
+      # dependency with its exact version.  This is the most reliable input: the
+      # resolved file is committed and reflects exactly what `xcodebuild build`
+      # would link.
+      - name: Install osv-scanner
+        run: brew install osv-scanner
+
+      # Cache the OSV database locally so weekly runs only fetch the delta.
+      # The cache key is week-scoped (matches Android's pattern) so it refreshes
+      # regularly rather than growing stale.
+      - id: date
+        run: echo "week=$(date +%Y-W%U)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache OSV database
+        uses: actions/cache@v4
+        with:
+          path: ~/.osv-scanner
+          key: osv-db-${{ steps.date.outputs.week }}
+          restore-keys: |
+            osv-db-
+
+      # Scan Package.resolved for high/critical CVEs.  The suppression list at
+      # ios/EthosProtocol/spm-vulnerability-suppressions.json is passed via
+      # --config to exclude confirmed false positives (mirrors Android's
+      # dependency-check-suppressions.xml pattern).
+      #
+      # `--experimental-config` is the stable flag name in osv-scanner ≥ 1.7.
+      # Exit code 1 = vulnerabilities found; exit code 0 = clean.
+      - name: Scan SPM dependencies for high severity vulnerabilities
+        run: |
+          osv-scanner \
+            --lockfile "swift:Package.resolved" \
+            --experimental-config spm-vulnerability-suppressions.toml \
+            --fail-on-severity HIGH
+
+      - name: Alert on failure (scheduled run)
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: "⚠️ iOS SPM dependency-check failed (scheduled scan)",
+              body: [
+                "The weekly iOS SPM dependency vulnerability scan failed.",
+                "",
+                "This may mean a Swift Package dependency now has a known CVSS >= 7.0",
+                "vulnerability, or the scan itself failed for an unrelated reason",
+                "(see the run log).",
+                "",
+                `Workflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                "",
+                "Related: #280 (added iOS SPM scanning to mirror Android's dependency-check coverage)."
+              ].join("\n"),
+              labels: ["security", "ios", "ci"]
+            });
