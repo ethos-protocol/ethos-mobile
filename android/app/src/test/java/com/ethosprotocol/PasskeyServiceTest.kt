@@ -11,9 +11,7 @@ import com.ethosprotocol.models.AuthToken
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
 import com.ethosprotocol.services.CredentialManagerFactory
-import com.ethosprotocol.services.PasskeyRegistrationDiagnostics
 import com.ethosprotocol.services.PasskeyService
-import com.ethosprotocol.services.extractAttestationFormat
 import io.mockk.*
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
@@ -167,65 +165,23 @@ class PasskeyServiceTest {
         assertEquals("Forbidden", result.exceptionOrNull()?.message)
     }
 
-    // ── #213 registration-failure diagnostics ───────────────────────────────
-
-    @Before
-    fun clearDiagnostics() {
-        PasskeyRegistrationDiagnostics.clearLog()
-    }
+    // ── register: no biometric hardware available (#210) ───────────────────────
 
     @Test
-    fun register_credentialManagerThrows_logsDiagnosticsWithNoAttestationFormat() = runTest {
+    fun register_noCreateOptionAvailable_returnsFailureWithBiometricFallbackCopy() = runTest {
         coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
         coEvery { mockCredentialManager.createCredential(mockActivity, any()) } throws
-            RuntimeException("biometric cancelled")
+            androidx.credentials.exceptions.CreateCredentialNoCreateOptionException()
 
-        service.register(mockActivity, "alice")
+        val result = service.register(mockActivity, "alice")
 
-        val events = PasskeyRegistrationDiagnostics.getLoggedEvents()
-        assertEquals(1, events.size)
-        assertEquals("platform", events[0].authenticatorAttachment)
-        assertNull("No attestation object was ever produced", events[0].attestationFormat)
-    }
-
-    @Test
-    fun register_backendRejectsAfterCeremony_logsAttestationFormat() = runTest {
-        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
-            every { registrationResponseJson } returns fakeRegistrationJson
-        }
-        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
-        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Error("Forbidden", 403)
-
-        service.register(mockActivity, "alice")
-
-        val events = PasskeyRegistrationDiagnostics.getLoggedEvents()
-        assertEquals(1, events.size)
-        assertEquals("none", events[0].attestationFormat)
-    }
-
-    @Test
-    fun register_success_logsNothing() = runTest {
-        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
-            every { registrationResponseJson } returns fakeRegistrationJson
-        }
-        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
-        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
-        coEvery { mockApiClient.registerPasskey(any()) } returns ApiResult.Success(fakeToken)
-
-        service.register(mockActivity, "alice")
-
-        assertTrue(PasskeyRegistrationDiagnostics.getLoggedEvents().isEmpty())
-    }
-
-    @Test
-    fun extractAttestationFormat_returnsFmtValue() {
-        assertEquals("none", extractAttestationFormat(fakeAttestationObjectBase64))
-    }
-
-    @Test
-    fun extractAttestationFormat_malformedInput_returnsNull() {
-        assertNull(extractAttestationFormat("not-valid-base64!!"))
+        assertTrue("Expected failure", result.isFailure)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue("Expected guidance to enroll a biometric: $message",
+            message.contains("biometric", ignoreCase = true))
+        assertTrue("Expected guidance about a device PIN/passcode fallback: $message",
+            message.contains("PIN", ignoreCase = true) || message.contains("passcode", ignoreCase = true))
+        coVerify(exactly = 0) { mockApiClient.registerPasskey(any()) }
     }
 
     // ── authenticate ─────────────────────────────────────────────────────────
@@ -318,6 +274,56 @@ class PasskeyServiceTest {
 
         assertTrue("Expected failure", result.isFailure)
         assertEquals("old-token", tokenProvider.token)
+    }
+
+    // ── recoverAccount (#211 — expired recovery token) ──────────────────────────
+
+    @Test
+    fun recoverAccount_success_callsCompleteRecoveryWithCorrectFields() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.completeRecovery(any()) } returns ApiResult.Success(Unit)
+
+        val result = service.recoverAccount(mockActivity, "alice", "recovery-token-123")
+
+        assertTrue("Expected success", result.isSuccess)
+        val slot = slot<com.ethosprotocol.models.RecoveryCompleteRequest>()
+        coVerify { mockApiClient.completeRecovery(capture(slot)) }
+        assertEquals("recovery-token-123", slot.captured.recoveryToken)
+        assertEquals("credential-id-reg", slot.captured.credentialId)
+    }
+
+    @Test
+    fun recoverAccount_expiredRecoveryToken_returnsFailureWithServerMessage_notGenericFailure() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.completeRecovery(any()) } returns
+            ApiResult.Error("Your recovery code has expired. Please request a new one.", 401)
+
+        val result = service.recoverAccount(mockActivity, "alice", "expired-token")
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals(
+            "Your recovery code has expired. Please request a new one.",
+            result.exceptionOrNull()?.message
+        )
+        assertEquals(401, (result.exceptionOrNull() as? ApiCallFailedException)?.code)
+    }
+
+    @Test
+    fun recoverAccount_getChallengeNetworkError_returnsFailure_completeRecoveryNotCalled() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.NetworkUnavailable
+
+        val result = service.recoverAccount(mockActivity, "alice", "recovery-token-123")
+
+        assertTrue("Expected failure", result.isFailure)
+        coVerify(exactly = 0) { mockApiClient.completeRecovery(any()) }
     }
 
     // ── requireSuccess error mapping ──────────────────────────────────────────

@@ -130,6 +130,21 @@ data class RecoveryCompleteRequest(
     @SerialName("client_data_json") val clientDataJson: String
 )
 
+// MARK: - Sessions (#208)
+//
+// A device currently holding a valid JWT for this account. Backs SessionsScreen's device
+// list and its "Sign out this device" / "Sign out all other devices" actions.
+
+@Serializable
+data class Session(
+    val id: String,
+    @SerialName("device_name") val deviceName: String,
+    val platform: String,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("last_active_at") val lastActiveAt: String,
+    @SerialName("is_current") val isCurrent: Boolean
+)
+
 // MARK: - 2FA Models
 
 @Serializable

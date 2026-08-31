@@ -232,6 +232,37 @@ final class PasskeyErrorMappingTests: XCTestCase {
         XCTAssertEqual(mapped, .registrationFailed)
     }
 
+    // MARK: - #210 No biometric hardware / not enrolled
+
+    private func makeUnderlyingLAError(_ code: LAError.Code) -> NSError {
+        let underlying = NSError(domain: LAErrorDomain, code: code.rawValue)
+        return NSError(domain: ASAuthorizationErrorDomain,
+                        code: ASAuthorizationError.failed.rawValue,
+                        userInfo: [NSUnderlyingErrorKey: underlying])
+    }
+
+    func test_biometryNotEnrolled_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.biometryNotEnrolled), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_biometryNotAvailable_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.biometryNotAvailable), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_passcodeNotSet_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.passcodeNotSet), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_biometricUnavailable_hasActionableCopy() {
+        let message = PasskeyError.biometricUnavailable.errorDescription ?? ""
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("passcode") ||
+                      message.localizedCaseInsensitiveContains("Face ID") ||
+                      message.localizedCaseInsensitiveContains("Touch ID"))
+    }
+
     func test_allCases_haveDistinctNonEmptyDescriptions() {
         let cases: [PasskeyError] = [.registrationFailed, .authenticationFailed, .userCancelled, .notInteractive, .credentialAlreadyExists]
         let descriptions = cases.compactMap { $0.errorDescription }

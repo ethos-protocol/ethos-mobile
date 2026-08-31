@@ -16,9 +16,7 @@ import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
-import com.ethosprotocol.models.AddPasskeyRequest
 import com.ethosprotocol.models.AuthChallenge
-import com.ethosprotocol.models.PasskeyCredential
 import com.ethosprotocol.models.PasskeyRegisterRequest
 import com.ethosprotocol.models.PasskeyVerifyRequest
 import com.ethosprotocol.models.RecoveryCompleteRequest
@@ -51,79 +49,46 @@ class PasskeyService @Inject constructor(
     private val tokenProvider: TokenProvider,
     private val credentialManagerFactory: CredentialManagerFactory
 ) {
-    suspend fun register(activity: Activity, username: String): Result<Unit> {
-        var attestationFormat: String? = null
-        return runCatching {
-            val normalizedUsername = UsernameValidator.sanitize(username)
-            require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
-            val challenge = requireSuccess(apiClient.getChallenge()).challenge
-            val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
+    suspend fun register(activity: Activity, username: String): Result<Unit> = runCatching {
+        val normalizedUsername = UsernameValidator.sanitize(username)
+        require(UsernameValidator.isValid(normalizedUsername)) { "Invalid username" }
+        val challenge = requireSuccess(apiClient.getChallenge()).challenge
+        val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
 
-            val credManager = credentialManagerFactory.create(activity)
-            val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
+        val credManager = credentialManagerFactory.create(activity)
+        // #210: devices with no biometric enrolled (or biometrics disabled by policy) throw
+        // here — map to tailored copy instead of letting a generic CredentialManager error
+        // reach the user with no indication of what to actually do about it.
+        val resp = try {
+            credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
                     as CreatePublicKeyCredentialResponse
-            val json = JSONObject(resp.registrationResponseJson)
-            val attestationObject = json.getJSONObject("response").getString("attestationObject")
-            attestationFormat = extractAttestationFormat(attestationObject)
-            val regReq = PasskeyRegisterRequest(
-                credentialId = json.getString("id"),
-                publicKey = extractCosePublicKey(attestationObject),
-                clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
-            )
-            // The backend returns a session token straight from registration, so there's no
-            // need to immediately run a second CredentialManager ceremony (and second
-            // biometric prompt) just to sign in with the passkey we just created.
-            val authToken = requireSuccess(apiClient.registerPasskey(regReq))
-            tokenProvider.setSession(authToken)
-        }.onFailure { e ->
-            if (e is CancellationException) throw e
-            // #213: Diagnostic signal for support triage — never the credential itself.
-            PasskeyRegistrationDiagnostics.logFailure(
-                authenticatorAttachment = "platform",
-                attestationFormat = attestationFormat,
-                reason = e::class.simpleName ?: "unknown"
-            )
+        } catch (e: CreateCredentialException) {
+            throw PasskeyException(mapCreateCredentialError(e))
         }
-    }
-
-    // Links a freshly-created passkey to an existing account for a user who lost their
-    // original device — the recovery token proves they completed initiateRecovery() first.
-    suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> {
-        var attestationFormat: String? = null
-        return runCatching {
-            val json = createPasskeyCredential(activity, username)
-            val attestationObject = json.getJSONObject("response").getString("attestationObject")
-            attestationFormat = extractAttestationFormat(attestationObject)
-            val completeReq = RecoveryCompleteRequest(
-                recoveryToken = recoveryToken,
-                credentialId = json.getString("id"),
-                publicKey = extractCosePublicKey(attestationObject),
-                clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
-            )
-            requireSuccess(apiClient.completeRecovery(completeReq))
-        }.onFailure { e ->
-            if (e is CancellationException) throw e
-            PasskeyRegistrationDiagnostics.logFailure(
-                authenticatorAttachment = "platform",
-                attestationFormat = attestationFormat,
-                reason = e::class.simpleName ?: "unknown"
-            )
-        }
-    }
-
-    // Registers an additional passkey on this device for the *currently authenticated*
-    // account (#207) — e.g. a user adding a tablet as a second device — distinct from
-    // recoverAccount, which requires a recovery token for a signed-out user. Relies on the
-    // existing session's bearer token (ApiClient attaches it automatically) rather than
-    // recovery proof.
-    suspend fun addPasskey(activity: Activity, username: String): Result<PasskeyCredential> = runCatching {
-        val json = createPasskeyCredential(activity, username)
-        val addReq = AddPasskeyRequest(
+        val json = JSONObject(resp.registrationResponseJson)
+        val regReq = PasskeyRegisterRequest(
             credentialId = json.getString("id"),
             publicKey = extractCosePublicKey(json.getJSONObject("response").getString("attestationObject")),
             clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
         )
-        requireSuccess(apiClient.addPasskey(addReq))
+        // The backend returns a session token straight from registration, so there's no
+        // need to immediately run a second CredentialManager ceremony (and second
+        // biometric prompt) just to sign in with the passkey we just created.
+        val authToken = requireSuccess(apiClient.registerPasskey(regReq))
+        tokenProvider.setSession(authToken)
+    }.onFailure { if (it is CancellationException) throw it }
+
+    // Links a freshly-created passkey to an existing account for a user who lost their
+    // original device — the recovery token proves they completed initiateRecovery() first.
+    suspend fun recoverAccount(activity: Activity, username: String, recoveryToken: String): Result<Unit> = runCatching {
+        val json = createPasskeyCredential(activity, username)
+        val completeReq = RecoveryCompleteRequest(
+            recoveryToken = recoveryToken,
+            credentialId = json.getString("id"),
+            publicKey = extractCosePublicKey(json.getJSONObject("response").getString("attestationObject")),
+            clientDataJson = json.getJSONObject("response").getString("clientDataJSON")
+        )
+        requireSuccess(apiClient.completeRecovery(completeReq))
     }.onFailure { if (it is CancellationException) throw it }
 
     private suspend fun createPasskeyCredential(activity: Activity, username: String): JSONObject {
@@ -166,8 +131,12 @@ class PasskeyService @Inject constructor(
     // subtypes that carry actionable meaning; anything else falls back to a generic retry prompt.
     private fun mapCreateCredentialError(e: CreateCredentialException): String = when (e) {
         is CreateCredentialCancellationException -> "Sign-up canceled."
+        // #210: this fires on devices with no biometric enrolled (or an unlockable screen
+        // lock at all) — e.g. older/budget hardware below this app's usual assumptions, or
+        // biometrics disabled by MDM policy. Direct the user to a fix instead of a dead end.
         is CreateCredentialNoCreateOptionException ->
-            "This device can't create a passkey. Add a screen lock in Settings and try again."
+            "This device has no biometric or screen lock set up, so it can't create a passkey. " +
+            "Enroll a fingerprint or face unlock, or set a device PIN/passcode, in Settings and try again."
         is CreateCredentialProviderConfigurationException ->
             "No passkey provider is set up on this device."
         is CreateCredentialInterruptedException -> "Setup was interrupted — please try again."
@@ -187,7 +156,7 @@ class PasskeyService @Inject constructor(
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            is ApiResult.Error -> throw ApiCallFailedException(result.message, result.code)
             ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }
@@ -245,16 +214,6 @@ private fun cosePublicKeyBytes(authData: ByteArray): ByteArray {
     coseKeyReader.readItem()
     return authData.copyOfRange(offset, coseKeyReader.position)
 }
-
-// Extracts the WebAuthn attestation statement format (`fmt`, e.g. "packed", "none",
-// "android-safetynet") from an attestationObject, for support diagnostics (#213). Never
-// touches the public key, signature, or challenge bytes embedded alongside it.
-// `internal` (not private) so PasskeyServiceTest can verify it against a synthetic fixture.
-internal fun extractAttestationFormat(attestationObjectB64: String): String? = runCatching {
-    val attestationBytes = decodeBase64Url(attestationObjectB64)
-    val attestationMap = CborReader(attestationBytes).readItem() as? Map<*, *> ?: return@runCatching null
-    attestationMap["fmt"] as? String
-}.getOrNull()
 
 private fun decodeBase64Url(value: String): ByteArray {
     val padded = value.padEnd((value.length + 3) / 4 * 4, '=')

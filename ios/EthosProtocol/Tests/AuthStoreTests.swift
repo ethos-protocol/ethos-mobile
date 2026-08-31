@@ -48,48 +48,6 @@ final class AuthStoreSingleCeremonyTests: XCTestCase {
     }
 }
 
-// MARK: - #207 Add Additional Passkey While Signed In
-
-@MainActor
-final class AuthStoreAddPasskeyTests: XCTestCase {
-
-    func test_addPasskey_whileSignedIn_succeedsWithoutDisturbingSession() async {
-        let store = AuthStore()
-        store.passkeyRegister = { _ in AuthToken(token: "tok-register", expiresAt: Date().addingTimeInterval(3_600)) }
-        await store.register(username: "alice")
-        XCTAssertTrue(store.isAuthenticated)
-
-        let newCredential = PasskeyCredential(credentialId: "cred-second-device", deviceLabel: "iPad", createdAt: Date(), lastUsedAt: nil)
-        store.passkeyAdd = { _ in newCredential }
-
-        let result = await store.addPasskey(username: "alice")
-
-        XCTAssertEqual(result, newCredential)
-        XCTAssertNil(store.error)
-        // Adding a second passkey must not disturb the existing session (#207) — it's not
-        // a new sign-in, so isAuthenticated must remain exactly what it already was.
-        XCTAssertTrue(store.isAuthenticated)
-        await store.signOut()
-    }
-
-    func test_addPasskey_failure_setsError_keepsExistingSession() async {
-        enum FakeError: Error, LocalizedError { case addFailed
-            var errorDescription: String? { "add failed" }
-        }
-        let store = AuthStore()
-        store.passkeyRegister = { _ in AuthToken(token: "tok-register", expiresAt: Date().addingTimeInterval(3_600)) }
-        await store.register(username: "alice")
-        store.passkeyAdd = { _ in throw FakeError.addFailed }
-
-        let result = await store.addPasskey(username: "alice")
-
-        XCTAssertNil(result)
-        XCTAssertNotNil(store.error)
-        XCTAssertTrue(store.isAuthenticated, "A failed add-passkey attempt must not sign the user out")
-        await store.signOut()
-    }
-}
-
 // MARK: - #3 Token Refresh Tests
 
 @MainActor
@@ -143,122 +101,37 @@ final class AuthStoreTokenRefreshTests: XCTestCase {
     }
 }
 
-// MARK: - #212 Recovery-Code Rate Limiting Tests
+// MARK: - #211 Account Recovery Token Expiry Tests
 
 @MainActor
-final class AuthStoreRecoveryRateLimitTests: XCTestCase {
+final class AuthStoreRecoveryExpiryTests: XCTestCase {
 
-    enum FakeError: Error, LocalizedError {
-        case invalidCode
-        var errorDescription: String? { "invalid recovery code" }
-    }
-
-    private func makeFailingStore() -> AuthStore {
+    func test_recoverAccess_expiredRecoveryProof_surfacesClearError_notDeadEnd() async {
         let store = AuthStore()
-        store.linkAdditionalPasskey = { _, _ in throw FakeError.invalidCode }
-        store.passkeyAuthenticate = { AuthToken(token: "unused", expiresAt: Date()) }
-        return store
-    }
-
-    func test_recoverAccess_failure_incrementsFailureCount() async {
-        let store = makeFailingStore()
-
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        XCTAssertEqual(store.recoveryFailureCount, 1)
-
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        XCTAssertEqual(store.recoveryFailureCount, 2)
-    }
-
-    func test_recoverAccess_below3Failures_notBlocked() async {
-        let store = makeFailingStore()
-
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-
-        XCTAssertFalse(store.isRecoveryBlocked)
-    }
-
-    func test_recoverAccess_at3Failures_startsCooldown() async {
-        let store = makeFailingStore()
-
-        for _ in 1...3 {
-            await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
+        store.linkAdditionalPasskey = { _, _ in
+            throw APIError.serverError("Your recovery code has expired. Please request a new one.")
         }
+        var authenticateCallCount = 0
+        store.passkeyAuthenticate = { authenticateCallCount += 1; return AuthToken(token: "t", expiresAt: Date()) }
 
-        XCTAssertTrue(store.isRecoveryBlocked, "After 3 failures recovery submission should be blocked")
-        XCTAssertEqual(store.recoveryCooldownSecondsRemaining, 30)
+        await store.recoverAccess(email: "user@example.com", backupCode: "123456", username: "alice")
+
+        XCTAssertFalse(store.isAuthenticated)
+        XCTAssertEqual(store.error?.message, "Your recovery code has expired. Please request a new one.",
+                       "The user must see the specific expiry reason, not a generic failure (#211)")
+        XCTAssertEqual(authenticateCallCount, 0,
+                       "A failed recovery link must not proceed to authenticate with the never-linked passkey")
     }
 
-    func test_recoverAccess_whileBlocked_doesNotAttemptLink() async {
-        let store = makeFailingStore()
-        for _ in 1...3 {
-            await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        }
-        XCTAssertTrue(store.isRecoveryBlocked, "Precondition: should be blocked after 3 failures")
+    func test_recoverAccess_success_authenticatesAfterLinking() async {
+        let store = AuthStore()
+        store.linkAdditionalPasskey = { _, _ in "new-credential-id" }
+        store.passkeyAuthenticate = { AuthToken(token: "t", expiresAt: Date().addingTimeInterval(3_600)) }
 
-        var linkCallCount = 0
-        store.linkAdditionalPasskey = { _, _ in linkCallCount += 1; throw FakeError.invalidCode }
+        await store.recoverAccess(email: "user@example.com", backupCode: "123456", username: "alice")
 
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-
-        XCTAssertEqual(linkCallCount, 0, "A blocked recovery attempt must not call the backend")
-    }
-
-    func test_recoverAccess_success_resetsFailureCount() async {
-        let store = makeFailingStore()
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        await store.recoverAccess(email: "a@b.com", backupCode: "wrong", username: "alice")
-        XCTAssertEqual(store.recoveryFailureCount, 2, "Precondition: two prior failures recorded")
-
-        store.linkAdditionalPasskey = { _, _ in "credential-id" }
-        await store.recoverAccess(email: "a@b.com", backupCode: "correct", username: "alice")
-
-        XCTAssertEqual(store.recoveryFailureCount, 0, "A successful recovery must reset the failure counter")
-        XCTAssertFalse(store.isRecoveryBlocked)
+        XCTAssertTrue(store.isAuthenticated)
+        XCTAssertNil(store.error)
         await store.signOut()
-    }
-}
-
-// MARK: - #214 Last-Remaining-Passkey Sign-Out Warning Tests
-
-@MainActor
-final class AuthStoreLastRemainingPasskeyTests: XCTestCase {
-
-    func test_isLastRemainingPasskey_onlyOneCredential_returnsTrue() async {
-        let store = AuthStore()
-        store.fetchExistingCredentialCount = { 1 }
-
-        let isLast = await store.isLastRemainingPasskey()
-
-        XCTAssertTrue(isLast)
-    }
-
-    func test_isLastRemainingPasskey_noCredentials_returnsTrue() async {
-        let store = AuthStore()
-        store.fetchExistingCredentialCount = { 0 }
-
-        let isLast = await store.isLastRemainingPasskey()
-
-        XCTAssertTrue(isLast, "Zero registered credentials is at least as risky as exactly one")
-    }
-
-    func test_isLastRemainingPasskey_multipleCredentials_returnsFalse() async {
-        let store = AuthStore()
-        store.fetchExistingCredentialCount = { 2 }
-
-        let isLast = await store.isLastRemainingPasskey()
-
-        XCTAssertFalse(isLast)
-    }
-
-    func test_isLastRemainingPasskey_lookupFails_defaultsToFalse() async {
-        enum FakeError: Error { case offline }
-        let store = AuthStore()
-        store.fetchExistingCredentialCount = { throw FakeError.offline }
-
-        let isLast = await store.isLastRemainingPasskey()
-
-        XCTAssertFalse(isLast, "A failed lookup must not block sign-out")
     }
 }
