@@ -1,0 +1,98 @@
+name: Certificate Pin Expiry Monitor
+
+# #273: Alert with 90-day lead time when a pinned certificate is approaching expiry,
+# giving enough runway for:
+#   - Generating a new certificate and computing its SPKI pin
+#   - Shipping an app update (iOS review: ~1 week, Android review: ~3 days)
+#   - Server-side certificate rotation
+#   - Removing the old pin in a follow-up release
+#
+# Run on a daily schedule plus on-demand dispatch for pre-release checks.
+on:
+  schedule:
+    # 08:00 UTC daily — early enough to catch alerts before the work day in most timezones.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      warn_days:
+        description: 'Days ahead to warn (default: 90)'
+        required: false
+        default: '90'
+
+defaults:
+  run:
+    working-directory: .
+
+jobs:
+  check-cert-expiry:
+    name: Check Pinned Certificate Expiry
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The monitoring script needs openssl and Python's ssl module (stdlib).
+      # Both are available on ubuntu-latest without additional installation.
+      - name: Verify openssl is available
+        run: openssl version
+
+      # Run the expiry check script. The script:
+      #   1. Reads pinned SPKI hashes from both iOS Info.plist files and Android
+      #      CertificatePinning.kt (falling back to BuildConfig ETHOS_CERT_PINS).
+      #   2. Connects to the live API endpoint and fetches the full certificate chain.
+      #   3. Computes the SPKI SHA-256 for each certificate in the chain.
+      #   4. For each certificate whose SPKI matches a pinned hash, checks the
+      #      expiry date and emits a ::warning:: annotation when expiry is within
+      #      WARN_DAYS days, and a ::error:: annotation when within 14 days.
+      #
+      # Exit codes:
+      #   0 — all pinned certs expire more than WARN_DAYS from today (or no live certs matched)
+      #   1 — at least one pinned cert expires within WARN_DAYS (a ::warning:: is emitted)
+      #       The step is allowed to succeed (continue-on-error: true) so the warning
+      #       shows up as an annotation without breaking CI entirely. The intent is to
+      #       alert the team, not block merges.
+      - name: Check certificate expiry
+        continue-on-error: true
+        env:
+          WARN_DAYS: ${{ github.event.inputs.warn_days || '90' }}
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+          API_HOST: api.ethos-protocol.app
+          API_PORT: '443'
+        run: |
+          python3 .github/scripts/check_cert_expiry.py \
+            --host "$API_HOST" \
+            --port "$API_PORT" \
+            --warn-days "$WARN_DAYS" \
+            --ios-plist "ios/EthosProtocol/EthosProtocol/Info.plist" \
+            --ios-plist "ios/EthosProtocol/TTLWidget/Info.plist" \
+            --android-source "android/app/src/main/java/com/ethosprotocol/api/CertificatePinning.kt"
+
+      # Always upload the JSON report so the history is available in Actions artifacts
+      # even when the step above continues-on-error.
+      - name: Upload expiry report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cert-expiry-report-${{ github.run_id }}
+          path: cert-expiry-report.json
+          if-no-files-found: ignore
+
+      # On the daily schedule, if the check step above exited non-zero (meaning a cert
+      # is approaching expiry), post a summary to the workflow so it appears in the
+      # Actions tab and in any Slack/email notification integrations watching this repo.
+      - name: Summarise expiry status
+        if: always()
+        run: |
+          if [ -f cert-expiry-report.json ]; then
+            echo "## Certificate Pin Expiry Report" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat cert-expiry-report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No expiry report generated (API host may be unreachable in this environment)." >> "$GITHUB_STEP_SUMMARY"
+          fi

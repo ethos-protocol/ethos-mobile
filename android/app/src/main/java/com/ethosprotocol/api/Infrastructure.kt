@@ -16,6 +16,7 @@ import java.time.Instant
 import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.concurrent.withLock
 
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
@@ -43,6 +44,11 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     // fighting Hilt's @Inject constructor resolution.
     internal var maxCacheBytes: Long = DEFAULT_MAX_CACHE_BYTES
 
+    // ReentrantReadWriteLock: multiple concurrent reads are fine (readLock), but writes
+    // (save / evictIfNeeded) and clear() require exclusive access (writeLock) to prevent
+    // torn writes where a concurrent reader sees a partially-written cache file (#244).
+    private val lock = java.util.concurrent.locks.ReentrantReadWriteLock()
+
     // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
     // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
     // since its resolution varies across filesystems/devices and would make eviction order
@@ -58,27 +64,33 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     }
 
     fun save(key: String, json: String) {
-        val fileName = key.sha256()
-        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = json)
-        File(dir, fileName).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
-        touch(fileName)
-        evictIfNeeded()
+        lock.writeLock().withLock {
+            val fileName = key.sha256()
+            val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = json)
+            File(dir, fileName).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
+            touch(fileName)
+            evictIfNeeded()
+        }
     }
 
     fun load(key: String): CacheEnvelope? {
-        val fileName = key.sha256()
-        val envelope = runCatching {
-            Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
-        }.getOrNull()
-        if (envelope != null) touch(fileName)
-        return envelope
+        lock.readLock().withLock {
+            val fileName = key.sha256()
+            val envelope = runCatching {
+                Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
+            }.getOrNull()
+            if (envelope != null) touch(fileName)
+            return envelope
+        }
     }
 
     // Wipes every cached entry, e.g. on sign-out so the next user's device doesn't retain a
     // previous account's vault data offline.
     fun clear() {
-        dir.listFiles()?.forEach { it.delete() }
-        accessOrder.clear()
+        lock.writeLock().withLock {
+            dir.listFiles()?.forEach { it.delete() }
+            accessOrder.clear()
+        }
     }
 
     private fun touch(fileName: String) {
@@ -86,6 +98,7 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     }
 
     private fun evictIfNeeded() {
+        // Called only from within a writeLock block — no additional locking needed here.
         var totalSize = dir.listFiles()?.sumOf { it.length() } ?: 0L
         if (totalSize <= maxCacheBytes) return
         val leastRecentlyUsed = synchronized(accessOrder) { accessOrder.keys.toList() }

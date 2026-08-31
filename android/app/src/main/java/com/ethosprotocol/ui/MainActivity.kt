@@ -242,7 +242,14 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(onVaultClick = { vaultId -> navController.navigate("vault-history/$vaultId") })
+            }
+            // #217: vault activity history — distinct route shape ("vault-history/…"
+            // rather than "vault/{vaultId}/history") so it can't collide with the
+            // existing "vault/{vaultId}/{action}" deep-link action route below.
+            composable("vault-history/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                VaultHistoryScreen(vaultId = vaultId, onBack = { navController.popBackStack() })
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

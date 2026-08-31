@@ -12,10 +12,20 @@ data class Vault(
     @SerialName("check_in_interval") val checkInInterval: Long,
     @SerialName("last_check_in") val lastCheckIn: String,
     @SerialName("ttl_remaining") val ttlRemaining: Long? = null,
-    val status: VaultStatus
+    val status: VaultStatus,
+    // Optional owner-set display name (#218). Null until set via
+    // ApiClient.updateVaultLabel. Absent on the wire (every vault created
+    // before this shipped) deserializes to null like any other missing
+    // optional field.
+    val label: String? = null
 ) {
     val isExpiringSoon: Boolean get() = (ttlRemaining ?: Long.MAX_VALUE) < 86_400L
     val formattedBalance: String get() = "%.7f XLM".format(balance / 10_000_000.0)
+
+    // Display name for list/detail UI (#218): the user-set label if present,
+    // else a truncated id — never the raw full ID, which is unwieldy at a
+    // glance across many vaults.
+    val displayName: String get() = label ?: id.take(12)
 }
 
 // A single real-time event delivered over the `wss://.../ws?vault_id={id}` socket
@@ -55,7 +65,8 @@ data class BeneficiaryUpdateRequest(val beneficiary: String)
 @Serializable
 data class PushRegistration(
     val token: String,
-    val platform: String = "android"
+    val platform: String = "android",
+    val locale: String = java.util.Locale.getDefault().toLanguageTag()
 )
 
 @Serializable
@@ -71,6 +82,27 @@ data class PasskeyRegisterRequest(
     // `public_key` is the WebAuthn COSE_Key (RFC 9052) extracted from the attestation
     // object's authData, base64url-encoded — not the raw CBOR attestation object.
     // See shared/api-contract.md's PasskeyRegisterRequest (#1) section.
+    @SerialName("public_key") val publicKey: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
+
+// One of possibly several passkeys registered to the authenticated account (#206, #207) —
+// an account is not limited to a single credential, so this is always modeled as a list
+// (`List<PasskeyCredential>`), never a lone value.
+@Serializable
+data class PasskeyCredential(
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("device_label") val deviceLabel: String? = null,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("last_used_at") val lastUsedAt: String? = null
+)
+
+// #207: sent to POST /auth/credentials to add a passkey to the *currently authenticated*
+// account — same shape as PasskeyRegisterRequest, but routed through the authenticated
+// endpoint rather than /auth/register (new account) or /auth/recovery/complete (recovery).
+@Serializable
+data class AddPasskeyRequest(
+    @SerialName("credential_id") val credentialId: String,
     @SerialName("public_key") val publicKey: String,
     @SerialName("client_data_json") val clientDataJson: String
 )
@@ -148,3 +180,93 @@ data class VaultPage(
     @SerialName("next_cursor") val nextCursor: String? = null,
     @SerialName("has_more") val hasMore: Boolean
 )
+
+// #216: configurable threshold for the "large withdrawal" confirmation step —
+// a single tunable knob rather than a literal scattered across call sites.
+object WithdrawalThreshold {
+    /** Percentage of the vault's balance (basis points, 10_000 = 100%) at or
+     *  above which a withdrawal is considered "large" and prompts an extra
+     *  confirmation step. Defaults to 80%. */
+    const val LARGE_WITHDRAWAL_BPS = 8_000
+}
+
+/**
+ * Whether [amount] is large enough relative to [vaultBalance] to warrant an
+ * extra confirmation step before withdrawing (#216) — reduces fat-finger risk
+ * on a product holding funds meant for a beneficiary. [thresholdBps] is the
+ * percentage of the vault's balance (basis points, 10_000 = 100%) at or above
+ * which the warning triggers; a parameter rather than hardcoded here so it
+ * can be tuned via [WithdrawalThreshold] without touching call sites.
+ */
+fun isLargeWithdrawal(amount: Long, vaultBalance: Long, thresholdBps: Int): Boolean {
+    if (vaultBalance <= 0 || amount <= 0) return false
+    val ratio = amount.toDouble() / vaultBalance.toDouble()
+    return ratio * 10_000 >= thresholdBps
+}
+
+// #217: A single past action against a vault (check-in, deposit, withdrawal,
+// beneficiary change, creation). See api-contract.md §VaultHistoryEvent.
+@Serializable
+data class VaultHistoryEvent(
+    @SerialName("event_type") val eventType: String,
+    val timestamp: String,
+    // Present for deposit/withdrawal (stroops), null otherwise.
+    val amount: Long? = null,
+    // Present only for beneficiary_changed (the new beneficiary), null otherwise.
+    val beneficiary: String? = null
+) {
+    val displayTitle: String get() = when (eventType) {
+        "check_in" -> "Checked In"
+        "deposit" -> "Deposit"
+        "withdrawal" -> "Withdrawal"
+        "beneficiary_changed" -> "Beneficiary Changed"
+        "created" -> "Vault Created"
+        else -> eventType
+    }
+}
+
+// #217: A page of vault history events, mirroring VaultPage's cursor pattern.
+@Serializable
+data class VaultHistoryPage(
+    val events: List<VaultHistoryEvent>,
+    @SerialName("next_cursor") val nextCursor: String? = null,
+    @SerialName("has_more") val hasMore: Boolean = false
+)
+
+// #218: request body for setting/clearing a vault's display label.
+@Serializable
+data class VaultLabelUpdateRequest(val label: String?)
+
+// #219: status filter chips for the vault list.
+enum class VaultListFilter(val label: String) {
+    ALL("All"),
+    ACTIVE("Active"),
+    EXPIRING_SOON("Expiring Soon"),
+    EXPIRED("Expired");
+
+    fun matches(vault: Vault): Boolean = when (this) {
+        ALL -> true
+        ACTIVE -> vault.status == VaultStatus.active
+        EXPIRING_SOON -> vault.status == VaultStatus.active && vault.isExpiringSoon
+        EXPIRED -> vault.status == VaultStatus.expired
+    }
+}
+
+/**
+ * Client-side search/filter over an already-fetched vault list (#219) — works
+ * across every page already pulled into [VaultUiState.vaults], since it's a
+ * pure filter over that list rather than a server request.
+ *
+ * Filters by [statusFilter], then by [searchText] matched case-insensitively
+ * against the vault's label (if set) or id. Blank [searchText] (after
+ * trimming) matches everything.
+ */
+fun filterVaults(vaults: List<Vault>, searchText: String, statusFilter: VaultListFilter): List<Vault> {
+    val statusFiltered = vaults.filter { statusFilter.matches(it) }
+    val trimmed = searchText.trim()
+    if (trimmed.isEmpty()) return statusFiltered
+    return statusFiltered.filter { vault ->
+        vault.id.contains(trimmed, ignoreCase = true) ||
+            (vault.label?.contains(trimmed, ignoreCase = true) ?: false)
+    }
+}

@@ -63,6 +63,20 @@ anonymous).
 - Physical device attacks (e.g., extracting data from a lost/stolen unlocked device)
 - Known issues already listed in public issue tracker
 
+### Client-Side Diagnostic Logging
+
+To help support triage "passkey sign-in doesn't work" reports, both mobile clients log a small
+amount of diagnostic data when a passkey **registration** attempt fails:
+
+- Authenticator attachment type (e.g. `platform`)
+- WebAuthn attestation statement format (`fmt`, e.g. `packed`, `none`, `android-safetynet`)
+- A short, non-sensitive failure reason (e.g. `registrationFailed`, `notInteractive`)
+
+**Never logged:** public key material, signatures, challenge bytes, credential IDs, or any other
+part of the raw attestation object/response. User-initiated cancellations are not logged. This log
+is kept in memory on-device only (iOS: `PasskeyDiagnosticsLogger`, Android:
+`PasskeyRegistrationDiagnostics`) and is not transmitted anywhere automatically.
+
 ### Safe Harbor
 
 We will not pursue legal action against researchers who discover and report vulnerabilities in good
