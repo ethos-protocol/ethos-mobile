@@ -52,6 +52,9 @@ The server must:
 | POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
 | POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
 | POST | `/auth/recover/link` | Link a new passkey to an existing account, once identity is proven via email/backup code ("lost your device" recovery) |
+| GET | `/auth/credentials` | List the authenticated account's registered passkey credentials (#206) |
+| POST | `/auth/credentials` | Register an additional passkey to the *currently authenticated* account (#207) — distinct from `/auth/recover/link`, which is for a signed-out user proving identity via recovery instead |
+| DELETE | `/auth/credentials/{credential_id}` | Revoke a registered passkey credential (#206). The server rejects revoking the credential used to authenticate the current session. |
 
 ### Vaults
 | Method | Path | Description |
@@ -63,7 +66,9 @@ The server must:
 | POST | `/vaults/{id}/deposit` | Deposit funds |
 | POST | `/vaults/{id}/withdraw` | Withdraw funds |
 | POST | `/vaults/{id}/beneficiary` | Update vault beneficiary (owner-only) |
+| POST | `/vaults/{id}/label` | Set or clear vault display label (owner-only, #218) |
 | GET | `/vaults/{id}/ttl` | Get TTL remaining |
+| GET | `/vaults/{id}/history` | List vault activity history (paginated — see §Pagination) (#217) |
 | POST | `/vaults/{id}/accept` | Beneficiary accepts vault (token required — see §Beneficiary Acceptance) |
 
 #### List Pagination (`GET /vaults`)
@@ -87,6 +92,12 @@ Response headers:
 
 Cursors are opaque — clients must not parse or construct them, only round-trip
 the value returned by `X-Next-Cursor` back as the `cursor` query param.
+
+#### History Pagination (`GET /vaults/{id}/history`, #217)
+
+Reuses the exact same `cursor`/`limit` query params and `X-Next-Cursor` response
+header described above for `GET /vaults` — the body is a bare JSON array of
+`VaultHistoryEvent` (see §Models), newest first.
 
 ### Notifications
 | Method | Path | Description |
@@ -330,9 +341,13 @@ GET /vaults?limit={n}&after={cursor}
   "check_in_interval": 0,
   "last_check_in": "ISO8601",
   "ttl_remaining": 0,
-  "status": "active|expired|released|paused"
+  "status": "active|expired|released|paused",
+  "label": "string | null"
 }
 ```
+`label` (#218) is an optional, owner-set display name — `null` until the owner sets one via
+`POST /vaults/{id}/label`. Clients fall back to a truncated `id` when it's absent (see
+`VaultRowView`/`VaultCard`).
 
 ### VaultPage (#112 — paginated list response)
 ```json
@@ -342,6 +357,19 @@ GET /vaults?limit={n}&after={cursor}
   "has_more": false
 }
 ```
+
+### VaultHistoryEvent (#217)
+```json
+{
+  "event_type": "check_in|deposit|withdrawal|beneficiary_changed|created",
+  "timestamp": "ISO8601",
+  "amount": 0,
+  "beneficiary": "string | null"
+}
+```
+One entry per past vault action, newest first (see §History Pagination). `amount` is
+present for `deposit`/`withdrawal` (stroops), `null` otherwise. `beneficiary` is present
+only for `beneficiary_changed` (the new beneficiary address), `null` otherwise.
 
 ### AuthChallenge
 ```json
@@ -394,11 +422,42 @@ normal WebAuthn registration ceremony against a `/auth/challenge` obtained for t
 account) rather than issuing a session directly. Clients call `POST /auth/verify`
 afterwards to authenticate with the newly linked passkey.
 
+### PasskeyCredential (#206, #207)
+```json
+{
+  "credential_id": "base64url",
+  "device_label": "string | null",
+  "created_at": "ISO8601",
+  "last_used_at": "ISO8601 | null"
+}
+```
+Returned as a JSON array by `GET /auth/credentials`, and as a single object by
+`POST /auth/credentials` (the newly-added credential). `device_label` is server-assigned
+(e.g. derived from the WebAuthn ceremony's client platform) and may be `null` if the server
+can't determine one. An account can have more than one `PasskeyCredential` — clients must
+model this as a list, not a single credential (#207).
+
+### AddPasskeyRequest (#207)
+```json
+{ "credential_id": "base64url", "public_key": "base64url", "client_data_json": "base64url" }
+```
+Same shape as `PasskeyRegisterRequest`, sent to `POST /auth/credentials` with the current
+session's `Authorization: Bearer <jwt>` header rather than through `/auth/register` (which
+is only for creating a brand-new account) or `/auth/recover/link` (which requires recovery
+proof for a signed-out user). Response: `PasskeyCredential`.
+
 ### BeneficiaryUpdateRequest
 ```json
 { "beneficiary": "string" }
 ```
 Response: the updated `Vault` object (see above), reflecting the new `beneficiary` value.
+
+### VaultLabelUpdateRequest (#218)
+```json
+{ "label": "string | null" }
+```
+`null` (or omitting the field) clears an existing label back to unset. Response: the
+updated `Vault` object, reflecting the new `label` value.
 
 ### BeneficiaryAcceptRequest (#109)
 ```json

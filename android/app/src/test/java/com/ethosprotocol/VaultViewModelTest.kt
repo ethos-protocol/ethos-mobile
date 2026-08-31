@@ -319,6 +319,39 @@ class VaultViewModelTest {
         assertFalse(vm.state.value.beneficiaryUpdated)
     }
 
+    // #218: label update mirrors updateBeneficiary's flag-and-reload pattern.
+    @Test
+    fun `updateLabel success sets labelUpdated and reloads vaults`() = runTest {
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        val labeled = v1.copy(label = "Emergency Fund")
+        coEvery { apiClient.updateVaultLabel("v1", "Emergency Fund") } returns ApiResult.Success(labeled)
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(labeled), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", "Emergency Fund")
+
+        coVerify { apiClient.updateVaultLabel("v1", "Emergency Fund") }
+        assertTrue(vm.state.value.labelUpdated)
+        assertEquals("Emergency Fund", vm.state.value.vaults.first().label)
+    }
+
+    @Test
+    fun `updateLabel with null clears the label`() = runTest {
+        val v1 = makeVault("v1").copy(label = "Old Label")
+        coEvery { apiClient.updateVaultLabel("v1", null) } returns ApiResult.Success(v1.copy(label = null))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1.copy(label = null)), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", null)
+
+        coVerify { apiClient.updateVaultLabel("v1", null) }
+        assertNull(vm.state.value.vaults.first().label)
+    }
+
     @Test
     fun `updateBeneficiary error sets error message`() = runTest {
         coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.Error("Server error", 500)

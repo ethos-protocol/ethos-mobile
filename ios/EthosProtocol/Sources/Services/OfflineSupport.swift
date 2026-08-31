@@ -46,9 +46,16 @@ final class NetworkMonitor {
 /// Simple disk-based cache for offline reads. Entries are timestamped so callers can surface
 /// staleness ("as of 3 days ago") and so entries older than `maxAge` can be treated as absent.
 /// Bounded to `maxBytes` total via LRU eviction (least-recently-*loaded* entry evicted first).
+///
+/// Thread safety: a concurrent DispatchQueue with barrier writes serialises all mutations
+/// (save / delete / clearAll) while allowing concurrent reads via queue.sync without a barrier.
+/// This prevents torn writes when two widget instances or background tasks race to update
+/// different cache keys simultaneously (#244).
 final class OfflineCache {
     static let shared = OfflineCache()
     private let dir: URL
+    /// Concurrent queue: barrier writes for mutations, shared reads for loads.
+    private let queue = DispatchQueue(label: "com.ethosprotocol.OfflineCache", attributes: .concurrent)
 
     /// Entries older than this are treated as absent by `load(for:)`/`age(for:)`. `nil`
     /// (the default) disables expiry enforcement — staleness is still tracked and can be
@@ -66,26 +73,32 @@ final class OfflineCache {
     }
 
     func save(_ data: Data, for key: String) {
-        let file = dataFile(for: key)
-        try? data.write(to: file)
-        try? Date().timeIntervalSince1970.description.data(using: .utf8)?.write(to: metaFile(for: key))
-        enforceSizeCap()
+        queue.sync(flags: .barrier) {
+            let file = dataFile(for: key)
+            try? data.write(to: file)
+            try? Date().timeIntervalSince1970.description.data(using: .utf8)?.write(to: metaFile(for: key))
+            enforceSizeCap()
+        }
     }
 
     func load(for key: String) -> Data? {
-        guard !isExpired(key) else { return nil }
-        let file = dataFile(for: key)
-        guard let data = try? Data(contentsOf: file) else { return nil }
-        // Bump the entry's mtime so it's treated as recently used for LRU eviction, without
-        // touching the separate `.meta` timestamp `age(for:)` reports — a cache hit shouldn't
-        // reset how stale the underlying data actually is.
-        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
-        return data
+        queue.sync {
+            guard !isExpired(key) else { return nil }
+            let file = dataFile(for: key)
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            // Bump the entry's mtime so it's treated as recently used for LRU eviction, without
+            // touching the separate `.meta` timestamp `age(for:)` reports — a cache hit shouldn't
+            // reset how stale the underlying data actually is.
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+            return data
+        }
     }
 
     func delete(for key: String) {
-        try? FileManager.default.removeItem(at: dataFile(for: key))
-        try? FileManager.default.removeItem(at: metaFile(for: key))
+        queue.sync(flags: .barrier) {
+            try? FileManager.default.removeItem(at: dataFile(for: key))
+            try? FileManager.default.removeItem(at: metaFile(for: key))
+        }
     }
 
     /// Timestamp the entry for `key` was cached, or nil if no entry exists.
@@ -103,8 +116,10 @@ final class OfflineCache {
     /// Removes every cached entry. Called on sign-out so a subsequent user on the same
     /// device can't be served the previous user's cached vault data while offline.
     func clearAll() {
-        try? FileManager.default.removeItem(at: dir)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        queue.sync(flags: .barrier) {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
     }
 
     private func isExpired(_ key: String) -> Bool {
