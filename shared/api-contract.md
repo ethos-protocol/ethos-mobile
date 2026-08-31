@@ -52,6 +52,9 @@ The server must:
 | POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
 | POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
 | POST | `/auth/recover/link` | Link a new passkey to an existing account, once identity is proven via email/backup code ("lost your device" recovery) |
+| GET | `/auth/credentials` | List the authenticated account's registered passkey credentials (#206) |
+| POST | `/auth/credentials` | Register an additional passkey to the *currently authenticated* account (#207) — distinct from `/auth/recover/link`, which is for a signed-out user proving identity via recovery instead |
+| DELETE | `/auth/credentials/{credential_id}` | Revoke a registered passkey credential (#206). The server rejects revoking the credential used to authenticate the current session. |
 
 ### Vaults
 | Method | Path | Description |
@@ -382,6 +385,30 @@ before attaching the new passkey (`credential_id`/`public_key`/`client_data_json
 normal WebAuthn registration ceremony against a `/auth/challenge` obtained for this
 account) rather than issuing a session directly. Clients call `POST /auth/verify`
 afterwards to authenticate with the newly linked passkey.
+
+### PasskeyCredential (#206, #207)
+```json
+{
+  "credential_id": "base64url",
+  "device_label": "string | null",
+  "created_at": "ISO8601",
+  "last_used_at": "ISO8601 | null"
+}
+```
+Returned as a JSON array by `GET /auth/credentials`, and as a single object by
+`POST /auth/credentials` (the newly-added credential). `device_label` is server-assigned
+(e.g. derived from the WebAuthn ceremony's client platform) and may be `null` if the server
+can't determine one. An account can have more than one `PasskeyCredential` — clients must
+model this as a list, not a single credential (#207).
+
+### AddPasskeyRequest (#207)
+```json
+{ "credential_id": "base64url", "public_key": "base64url", "client_data_json": "base64url" }
+```
+Same shape as `PasskeyRegisterRequest`, sent to `POST /auth/credentials` with the current
+session's `Authorization: Bearer <jwt>` header rather than through `/auth/register` (which
+is only for creating a brand-new account) or `/auth/recover/link` (which requires recovery
+proof for a signed-out user). Response: `PasskeyCredential`.
 
 ### BeneficiaryUpdateRequest
 ```json

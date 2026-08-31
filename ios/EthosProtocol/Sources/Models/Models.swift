@@ -244,6 +244,18 @@ struct AccountRecoveryProof: Codable {
     let backupCode: String
 }
 
+/// One of possibly several passkeys registered to the authenticated account (#206, #207) —
+/// an account is not limited to a single credential, so this is always modeled as a list
+/// (`[PasskeyCredential]`), never a lone value.
+struct PasskeyCredential: Codable, Identifiable, Equatable {
+    let credentialId: String
+    let deviceLabel: String?
+    let createdAt: Date
+    let lastUsedAt: Date?
+
+    var id: String { credentialId }
+}
+
 struct PushRegistration: Codable {
     let token: String
     let platform: String  // "ios" | "android"

@@ -149,6 +149,35 @@ public final class APIClient {
         let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
     }
 
+    // MARK: - Passkey Credentials (#206, #207)
+
+    /// Registers an additional passkey to the *currently authenticated* account (#207),
+    /// using the existing session's Bearer token — distinct from `linkAdditionalPasskey`,
+    /// which is for a signed-out user proving identity via account recovery instead.
+    func addPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws -> PasskeyCredential {
+        let body = ["credential_id": credentialID,
+                    "public_key": publicKey,
+                    "client_data_json": clientDataJSON]
+        return try await post(path: "/auth/credentials", body: body)
+    }
+
+    /// Lists the authenticated account's registered passkey credentials (#206) — an account
+    /// is not limited to one, so this always returns a list.
+    func listCredentials() async throws -> [PasskeyCredential] {
+        try await get(path: "/auth/credentials")
+    }
+
+    /// Revokes a registered passkey credential (#206), e.g. after it's lost or compromised.
+    func revokeCredential(credentialID: String) async throws {
+        var req = request(path: "/auth/credentials/\(credentialID)")
+        req.httpMethod = "DELETE"
+        // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"

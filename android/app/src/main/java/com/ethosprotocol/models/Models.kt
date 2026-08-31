@@ -86,6 +86,27 @@ data class PasskeyRegisterRequest(
     @SerialName("client_data_json") val clientDataJson: String
 )
 
+// One of possibly several passkeys registered to the authenticated account (#206, #207) —
+// an account is not limited to a single credential, so this is always modeled as a list
+// (`List<PasskeyCredential>`), never a lone value.
+@Serializable
+data class PasskeyCredential(
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("device_label") val deviceLabel: String? = null,
+    @SerialName("created_at") val createdAt: String,
+    @SerialName("last_used_at") val lastUsedAt: String? = null
+)
+
+// #207: sent to POST /auth/credentials to add a passkey to the *currently authenticated*
+// account — same shape as PasskeyRegisterRequest, but routed through the authenticated
+// endpoint rather than /auth/register (new account) or /auth/recovery/complete (recovery).
+@Serializable
+data class AddPasskeyRequest(
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("public_key") val publicKey: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
+
 // MARK: - Account Recovery ("lost your device?")
 //
 // Shared contract with iOS's #5: initiate() sends a recovery code to the account's
