@@ -21,6 +21,9 @@ import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.Verify2FAResponse
+import com.ethosprotocol.models.Switch2FARequest
+import com.ethosprotocol.models.BackupCodesResponse
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PasskeyException
 import com.ethosprotocol.services.PasskeyService
@@ -302,7 +305,15 @@ data class TwoFactorUiState(
     val status: TwoFactorStatus? = null,
     // #119: Client-side rate limiting for OTP verification attempts.
     val otpFailureCount: Int = 0,
-    val otpCooldownSeconds: Int = 0
+    val otpCooldownSeconds: Int = 0,
+    // #224: Backup codes shown once immediately after initial TOTP setup.
+    val backupCodes: List<String> = emptyList(),
+    val showBackupCodes: Boolean = false,
+    // #225: Set when a method-switch flow is in progress.
+    val switchResponse: Enable2FAResponse? = null,
+    // #226: Set to true after verify when the user opted in to "remember this device".
+    val deviceTrustToken: String? = null,
+    val deviceTrustExpiresAt: String? = null
 ) {
     val isOtpBlocked: Boolean get() = otpCooldownSeconds > 0
 }
@@ -358,17 +369,32 @@ class TwoFactorViewModel @Inject constructor(
         }
     }
 
-    fun verify2FA(vaultId: String, otp: String) = viewModelScope.launch {
+    fun verify2FA(vaultId: String, otp: String, trustDevice: Boolean = false) = viewModelScope.launch {
         if (_state.value.isOtpBlocked) return@launch
         _state.update { it.copy(isLoading = true, error = null) }
-        val req = Verify2FARequest(otp = otp)
+        val req = Verify2FARequest(otp = otp, trustDevice = trustDevice)
         when (val result = apiClient.verify2FA(vaultId, req)) {
             is ApiResult.Success -> {
                 // #119: Reset rate-limiting state on success (#172: including the persisted copy)
                 cancelCooldown()
                 clearPersistedRateLimitState()
-                _state.update { it.copy(verified = true, isLoading = false,
-                    otpFailureCount = 0, otpCooldownSeconds = 0) }
+                val response = result.data
+
+                // #226: Persist the trust token in state so the screen layer can store it securely.
+                val baseUpdate = _state.value.copy(
+                    verified = true, isLoading = false,
+                    otpFailureCount = 0, otpCooldownSeconds = 0,
+                    deviceTrustToken = response.deviceTrustToken,
+                    deviceTrustExpiresAt = response.expiresAt
+                )
+                _state.value = baseUpdate
+
+                // #224: Generate backup codes immediately after a successful initial TOTP setup
+                // (detected by setupResponse being present and method == totp).
+                val isInitialTotpSetup = _state.value.setupResponse?.method == TwoFactorMethod.totp
+                if (isInitialTotpSetup) {
+                    generateBackupCodesInternal(vaultId)
+                }
             }
             is ApiResult.Error -> {
                 val newCount = _state.value.otpFailureCount + 1
@@ -381,6 +407,59 @@ class TwoFactorViewModel @Inject constructor(
                 _state.update { it.copy(isLoading = false, error = "No network") }
             }
         }
+    }
+
+    // MARK: - #224 Backup Codes
+
+    /** Generates 8 fresh one-time backup codes; called automatically after initial TOTP setup. */
+    fun generateBackupCodes(vaultId: String) = viewModelScope.launch {
+        generateBackupCodesInternal(vaultId)
+    }
+
+    private suspend fun generateBackupCodesInternal(vaultId: String) {
+        _state.update { it.copy(isLoading = true) }
+        when (val result = apiClient.generateBackupCodes(vaultId)) {
+            is ApiResult.Success -> _state.update {
+                it.copy(isLoading = false, backupCodes = result.data.codes, showBackupCodes = true)
+            }
+            is ApiResult.Error -> _state.update {
+                // Non-fatal: codes can be regenerated later from settings.
+                it.copy(isLoading = false, showBackupCodes = false)
+            }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false) }
+        }
+    }
+
+    fun dismissBackupCodes() {
+        _state.update { it.copy(showBackupCodes = false, backupCodes = emptyList()) }
+    }
+
+    // MARK: - #225 Switch 2FA Method
+
+    /**
+     * Initiates a method switch without disabling the current method first.
+     * The new method is set up in a pending state; the old one remains active
+     * until [verify2FA] confirms the new one — no gap in protection.
+     */
+    fun switch2FAMethod(
+        vaultId: String,
+        newMethod: TwoFactorMethod,
+        phone: String?,
+        email: String?
+    ) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        val req = Switch2FARequest(newMethod = newMethod, phone = phone, email = email)
+        when (val result = apiClient.switch2FAMethod(vaultId, req)) {
+            is ApiResult.Success -> _state.update {
+                it.copy(switchResponse = result.data, isLoading = false)
+            }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun clearSwitchResponse() {
+        _state.update { it.copy(switchResponse = null) }
     }
 
     fun disable2FA(vaultId: String) = viewModelScope.launch {

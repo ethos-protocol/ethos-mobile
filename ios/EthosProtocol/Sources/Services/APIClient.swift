@@ -281,8 +281,9 @@ public final class APIClient {
         return try await post(path: "/vaults/\(vaultID)/2fa/enable", body: body)
     }
 
-    func verify2FA(vaultID: String, otp: String) async throws {
-        let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/2fa/verify", body: Verify2FARequest(otp: otp))
+    /// #226: `trustDevice` opt-in — when true the server returns a device trust token.
+    func verify2FA(vaultID: String, otp: String, trustDevice: Bool = false) async throws -> Verify2FAResponse {
+        try await post(path: "/vaults/\(vaultID)/2fa/verify", body: Verify2FARequest(otp: otp, trustDevice: trustDevice))
     }
 
     func disable2FA(vaultID: String) async throws {
@@ -295,6 +296,38 @@ public final class APIClient {
 
     func clear2FASession(vaultID: String) async throws {
         let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/2fa/session/clear", body: EmptyBody())
+    }
+
+    // MARK: - #226 Trust Device
+
+    /// Stores a device trust token on the server; call immediately after a successful verify2FA
+    /// when the user opted in to "remember this device". The returned token is persisted
+    /// in the Keychain and sent as X-Device-Trust-Token on subsequent sensitive requests.
+    func trustDevice(vaultID: String) async throws -> TrustDeviceResponse {
+        try await post(path: "/vaults/\(vaultID)/2fa/trust-device", body: TrustDeviceRequest(trustDevice: true))
+    }
+
+    // MARK: - #224 Backup Codes
+
+    /// Generates a new set of 8 one-time backup codes (invalidates any previous set).
+    /// Codes are shown exactly once — the server stores only hashes thereafter.
+    func generateBackupCodes(vaultID: String) async throws -> BackupCodesResponse {
+        try await post(path: "/vaults/\(vaultID)/2fa/backup-codes/generate", body: EmptyBody())
+    }
+
+    /// Returns whether backup codes exist and how many remain (never the code values themselves).
+    func getBackupCodesStatus(vaultID: String) async throws -> BackupCodesStatus {
+        try await get(path: "/vaults/\(vaultID)/2fa/backup-codes/status")
+    }
+
+    // MARK: - #225 Switch 2FA Method
+
+    /// Atomically initiates a method switch: sets up the new method in a pending state
+    /// and returns provisioning info. The old method remains active until verify2FA
+    /// confirms the new one — the account is never left without 2FA protection.
+    func switch2FAMethod(vaultID: String, newMethod: TwoFactorMethod, phone: String? = nil, email: String? = nil) async throws -> Enable2FAResponse {
+        let body = Switch2FARequest(newMethod: newMethod, phone: phone, email: email)
+        return try await post(path: "/vaults/\(vaultID)/2fa/switch", body: body)
     }
 
     // MARK: - Push Notifications

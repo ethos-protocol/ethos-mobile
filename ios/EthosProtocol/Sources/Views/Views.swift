@@ -526,6 +526,7 @@ struct VaultDetailView: View {
     @State private var biometricError: String?
     @State private var show2FASetup = false
     @State private var show2FAVerify = false
+    @State private var show2FASwitch = false
     @State private var twoFactorStatus: TwoFactorStatus?
     @State private var twoFactorLoadError: String?
     @State private var showDeposit = false
@@ -573,6 +574,10 @@ struct VaultDetailView: View {
                         LabeledContent("Verified", value: status.verified ? "Yes" : "No")
                         if !status.verified {
                             Button("Verify Now") { show2FAVerify = true }
+                        }
+                        // #225: Switch method without disabling first.
+                        if status.availableMethods.count > 1 {
+                            Button("Switch Method") { show2FASwitch = true }
                         }
                         Button("Disable 2FA", role: .destructive) { disable2FA() }
                     } else {
@@ -639,7 +644,11 @@ struct VaultDetailView: View {
             }
         }
         .sheet(isPresented: $show2FASetup) {
-            TwoFactorSetupView(vaultID: vault.id)
+            // #227: Pass available methods so setup only offers what the server allows.
+            TwoFactorSetupView(
+                vaultID: vault.id,
+                availableMethods: twoFactorStatus?.availableMethods ?? TwoFactorMethod.allCases
+            )
         }
         .sheet(isPresented: $show2FAVerify) {
             TwoFactorVerifyView(
@@ -649,6 +658,16 @@ struct VaultDetailView: View {
                 secret: nil,
                 onVerified: { Task { await load2FAStatus() } }
             )
+        }
+        // #225: Switch method sheet — new method set up before old one is torn down.
+        .sheet(isPresented: $show2FASwitch) {
+            if let status = twoFactorStatus, let currentMethod = status.method {
+                TwoFactorSwitchView(
+                    vaultID: vault.id,
+                    currentMethod: currentMethod,
+                    availableMethods: status.availableMethods
+                )
+            }
         }
         .sheet(isPresented: $showDeposit) {
             DepositView(vault: vault)
@@ -1109,6 +1128,8 @@ struct TwoFactorSetupView: View {
     @State private var isSettingUp = false
     @State private var error: String?
     @State private var setupComplete = false
+    /// #227: Available methods from TwoFactorStatus; defaults to all until known.
+    var availableMethods: [TwoFactorMethod] = TwoFactorMethod.allCases
 
     var body: some View {
         NavigationStack {
@@ -1123,8 +1144,9 @@ struct TwoFactorSetupView: View {
             } else {
                 Form {
                     Section("Authentication Method") {
+                        // #227: Only show methods the server reports as available.
                         Picker("Method", selection: $selectedMethod) {
-                            ForEach(TwoFactorMethod.allCases, id: \.self) { method in
+                            ForEach(availableMethods, id: \.self) { method in
                                 Text(methodLabel(method)).tag(method)
                             }
                         }
@@ -1158,6 +1180,12 @@ struct TwoFactorSetupView: View {
                     }
                 }
                 .overlay { if isSettingUp { ProgressView() } }
+                .onAppear {
+                    // #227: Default to first available method if totp is unavailable.
+                    if !availableMethods.contains(selectedMethod), let first = availableMethods.first {
+                        selectedMethod = first
+                    }
+                }
             }
         }
         .interactiveDismissDisabled(setupComplete == false)
@@ -1209,6 +1237,12 @@ struct TwoFactorVerifyView: View {
     @State private var otp = ""
     @State private var isVerifying = false
     @State private var error: String?
+    /// #226: "Remember this device for 30 days" opt-in.
+    @State private var trustDevice = false
+    /// #224: Shown only during initial TOTP setup.
+    @State private var backupCodes: [String] = []
+    @State private var showBackupCodes = false
+    @State private var isGeneratingBackupCodes = false
 
     // #119: Escalating cooldown after repeated OTP failures. State is persisted
     // (#171), so dismissing and re-presenting this view resumes any cooldown in
@@ -1220,6 +1254,16 @@ struct TwoFactorVerifyView: View {
     }
 
     var body: some View {
+        if showBackupCodes {
+            backupCodesView
+        } else {
+            verifyInputView
+        }
+    }
+
+    // MARK: - OTP entry view
+
+    private var verifyInputView: some View {
         VStack(spacing: 24) {
             Image(systemName: iconName)
                 .font(.system(size: 56))
@@ -1266,6 +1310,18 @@ struct TwoFactorVerifyView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // #226: Trust-device opt-in checkbox.
+            Toggle(isOn: $trustDevice) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remember this device")
+                        .font(.subheadline)
+                    Text("Skip 2FA on this device for 30 days")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal)
+
             if let error { Text(error).foregroundStyle(.red).font(.caption) }
 
             Button(action: verify) {
@@ -1277,6 +1333,53 @@ struct TwoFactorVerifyView: View {
         }
         .padding(32)
         .navigationTitle("Verify 2FA")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        }
+    }
+
+    // MARK: - #224 Backup codes display view
+
+    private var backupCodesView: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "key.2.on.ring.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text("Save Your Backup Codes").font(.title.bold())
+            Text("Store these codes somewhere safe. Each code can be used once if you lose your authenticator app. They will not be shown again.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .font(.callout)
+            if isGeneratingBackupCodes {
+                ProgressView("Generating codes…")
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    ForEach(backupCodes, id: \.self) { code in
+                        Text(code)
+                            .font(.system(.body, design: .monospaced).bold())
+                            .padding(8)
+                            .frame(maxWidth: .infinity)
+                            .background(Color(.secondarySystemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                .padding(.horizontal)
+            }
+            Button(action: { UIPasteboard.general.string = backupCodes.joined(separator: "\n") }) {
+                Label("Copy All Codes", systemImage: "doc.on.doc").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(backupCodes.isEmpty)
+            Button(action: { onVerified(); dismiss() }) {
+                Text("I've Saved My Codes").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(backupCodes.isEmpty && !isGeneratingBackupCodes)
+        }
+        .padding(32)
+        .navigationTitle("Backup Codes")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -1313,13 +1416,34 @@ struct TwoFactorVerifyView: View {
         isVerifying = true; error = nil
         Task {
             do {
-                try await APIClient.shared.verify2FA(vaultID: vaultID, otp: otp)
-                rateLimiter.reset()   // #119: Reset on success
-                onVerified()
-                dismiss()
+                // #226: Pass trust-device preference; handle optional token in response.
+                let response = try await APIClient.shared.verify2FA(vaultID: vaultID, otp: otp, trustDevice: trustDevice)
+                rateLimiter.reset()   // #119
+
+                // #226: Persist trust token if server issued one.
+                if trustDevice, let token = response.deviceTrustToken, let expiry = response.expiresAt {
+                    KeychainService.shared.saveTrustToken(token, vaultID: vaultID, expiresAt: expiry)
+                }
+
+                // #224: Generate and display backup codes on initial TOTP setup.
+                if method == .totp && isInitialSetup {
+                    isGeneratingBackupCodes = true
+                    showBackupCodes = true
+                    do {
+                        let codesResponse = try await APIClient.shared.generateBackupCodes(vaultID: vaultID)
+                        backupCodes = codesResponse.codes
+                    } catch {
+                        // Non-fatal: user can regenerate later from vault settings.
+                        backupCodes = []
+                    }
+                    isGeneratingBackupCodes = false
+                } else {
+                    onVerified()
+                    dismiss()
+                }
             } catch {
                 self.error = error.localizedDescription
-                rateLimiter.recordFailure()   // #119: Record failure and possibly start cooldown
+                rateLimiter.recordFailure()   // #119
             }
             isVerifying = false
         }

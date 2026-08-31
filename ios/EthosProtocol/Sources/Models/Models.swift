@@ -272,6 +272,9 @@ enum TwoFactorMethod: String, Codable, CaseIterable {
     case email
 }
 
+/// #227: `availableMethods` lists the methods the server accepts for this account.
+/// Clients filter the method-selection UI to only what is listed here.
+/// Decoded defensively: absent field (older server) defaults to all three methods.
 struct TwoFactorStatus: Codable {
     let vaultId: String
     let enabled: Bool
@@ -279,6 +282,39 @@ struct TwoFactorStatus: Codable {
     let verified: Bool
     let phone: String?
     let email: String?
+    /// #227: Methods the server currently makes available for this account/vault.
+    let availableMethods: [TwoFactorMethod]
+
+    init(
+        vaultId: String,
+        enabled: Bool,
+        method: TwoFactorMethod?,
+        verified: Bool,
+        phone: String?,
+        email: String?,
+        availableMethods: [TwoFactorMethod] = TwoFactorMethod.allCases
+    ) {
+        self.vaultId = vaultId
+        self.enabled = enabled
+        self.method = method
+        self.verified = verified
+        self.phone = phone
+        self.email = email
+        self.availableMethods = availableMethods
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        vaultId = try container.decode(String.self, forKey: .vaultId)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        method = try container.decodeIfPresent(TwoFactorMethod.self, forKey: .method)
+        verified = try container.decodeIfPresent(Bool.self, forKey: .verified) ?? false
+        phone = try container.decodeIfPresent(String.self, forKey: .phone)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        // #227: Default to all methods when the server doesn't send this field (backward-compat).
+        availableMethods = try container.decodeIfPresent([TwoFactorMethod].self, forKey: .availableMethods)
+            ?? TwoFactorMethod.allCases
+    }
 }
 
 struct Enable2FARequest: Codable {
@@ -294,8 +330,58 @@ struct Enable2FAResponse: Codable {
     let provisioningUri: String?
 }
 
+/// #226: `trustDevice` opt-in — when true the server issues a device trust token valid 30 days.
 struct Verify2FARequest: Codable {
     let otp: String
+    let trustDevice: Bool
+
+    init(otp: String, trustDevice: Bool = false) {
+        self.otp = otp
+        self.trustDevice = trustDevice
+    }
+}
+
+/// #226: Response when `trust_device: true` — carries the opaque trust token and its expiry.
+struct Verify2FAResponse: Codable {
+    let deviceTrustToken: String?
+    let expiresAt: Date?
+}
+
+// MARK: - #226 Trusted-Device Models
+
+struct TrustDeviceRequest: Codable {
+    let trustDevice: Bool
+}
+
+struct TrustDeviceResponse: Codable {
+    let deviceTrustToken: String
+    let expiresAt: Date
+}
+
+// MARK: - #224 Backup Codes Models
+
+struct BackupCodesResponse: Codable {
+    let codes: [String]
+    let generatedAt: Date
+}
+
+struct BackupCodesStatus: Codable {
+    let generated: Bool
+    let remainingCount: Int
+}
+
+// MARK: - #225 Switch 2FA Method Models
+
+struct Switch2FARequest: Codable {
+    let newMethod: TwoFactorMethod
+    let phone: String?
+    let email: String?
+
+    init(newMethod: TwoFactorMethod, phone: String? = nil, email: String? = nil) {
+        self.newMethod = newMethod
+        self.phone = phone
+        self.email = email
+    }
 }
 
 // MARK: - Pagination Models (#112)

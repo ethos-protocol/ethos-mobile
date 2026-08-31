@@ -6,6 +6,7 @@ import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Verify2FARequest
+import com.ethosprotocol.models.Verify2FAResponse
 import com.ethosprotocol.ui.TwoFactorViewModel
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -58,7 +59,7 @@ class TwoFactorViewModelTest {
 
     @Test
     fun `verify2FA success sets verified true and clears loading`() = runTest {
-        coEvery { apiClient.verify2FA("v1", any()) } returns ApiResult.Success(Unit)
+        coEvery { apiClient.verify2FA("v1", any()) } returns ApiResult.Success(Verify2FAResponse())
 
         vm.verify2FA("v1", "123456")
 
@@ -91,7 +92,7 @@ class TwoFactorViewModelTest {
 
     @Test
     fun `verify2FA passes correct OTP in request`() = runTest {
-        coEvery { apiClient.verify2FA("v1", Verify2FARequest("654321")) } returns ApiResult.Success(Unit)
+        coEvery { apiClient.verify2FA("v1", Verify2FARequest("654321")) } returns ApiResult.Success(Verify2FAResponse())
 
         vm.verify2FA("v1", "654321")
 

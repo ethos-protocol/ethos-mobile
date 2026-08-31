@@ -139,6 +139,11 @@ data class RecoveryCompleteRequest(
 @Serializable
 enum class TwoFactorMethod { totp, sms, email }
 
+/**
+ * #227: `availableMethods` lists the 2FA methods the server accepts for this account/vault.
+ * Clients must filter the method-selection UI to only what is listed here.
+ * Decoded defensively: absent field (older server) defaults to all three methods.
+ */
 @Serializable
 data class TwoFactorStatus(
     @SerialName("vault_id") val vaultId: String,
@@ -146,7 +151,9 @@ data class TwoFactorStatus(
     val method: TwoFactorMethod? = null,
     val verified: Boolean = false,
     val phone: String? = null,
-    val email: String? = null
+    val email: String? = null,
+    /** #227: Methods available for this account. Defaults to all when the server omits the field. */
+    @SerialName("available_methods") val availableMethods: List<TwoFactorMethod> = TwoFactorMethod.values().toList()
 )
 
 @Serializable
@@ -164,8 +171,53 @@ data class Enable2FAResponse(
     @SerialName("provisioning_uri") val provisioningUri: String? = null
 )
 
+/** #226: `trustDevice` opt-in — when true the server issues a device trust token valid 30 days. */
 @Serializable
-data class Verify2FARequest(val otp: String)
+data class Verify2FARequest(
+    val otp: String,
+    @SerialName("trust_device") val trustDevice: Boolean = false
+)
+
+/** #226: Response after verify; carries optional device trust token when opt-in was true. */
+@Serializable
+data class Verify2FAResponse(
+    @SerialName("device_trust_token") val deviceTrustToken: String? = null,
+    @SerialName("expires_at") val expiresAt: String? = null
+)
+
+// MARK: - #226 Trusted-Device Models
+
+@Serializable
+data class TrustDeviceRequest(@SerialName("trust_device") val trustDevice: Boolean = true)
+
+@Serializable
+data class TrustDeviceResponse(
+    @SerialName("device_trust_token") val deviceTrustToken: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+// MARK: - #224 Backup Codes Models
+
+@Serializable
+data class BackupCodesResponse(
+    val codes: List<String>,
+    @SerialName("generated_at") val generatedAt: String
+)
+
+@Serializable
+data class BackupCodesStatus(
+    val generated: Boolean,
+    @SerialName("remaining_count") val remainingCount: Int
+)
+
+// MARK: - #225 Switch 2FA Method Models
+
+@Serializable
+data class Switch2FARequest(
+    @SerialName("new_method") val newMethod: TwoFactorMethod,
+    val phone: String? = null,
+    val email: String? = null
+)
 
 // #109: Beneficiary acceptance request body.
 // The token is parsed from the accept deep-link URL query parameter and is
