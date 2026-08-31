@@ -1,11 +1,41 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  #200: Legacy Auto Backup rules for API < 31 (superseded by data_extraction_rules.xml
-  on API 31+, but android:fullBackupContent is still required for older devices).
-  Only the non-secret VaultAssociationStore preferences file is backed up.
+    #271 — Belt-and-suspenders backup exclusion rules.
+
+    android:allowBackup="false" in AndroidManifest.xml is the primary guard that
+    prevents Auto Backup from uploading any app data to Google Drive. These rules
+    provide a secondary layer: if allowBackup is ever inadvertently changed to
+    "true" during a future manifest merge, this file ensures that
+    EncryptedSharedPreferences (used for auth tokens and session state) and any
+    other sensitive data directories are still explicitly excluded.
+
+    Reference: https://developer.android.com/guide/topics/data/autobackup
 -->
 <full-backup-content>
-    <include domain="sharedpref" path="vault_associations_sync.xml" />
-    <exclude domain="sharedpref" path="ttl_auth_secure.xml" />
-    <exclude domain="database" path="pending_actions.db" />
+    <!--
+        Exclude the entire shared_prefs directory. EncryptedSharedPreferences
+        stores session JWTs and 2FA state here. Even though the contents are
+        AES-256 encrypted, the key material lives in the Android Keystore and
+        cannot be restored on another device — so a restored backup would contain
+        ciphertext without its key, rendering the app unusable. Better to exclude
+        it entirely so the user sees a clean first-launch on a new device.
+    -->
+    <exclude domain="sharedpref" path="." />
+
+    <!--
+        Exclude the app's internal files directory, which may contain offline
+        cache entries (OfflineCache) keyed by SHA-256 URL hashes. Cache entries
+        hold the last successful GET response for vaults and auth state. They are
+        not secrets themselves, but excluding them prevents stale data from
+        appearing on a restored device (the user should see a fresh network fetch).
+    -->
+    <exclude domain="file" path="." />
+
+    <!--
+        Exclude the databases directory. Room/SQLite databases for PendingAction
+        and WorkManager state should not cross device boundaries — a restored
+        pending check-in from a different device could replay an outdated action
+        against the server.
+    -->
+    <exclude domain="database" path="." />
 </full-backup-content>

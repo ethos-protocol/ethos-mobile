@@ -1,117 +1,46 @@
 package com.ethosprotocol.models
 
 /**
- * Represents an optional Stellar memo attached to a beneficiary account.
+ * Validates Stellar "G..." account IDs (StrKey-encoded ed25519 public keys).
  *
- * Per SEP-0023 and Stellar documentation, memos enable proper fund routing for
- * exchanges and custodial wallets. Four types are supported:
- * - NONE: No memo (default)
- * - TEXT: Human-readable text, up to 28 UTF-8 bytes
- * - ID: Numeric memo ID, 0 to 2^64-1
- * - HASH: SHA-256 hash, exactly 32 bytes (64 hex chars)
- */
-sealed class StellarMemo {
-    object None : StellarMemo()
-    data class Text(val value: String) : StellarMemo()
-    data class ID(val value: Long) : StellarMemo()
-    data class Hash(val value: String) : StellarMemo() // 64-char hex string
-    
-    fun toDisplayString(): String = when (this) {
-        is None -> "(no memo)"
-        is Text -> "Text: $value"
-        is ID -> "ID: $value"
-        is Hash -> "Hash: ${value.take(16)}..."
-    }
-}
-
-object MemoValidator {
-    /**
-     * Validates a text memo (max 28 UTF-8 bytes).
-     */
-    fun isValidTextMemo(text: String): Boolean {
-        return text.toByteArray(Charsets.UTF_8).size <= 28
-    }
-    
-    /**
-     * Validates an ID memo (must be parseable as non-negative long).
-     */
-    fun isValidIDMemo(idStr: String): Boolean {
-        return try {
-            val value = idStr.toLong()
-            value >= 0
-        } catch (e: NumberFormatException) {
-            false
-        }
-    }
-    
-    /**
-     * Validates a hash memo (must be exactly 64 hex characters).
-     */
-    fun isValidHashMemo(hashHex: String): Boolean {
-        if (hashHex.length != 64) return false
-        return hashHex.all { it in "0123456789abcdefABCDEF" }
-    }
-}
-
-
- * Implements the algorithm specified in `shared/stellar-validation-spec.md` (#264, #113).
+ * Implements the 6-step algorithm specified in
+ * `shared/stellar-validation-spec.md` (#113, unifies Android #71 and iOS #22).
  * Dependency-free: no external Stellar SDK — only the checks the app needs.
  *
- * Public key structure per StrKey spec:
+ * Structure per the StrKey spec:
  *   byte[0]      : version byte 0x30 (= 6 shl 3, ed25519 public key)
  *   byte[1..32]  : 32-byte ed25519 public key payload
  *   byte[33..34] : CRC-16/XModem of byte[0..32], little-endian
- *   Base32-encoded → exactly 56 uppercase characters, always starting with "G"
- *
- * Muxed account structure per SEP-0023:
- *   byte[0]      : version byte 0x60 (= 12 shl 3, muxed ed25519 key)
- *   byte[1..32]  : 32-byte ed25519 public key payload (base account)
- *   byte[33..40] : 8-byte memo ID (big-endian)
- *   byte[41..42] : CRC-16/XModem of byte[0..40], little-endian
- *   Base32-encoded → exactly 69 uppercase characters, always starting with "M"
+ * Base32-encoded (RFC 4648, no padding) → exactly 56 uppercase characters, always starting with "G".
  */
 object StellarAddress {
 
     private val base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
     private val charToValue: Map<Char, Int> = base32Alphabet.mapIndexed { index, c -> c to index }.toMap()
     private const val ED25519_VERSION_BYTE: Byte = (6 shl 3).toByte() // 0x30 = 48
-    private const val MUXED_VERSION_BYTE: Byte = (12 shl 3).toByte() // 0x60 = 96
 
     /**
-     * Sanitizes a Stellar address by removing leading/trailing whitespace and
-     * common invisible characters before validation. Call this when accepting
-     * user input (especially from clipboard paste) before passing to [isValidPublicKey].
+     * #268: Returns `true` when [value] has the federation-address shape
+     * (`localpart*home.domain`). Federation addresses are common in wallet UIs
+     * but cannot be used directly — the resolved G… public key is required.
+     *
+     * Detection rule: exactly one `*` separating two non-empty substrings.
+     * This runs before [isValidPublicKey] so the UI can surface a specific
+     * explanation rather than a generic "invalid address" error.
      */
-    fun sanitize(input: String): String {
-        return input
-            .trim() // Remove leading/trailing whitespace
-            // Remove common invisible/zero-width characters
-            .replace("\u200B", "") // Zero-width space
-            .replace("\u200C", "") // Zero-width non-joiner
-            .replace("\u200D", "") // Zero-width joiner
-            .replace("\u200E", "") // Left-to-right mark
-            .replace("\u200F", "") // Right-to-left mark
+    fun isFederationAddress(value: String): Boolean {
+        val starIndex = value.indexOf('*')
+        if (starIndex < 0) return false          // no '*' at all
+        if (value.indexOf('*', starIndex + 1) >= 0) return false  // more than one '*'
+        val localPart = value.substring(0, starIndex)
+        val domain = value.substring(starIndex + 1)
+        return localPart.isNotEmpty() && domain.isNotEmpty()
     }
 
     /**
-     * Returns `true` if [value] is a syntactically valid Stellar address:
-     * - A public key (G-address, 56 chars, ed25519)
-     * - A muxed account (M-address, 69 chars, SEP-0023)
+     * Returns `true` if [value] is a syntactically valid Stellar ed25519 public
+     * key (StrKey format with correct CRC-16/XModem checksum).
      *
-     * Both formats are validated with CRC-16/XModem checksum verification.
-     *
-     * **Important:** Call [sanitize] on user input before passing to this function.
-     */
-    fun isValidPublicKey(value: String): Boolean {
-        return when {
-            value.length == 56 && value[0] == 'G' -> validatePublicKey(value)
-            value.length == 69 && value[0] == 'M' -> validateMuxedAccount(value)
-            else -> false
-        }
-    }
-
-    /**
-     * Validates a G-address (ed25519 public key, 56 chars).
      * Steps:
      * 1. Length must be exactly 56.
      * 2. First character must be 'G'.
@@ -120,7 +49,13 @@ object StellarAddress {
      * 5. Decoded byte[0] must equal version byte 0x30.
      * 6. CRC-16/XModem of decoded[0..32] must match decoded[33..34] (little-endian).
      */
-    private fun validatePublicKey(value: String): Boolean {
+    fun isValidPublicKey(value: String): Boolean {
+        // Step 1: length
+        if (value.length != 56) return false
+
+        // Step 2: prefix
+        if (value[0] != 'G') return false
+
         // Step 3: character set — all chars must be in [A-Z2-7]
         if (value.any { it !in charToValue }) return false
 
@@ -135,34 +70,6 @@ object StellarAddress {
         val payload = decoded.sliceArray(0 until 33)
         val expectedCrc = crc16XModem(payload)
         val actualCrc = (decoded[33].toInt() and 0xFF) or ((decoded[34].toInt() and 0xFF) shl 8)
-        return expectedCrc == actualCrc
-    }
-
-    /**
-     * Validates an M-address (muxed account, 69 chars, SEP-0023).
-     * Steps:
-     * 1. Length must be exactly 69.
-     * 2. First character must be 'M'.
-     * 3. All characters must be in [A-Z2-7] (RFC 4648 base32, no padding).
-     * 4. Base32-decode to 43 bytes.
-     * 5. Decoded byte[0] must equal version byte 0x60.
-     * 6. CRC-16/XModem of decoded[0..40] must match decoded[41..42] (little-endian).
-     */
-    private fun validateMuxedAccount(value: String): Boolean {
-        // Step 3: character set — all chars must be in [A-Z2-7]
-        if (value.any { it !in charToValue }) return false
-
-        // Step 4: base32 decode
-        val decoded = base32Decode(value) ?: return false
-        if (decoded.size != 43) return false
-
-        // Step 5: version byte
-        if (decoded[0] != MUXED_VERSION_BYTE) return false
-
-        // Step 6: CRC-16/XModem checksum (covers version byte, key, and memo ID)
-        val payload = decoded.sliceArray(0 until 41)
-        val expectedCrc = crc16XModem(payload)
-        val actualCrc = (decoded[41].toInt() and 0xFF) or ((decoded[42].toInt() and 0xFF) shl 8)
         return expectedCrc == actualCrc
     }
 

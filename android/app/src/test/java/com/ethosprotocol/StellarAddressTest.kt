@@ -350,4 +350,60 @@ class MemoValidatorTest {
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0"
         ))
     }
+
+    // -------------------------------------------------------------------------
+    // #268 Federation address detection
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `isFederationAddress detects simple user-star-domain pattern`() {
+        assertTrue(StellarAddress.isFederationAddress("alice*stellar.org"))
+    }
+
+    @Test
+    fun `isFederationAddress detects subdomain pattern`() {
+        assertTrue(StellarAddress.isFederationAddress("bob*wallet.example.com"))
+    }
+
+    @Test
+    fun `isFederationAddress detects numeric local part`() {
+        assertTrue(StellarAddress.isFederationAddress("123*domain.com"))
+    }
+
+    @Test
+    fun `isFederationAddress rejects raw G address`() {
+        assertFalse(
+            StellarAddress.isFederationAddress(
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+            )
+        )
+    }
+
+    @Test
+    fun `isFederationAddress rejects empty string`() {
+        assertFalse(StellarAddress.isFederationAddress(""))
+    }
+
+    @Test
+    fun `isFederationAddress rejects star with empty local part`() {
+        // "*domain.com" has an empty local part
+        assertFalse(StellarAddress.isFederationAddress("*domain.com"))
+    }
+
+    @Test
+    fun `isFederationAddress rejects star with empty domain`() {
+        // "user*" has an empty domain
+        assertFalse(StellarAddress.isFederationAddress("user*"))
+    }
+
+    @Test
+    fun `isFederationAddress rejects input with no star`() {
+        assertFalse(StellarAddress.isFederationAddress("nodomain"))
+    }
+
+    @Test
+    fun `isValidPublicKey rejects federation-address shaped input`() {
+        // Confirm the main validator also rejects it, so the UI disable-button path works.
+        assertFalse(StellarAddress.isValidPublicKey("alice*stellar.org"))
+    }
 }
