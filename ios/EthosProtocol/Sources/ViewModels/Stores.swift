@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import WidgetKit
 
 // Runs `mutation` only if the current Task hasn't been cancelled. Guards
 // @Published/@State writes that happen after an `await` — if whatever launched
@@ -315,6 +316,13 @@ final class VaultStore: ObservableObject {
     /// Whether a further page is available for VaultListView's "Load More".
     var hasMorePages: Bool { nextCursor != nil }
 
+    // #249: Injectable seam for the WidgetKit reload call — lets unit tests assert that
+    // reloadTimelines(ofKind:) fires without instantiating a real WidgetCenter.
+    // Production code leaves this as the default real WidgetCenter call.
+    var widgetReloader: (String) -> Void = { kind in
+        WidgetCenter.shared.reloadTimelines(ofKind: kind)
+    }
+
     private func updateQueuedIndicator() {
         queuedCheckInCount = PendingCheckInStore.shared.count
         queueAtCapacity = PendingCheckInStore.shared.isAtCapacity
@@ -483,6 +491,11 @@ final class VaultStore: ObservableObject {
             switch event {
             case .vaultUpdated(let updated):
                 self.applyUpdate(updated)
+                // #249: Nudge the widget to refresh immediately rather than waiting for its
+                // next scheduled timeline tick. Only reloads timelines when the app is in
+                // the foreground (the socket is only active then), so WidgetKit budget is
+                // not spent on background wakeups.
+                self.widgetReloader("TTLWidget")
             case .vaultExpired, .vaultReleased:
                 // Neither payload carries the full vault, and both change status (and, for
                 // a release, the balance) — refetch rather than patching fields locally.
