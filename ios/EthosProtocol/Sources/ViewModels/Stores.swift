@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import WidgetKit
 
 // Runs `mutation` only if the current Task hasn't been cancelled. Guards
 // @Published/@State writes that happen after an `await` — if whatever launched
@@ -43,6 +44,20 @@ final class AuthStore: ObservableObject {
     var linkAdditionalPasskey: (String, AccountRecoveryProof) async throws -> String = { username, proof in
         try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
     }
+    // #214: Used to warn before sign-out when this appears to be the account's only
+    // registered passkey — the same signal registration already uses to populate
+    // excludedCredentials.
+    var fetchExistingCredentialCount: () async throws -> Int = {
+        try await APIClient.shared.getChallenge().existingCredentialIds.count
+    }
+
+    // #212: Client-side rate limiting for recovery-code submission, reusing #119's
+    // escalating cooldown schedule — a recovery backup code is just as brute-forceable
+    // as an OTP.
+    @Published private(set) var recoveryFailureCount: Int = 0
+    @Published private(set) var recoveryCooldownSecondsRemaining: Int = 0
+    var isRecoveryBlocked: Bool { recoveryCooldownSecondsRemaining > 0 }
+    private var recoveryCooldownTask: Task<Void, Never>?
 
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
@@ -94,6 +109,7 @@ final class AuthStore: ObservableObject {
     /// authenticate() ceremony against the freshly-linked credential is what actually
     /// establishes the session, mirroring signIn().
     func recoverAccess(email: String, backupCode: String, username: String) async {
+        guard !isRecoveryBlocked else { return }
         isLoading = true; error = nil
         do {
             _ = try await linkAdditionalPasskey(username, AccountRecoveryProof(email: email, backupCode: backupCode))
@@ -103,10 +119,55 @@ final class AuthStore: ObservableObject {
                 isAuthenticated = true
                 scheduleRefresh(before: token.expiresAt)
             }
+            resetRecoveryRateLimit()
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
+            recordRecoveryFailure()
         }
         isLoading = false
+    }
+
+    // MARK: - Recovery rate limiting (#212)
+
+    private func recordRecoveryFailure() {
+        recoveryFailureCount += 1
+        let cooldown = OTPRateLimiter.cooldownSeconds(for: recoveryFailureCount)
+        guard cooldown > 0 else { return }
+        startRecoveryCooldown(seconds: cooldown)
+    }
+
+    private func resetRecoveryRateLimit() {
+        recoveryFailureCount = 0
+        recoveryCooldownSecondsRemaining = 0
+        recoveryCooldownTask?.cancel()
+        recoveryCooldownTask = nil
+    }
+
+    private func startRecoveryCooldown(seconds: Int) {
+        recoveryCooldownTask?.cancel()
+        recoveryCooldownSecondsRemaining = seconds
+        recoveryCooldownTask = Task { [weak self] in
+            for _ in 0..<seconds {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.tickRecoveryCooldown()
+            }
+        }
+    }
+
+    private func tickRecoveryCooldown() {
+        guard recoveryCooldownSecondsRemaining > 0 else { return }
+        recoveryCooldownSecondsRemaining -= 1
+    }
+
+    /// Whether this device's passkey appears to be the only one registered to the
+    /// account (#214). Callers should confirm with the user before signing out when
+    /// this is true — with no other device's passkey and no recovery already in hand,
+    /// signing out here could permanently lock them out of a vault holding real funds.
+    /// Best-effort: a failed lookup (e.g. offline) doesn't block sign-out, so it
+    /// defaults to `false` rather than trapping the user in the app.
+    func isLastRemainingPasskey() async -> Bool {
+        (try? await fetchExistingCredentialCount()).map { $0 <= 1 } ?? false
     }
 
     func signOut() async {
@@ -248,14 +309,23 @@ final class VaultStore: ObservableObject {
     /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
     /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
     @Published private(set) var queuedCheckInCount = 0
+    @Published private(set) var queueAtCapacity = false
 
     private var eventSocket: VaultEventSocket?
 
     /// Whether a further page is available for VaultListView's "Load More".
     var hasMorePages: Bool { nextCursor != nil }
 
+    // #249: Injectable seam for the WidgetKit reload call — lets unit tests assert that
+    // reloadTimelines(ofKind:) fires without instantiating a real WidgetCenter.
+    // Production code leaves this as the default real WidgetCenter call.
+    var widgetReloader: (String) -> Void = { kind in
+        WidgetCenter.shared.reloadTimelines(ofKind: kind)
+    }
+
     private func updateQueuedIndicator() {
         queuedCheckInCount = PendingCheckInStore.shared.count
+        queueAtCapacity = PendingCheckInStore.shared.isAtCapacity
     }
 
     func load() async {
@@ -337,11 +407,16 @@ final class VaultStore: ObservableObject {
             let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
             PendingCheckInStore.shared.insert(item)
             let count = PendingCheckInStore.shared.count
+            let atCapacity = PendingCheckInStore.shared.isAtCapacity
             NotificationService.shared.showQueuedCheckIn(count: count)
             CheckInSyncTask.shared.scheduleSync()
             ifNotCancelled {
                 queuedCheckInCount = count
-                self.error = ErrorPresentation(message: "Offline — check-in queued and will retry automatically")
+                queueAtCapacity = atCapacity
+                let message = atCapacity
+                    ? "Offline — queue is full (oldest check-in replaced). Will retry automatically."
+                    : "Offline — check-in queued and will retry automatically"
+                self.error = ErrorPresentation(message: message)
             }
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
@@ -383,6 +458,18 @@ final class VaultStore: ObservableObject {
         }
     }
 
+    /// Sets or clears (via `label: nil`) a vault's display label (#218), then
+    /// reloads the vault list so the new label shows up in VaultRowView.
+    func updateLabel(vault: Vault, label: String?) async {
+        error = nil
+        do {
+            _ = try await APIClient.shared.updateVaultLabel(vaultID: vault.id, label: label)
+            if !Task.isCancelled { await load() }
+        } catch {
+            ifNotCancelled { self.error = ErrorPresentation(error) }
+        }
+    }
+
     /// Replaces the vault matching `updated.id` in place (preserving list order), or
     /// appends it if it isn't currently in `vaults` — e.g. a vault created from another
     /// device that this session hasn't loaded yet.
@@ -404,6 +491,11 @@ final class VaultStore: ObservableObject {
             switch event {
             case .vaultUpdated(let updated):
                 self.applyUpdate(updated)
+                // #249: Nudge the widget to refresh immediately rather than waiting for its
+                // next scheduled timeline tick. Only reloads timelines when the app is in
+                // the foreground (the socket is only active then), so WidgetKit budget is
+                // not spent on background wakeups.
+                self.widgetReloader("TTLWidget")
             case .vaultExpired, .vaultReleased:
                 // Neither payload carries the full vault, and both change status (and, for
                 // a release, the balance) — refetch rather than patching fields locally.

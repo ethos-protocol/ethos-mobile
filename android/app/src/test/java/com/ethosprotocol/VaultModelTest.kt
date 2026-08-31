@@ -37,10 +37,28 @@ class VaultModelTest {
         assertEquals("0.0000000 XLM", vault.formattedBalance)
     }
 
-    private fun makeVault(balance: Long = 0L, ttlRemaining: Long? = null) = Vault(
-        id = "v1", owner = "GABC", beneficiary = "GXYZ",
+    // #218: display name prefers the label, falls back to a truncated ID.
+    @Test
+    fun `displayName with label returns label`() {
+        val vault = makeVault(id = "vault-1234567890abcdef", label = "Emergency Fund")
+        assertEquals("Emergency Fund", vault.displayName)
+    }
+
+    @Test
+    fun `displayName without label returns truncated id`() {
+        val vault = makeVault(id = "vault-1234567890abcdef")
+        assertEquals("vault-123456", vault.displayName)
+    }
+
+    private fun makeVault(
+        id: String = "v1",
+        balance: Long = 0L,
+        ttlRemaining: Long? = null,
+        label: String? = null
+    ) = Vault(
+        id = id, owner = "GABC", beneficiary = "GXYZ",
         balance = balance, checkInInterval = 2_592_000L,
         lastCheckIn = "2026-04-01T00:00:00Z", ttlRemaining = ttlRemaining,
-        status = VaultStatus.active
+        status = VaultStatus.active, label = label
     )
 }

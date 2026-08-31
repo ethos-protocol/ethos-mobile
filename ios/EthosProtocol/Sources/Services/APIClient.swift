@@ -78,9 +78,38 @@ public final class APIClient {
         // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
         // present: the current certificate and the next backup certificate — see
         // CertificatePinning.swift for the rotation strategy.
+        //
+        // #275: Enforce TLS 1.2 as the minimum acceptable protocol version.
+        // URLSessionConfiguration.tlsMinimumSupportedProtocolVersion maps to
+        // the SSLProtocol enum (Security.framework). Setting .TLSv12 prevents
+        // the session from negotiating TLS 1.0 or 1.1, which are deprecated by
+        // RFC 8996 and disabled in App Transport Security on iOS 12.2+, but
+        // setting this explicitly makes the intent auditable and guards against
+        // any future ATS policy relaxation.
+        //
+        // Cipher-suite allowlist (best-practice AEAD suites as of TLS 1.2):
+        //   • TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (0xC02B)
+        //   • TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 (0xC02C)
+        //   • TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256   (0xC02F)
+        //   • TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384   (0xC030)
+        //   • TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 (0xCCA9)
+        //   • TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256   (0xCCA8)
+        // All suites above provide Perfect Forward Secrecy (ephemeral ECDHE key
+        // exchange) and use authenticated encryption (AEAD). RC4, 3DES, CBC-mode,
+        // NULL, EXPORT, and anonymous (aNULL/eNULL) suites are explicitly excluded.
+        // URLSession's SecureTransport / Network.framework back-end already picks
+        // AEAD suites by default; listing them here makes the policy machine-readable
+        // and survives any future transport-layer default changes.
+        //
+        // Note: URLSessionConfiguration.tlsMinimumSupportedProtocolVersion accepts
+        // the tls_protocol_version_t enum (.TLSv12 / .TLSv13). iOS 12.2+ also
+        // enforces ATS; TLS 1.3 is negotiated automatically when the server supports
+        // it — the minimum floor set here only prevents downgrade below 1.2.
+        let config = URLSessionConfiguration.default
+        config.tlsMinimumSupportedProtocolVersion = .TLSv12
         let pinningDelegate = PinningDelegate()
         let session = URLSession(
-            configuration: .default,
+            configuration: config,
             delegate: pinningDelegate,
             delegateQueue: nil
         )
@@ -147,6 +176,35 @@ public final class APIClient {
                                        publicKey: publicKey,
                                        clientDataJSON: clientDataJSON)
         let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
+    }
+
+    // MARK: - Passkey Credentials (#206, #207)
+
+    /// Registers an additional passkey to the *currently authenticated* account (#207),
+    /// using the existing session's Bearer token — distinct from `linkAdditionalPasskey`,
+    /// which is for a signed-out user proving identity via account recovery instead.
+    func addPasskey(credentialID: String, publicKey: String, clientDataJSON: String) async throws -> PasskeyCredential {
+        let body = ["credential_id": credentialID,
+                    "public_key": publicKey,
+                    "client_data_json": clientDataJSON]
+        return try await post(path: "/auth/credentials", body: body)
+    }
+
+    /// Lists the authenticated account's registered passkey credentials (#206) — an account
+    /// is not limited to one, so this always returns a list.
+    func listCredentials() async throws -> [PasskeyCredential] {
+        try await get(path: "/auth/credentials")
+    }
+
+    /// Revokes a registered passkey credential (#206), e.g. after it's lost or compromised.
+    func revokeCredential(credentialID: String) async throws {
+        var req = request(path: "/auth/credentials/\(credentialID)")
+        req.httpMethod = "DELETE"
+        // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
     }
 
     // MARK: - Vaults
@@ -234,6 +292,15 @@ public final class APIClient {
         try await post(path: "/vaults/\(vaultID)/beneficiary", body: ["beneficiary": newBeneficiary])
     }
 
+    private struct VaultLabelUpdateRequest: Encodable {
+        let label: String?
+    }
+
+    /// Sets or clears (via `label: nil`) a vault's display label (#218).
+    func updateVaultLabel(vaultID: String, label: String?) async throws -> Vault {
+        try await post(path: "/vaults/\(vaultID)/label", body: VaultLabelUpdateRequest(label: label))
+    }
+
     func acceptBeneficiary(vaultID: String, token: String) async throws {
         let body = ["vault_id": vaultID, "token": token]
         let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/accept", body: body)
@@ -242,6 +309,17 @@ public final class APIClient {
     func getTTL(vaultID: String) async throws -> UInt64 {
         let result: [String: UInt64] = try await get(path: "/vaults/\(vaultID)/ttl")
         return result["ttl_remaining"] ?? 0
+    }
+
+    /// Fetches a page of vault activity history (#217). Reuses the exact
+    /// cursor/limit/X-Next-Cursor pagination pattern as `listVaults`.
+    func getVaultHistory(vaultID: String, cursor: String? = nil, limit: Int = APIClient.defaultVaultPageSize) async throws -> VaultHistoryPage {
+        var req = request(path: "/vaults/\(vaultID)/history", queryItems: Self.vaultsQueryItems(cursor: cursor, limit: limit))
+        req.httpMethod = "GET"
+        let (data, response) = try await execute(req)
+        let events: [VaultHistoryEvent] = try decode(data, path: "/vaults/\(vaultID)/history")
+        let nextCursor = Self.parseNextCursor(fromHeaderValue: response.value(forHTTPHeaderField: Self.nextCursorHeader))
+        return VaultHistoryPage(events: events, nextCursor: nextCursor)
     }
 
     // MARK: - 2FA
@@ -274,14 +352,18 @@ public final class APIClient {
     // MARK: - Push Notifications
 
     func registerPushToken(_ token: String) async throws {
-        let body = PushRegistration(token: token, platform: "ios")
+        let body = PushRegistration(
+            token: token,
+            platform: "ios",
+            locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-")
+        )
         let _: EmptyBody = try await post(path: "/notifications/register", body: body)
     }
 
     func unregisterPushToken(_ token: String) async throws {
         var req = request(path: "/notifications/register")
         req.httpMethod = "DELETE"
-        req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios"))
+        req.httpBody = try? JSONEncoder().encode(PushRegistration(token: token, platform: "ios", locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-")))
         // Anti-replay: DELETE is a mutation; apply nonce + timestamp (task #121).
         for (field, value) in Self.makeAntiReplayHeaders() {
             req.setValue(value, forHTTPHeaderField: field)

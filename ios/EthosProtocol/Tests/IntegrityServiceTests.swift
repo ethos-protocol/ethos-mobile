@@ -6,13 +6,18 @@ import XCTest
 /// Tests for `IntegrityService` jailbreak-detection heuristics.
 ///
 /// Each heuristic is tested in isolation by injecting controlled versions of the
-/// file-system, sandbox, environment, and fork checks. The `isJailbroken` computed
-/// property is covered by a stub that overrides all four checks.
+/// file-system, sandbox, environment, fork, tweak-dylib, and symlink checks. The
+/// `isJailbroken` computed property is covered by stubs that override all checks.
 ///
 /// Note: `isJailbroken` short-circuits to `false` in Simulator builds at compile
-/// time (`#if targetEnvironment(simulator)`), so the integration test below
-/// always passes in CI. The individual heuristic functions are tested directly
+/// time (`#if targetEnvironment(simulator)`), so the integration tests below
+/// always pass in CI. The individual heuristic functions are tested directly
 /// since they don't have the simulator guard.
+///
+/// Tests added in v1.1 (#272) cover:
+/// - `checkTweakDylibs` (Substitute / libhooker / Ellekit)
+/// - `checkSymlinkEscape` (/etc, /bin, /var/lib)
+/// - Extended `checkJailbreakPaths` (Dopamine, palera1n, unc0ver, Odyssey)
 final class IntegrityServiceTests: XCTestCase {
 
     // MARK: - Jailbreak path detection
@@ -48,6 +53,34 @@ final class IntegrityServiceTests: XCTestCase {
     func test_checkJailbreakPaths_aptPresent_returnsTrue() {
         let svc = IntegrityService.shared
         svc.fileExistenceChecker = { path in path == "/etc/apt" }
+        XCTAssertTrue(svc.checkJailbreakPaths())
+    }
+
+    // v1.1 (#272) — new jailbreak tool artefacts
+
+    func test_checkJailbreakPaths_dopamineVarJb_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/var/jb" }
+        XCTAssertTrue(svc.checkJailbreakPaths())
+    }
+
+    func test_checkJailbreakPaths_palera1nPreboot_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/private/preboot/tmp/jb" }
+        XCTAssertTrue(svc.checkJailbreakPaths())
+    }
+
+    func test_checkJailbreakPaths_unc0verVarLIB_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/var/LIB" }
+        XCTAssertTrue(svc.checkJailbreakPaths())
+    }
+
+    func test_checkJailbreakPaths_odysseyTweaksBundle_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in
+            path == "/private/var/containers/Bundle/tweaks"
+        }
         XCTAssertTrue(svc.checkJailbreakPaths())
     }
 
@@ -100,6 +133,70 @@ final class IntegrityServiceTests: XCTestCase {
         XCTAssertTrue(svc.checkFork())
     }
 
+    // MARK: - Tweak dylib detection (v1.1 #272)
+
+    func test_checkTweakDylibs_noDylibsPresent_returnsFalse() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { _ in false }
+        XCTAssertFalse(svc.checkTweakDylibs())
+    }
+
+    func test_checkTweakDylibs_substitutePresent_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/usr/lib/libsubstitute.dylib" }
+        XCTAssertTrue(svc.checkTweakDylibs())
+    }
+
+    func test_checkTweakDylibs_libhookerPresent_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/usr/lib/libhooker.dylib" }
+        XCTAssertTrue(svc.checkTweakDylibs())
+    }
+
+    func test_checkTweakDylibs_ellekitPresent_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/usr/lib/libellekit.dylib" }
+        XCTAssertTrue(svc.checkTweakDylibs())
+    }
+
+    func test_checkTweakDylibs_rootlessSubstitutePresent_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/var/jb/usr/lib/libsubstitute.dylib" }
+        XCTAssertTrue(svc.checkTweakDylibs())
+    }
+
+    func test_checkTweakDylibs_tweakInjectPresent_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/usr/lib/TweakInject.dylib" }
+        XCTAssertTrue(svc.checkTweakDylibs())
+    }
+
+    // MARK: - Symlink escape detection (v1.1 #272)
+
+    func test_checkSymlinkEscape_noSymlinks_returnsFalse() {
+        let svc = IntegrityService.shared
+        svc.symlinkChecker = { _ in false }
+        XCTAssertFalse(svc.checkSymlinkEscape())
+    }
+
+    func test_checkSymlinkEscape_etcIsSymlink_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.symlinkChecker = { path in path == "/etc" }
+        XCTAssertTrue(svc.checkSymlinkEscape())
+    }
+
+    func test_checkSymlinkEscape_binIsSymlink_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.symlinkChecker = { path in path == "/bin" }
+        XCTAssertTrue(svc.checkSymlinkEscape())
+    }
+
+    func test_checkSymlinkEscape_varLibIsSymlink_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.symlinkChecker = { path in path == "/var/lib" }
+        XCTAssertTrue(svc.checkSymlinkEscape())
+    }
+
     // MARK: - isJailbroken integration
 
     /// On a healthy device (all heuristics negative), `isJailbroken` must be `false`.
@@ -111,9 +208,10 @@ final class IntegrityServiceTests: XCTestCase {
         svc.sandboxWriteChecker = { false }
         svc.environmentChecker = { _ in nil }
         svc.forkChecker = { false }
+        svc.symlinkChecker = { _ in false }
 
         // In simulator builds the property short-circuits to false, so this test
-        // always passes in CI. On a real device it exercises all four heuristics.
+        // always passes in CI. On a real device it exercises all heuristics.
         XCTAssertFalse(svc.isJailbroken)
     }
 
@@ -123,8 +221,35 @@ final class IntegrityServiceTests: XCTestCase {
         svc.sandboxWriteChecker = { false }
         svc.environmentChecker = { _ in nil }
         svc.forkChecker = { false }
+        svc.symlinkChecker = { _ in false }
 
         // This will be true only on a device build; simulator always returns false.
+        #if !targetEnvironment(simulator)
+        XCTAssertTrue(svc.isJailbroken)
+        #endif
+    }
+
+    func test_isJailbroken_tweakDylibHeuristicFires_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { path in path == "/usr/lib/libsubstitute.dylib" }
+        svc.sandboxWriteChecker = { false }
+        svc.environmentChecker = { _ in nil }
+        svc.forkChecker = { false }
+        svc.symlinkChecker = { _ in false }
+
+        #if !targetEnvironment(simulator)
+        XCTAssertTrue(svc.isJailbroken)
+        #endif
+    }
+
+    func test_isJailbroken_symlinkEscapeHeuristicFires_returnsTrue() {
+        let svc = IntegrityService.shared
+        svc.fileExistenceChecker = { _ in false }
+        svc.sandboxWriteChecker = { false }
+        svc.environmentChecker = { _ in nil }
+        svc.forkChecker = { false }
+        svc.symlinkChecker = { path in path == "/etc" }
+
         #if !targetEnvironment(simulator)
         XCTAssertTrue(svc.isJailbroken)
         #endif
@@ -164,6 +289,17 @@ final class IntegrityServiceTests: XCTestCase {
             let pid = unsafeBitCast(sym, to: ForkFn.self)()
             if pid == 0 { exit(0) }
             return pid > 0
+        }
+        svc.symlinkChecker = { path in
+            guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: path)
+            else { return false }
+            let allowed: [String: String] = [
+                "/var": "/private/var",
+                "/tmp": "/private/tmp",
+                "/etc": "/private/etc",
+            ]
+            if let expected = allowed[path] { return !dest.hasPrefix(expected) }
+            return true
         }
     }
 }

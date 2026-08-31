@@ -116,19 +116,11 @@ class MainActivity : FragmentActivity() {
     }
 
     // Returns (vaultId, token) parsed from https://ethos-protocol.app/vaults/{id}/accept?token={token}.
-    // Both values are validated before use; null is returned if either is missing or invalid.
+    // Both values are validated by the parser; null is returned if either is missing or invalid.
     private fun extractBeneficiaryAccept(intent: Intent): Pair<String, String>? {
         val uri = intent.data ?: return null
-        if (uri.scheme != "https" || uri.host != "ethos-protocol.app") return null
-        val segments = uri.pathSegments
-        // Expect /vaults/{vaultId}/accept
-        if (segments.size != 3 || segments[0] != "vaults" || segments[2] != "accept") return null
-        val vaultId = segments[1].takeIf { VaultDeepLinkParser.isValidVaultId(it) } ?: return null
-        // Token is required — a missing or invalid token means the link is malformed.
-        val token = uri.getQueryParameter("token")
-            ?.takeIf { VaultDeepLinkParser.isValidVaultId(it) } // same allowlist: alphanum, dash, underscore
-            ?: return null
-        return vaultId to token
+        val link = VaultDeepLinkParser.parseBeneficiaryAccept(uri) ?: return null
+        return link.vaultId to link.token
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -220,7 +212,14 @@ private fun AppNavigation(
         NavHost(navController, startDestination = if (authState.isAuthenticated) "vaults" else "auth") {
             composable("auth") { AuthScreen(vm = authVm) }
             composable("vaults") {
-                VaultListScreen(onVaultClick = { /* navigate to detail */ })
+                VaultListScreen(onVaultClick = { vaultId -> navController.navigate("vault-history/$vaultId") })
+            }
+            // #217: vault activity history — distinct route shape ("vault-history/…"
+            // rather than "vault/{vaultId}/history") so it can't collide with the
+            // existing "vault/{vaultId}/{action}" deep-link action route below.
+            composable("vault-history/{vaultId}") { backStack ->
+                val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable
+                VaultHistoryScreen(vaultId = vaultId, onBack = { navController.popBackStack() })
             }
             composable("accept/{vaultId}/{token}") { backStack ->
                 val vaultId = backStack.arguments?.getString("vaultId") ?: return@composable

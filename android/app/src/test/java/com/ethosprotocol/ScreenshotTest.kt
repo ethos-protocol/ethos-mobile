@@ -279,3 +279,57 @@ private fun VaultDeepLinkCheckInPreview(darkTheme: Boolean) {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// Max font-scale snapshot — regression test for #281
+//
+// Renders VaultCard at fontScale=2.0 (equivalent to adb shell settings put
+// system font_scale 2.0) to guard against the truncated-ID / chip-row
+// clipping that the manual-QA checklist identified as a known risk area.
+// Both an expiring vault (shows the "Expiring soon!" row) and a normal active
+// vault are snapshotted so both clip-risk rows are covered.
+// ---------------------------------------------------------------------------
+
+class ScreenshotFontScaleTest {
+
+    @get:Rule
+    val paparazzi = Paparazzi(
+        deviceConfig = DeviceConfig.PIXEL_5.copy(
+            fontScale = 2.0f,
+            nightMode = NightMode.NOTNIGHT,
+            softButtons = false
+        )
+    )
+
+    /** ID/chip row + "Expiring soon!" row at 200 % font scale — must not clip. */
+    @Test fun vaultCard_expiringSoon_maxFontScale() {
+        paparazzi.snapshot { VaultCardFontScalePreview(expiringSoon = true) }
+    }
+
+    /** ID/chip row for a normal active vault at 200 % font scale. */
+    @Test fun vaultCard_active_maxFontScale() {
+        paparazzi.snapshot { VaultCardFontScalePreview(expiringSoon = false) }
+    }
+}
+
+@Composable
+private fun VaultCardFontScalePreview(expiringSoon: Boolean) {
+    // ttlRemaining <= 0 triggers isExpiringSoon on the Vault model.
+    val vault = Vault(
+        id = "vault-aabbccdd-1234",
+        owner = "GABC1234",
+        beneficiary = "GXYZ5678",
+        balance = 50_000_000L,
+        checkInInterval = 2_592_000L,
+        lastCheckIn = "2026-07-01T00:00:00Z",
+        ttlRemaining = if (expiringSoon) 0L else 172_800L,
+        status = com.ethosprotocol.models.VaultStatus.active
+    )
+    EthosProtocolTheme(darkTheme = false) {
+        com.ethosprotocol.ui.screens.VaultCard(
+            vault = vault,
+            onClick = {},
+            onCheckIn = {}
+        )
+    }
+}

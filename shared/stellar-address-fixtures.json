@@ -1,0 +1,96 @@
+{
+  "description": "Shared Stellar address validation test fixtures (SEP-0023 StrKey format)",
+  "tracking": "#113, #264 (unifies cross-platform test validation)",
+  "valid": {
+    "publicKeys": [
+      {
+        "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        "type": "public_key",
+        "description": "All-zero payload, valid CRC"
+      },
+      {
+        "address": "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX",
+        "type": "public_key",
+        "description": "Non-trivial payload, valid CRC"
+      },
+      {
+        "address": "GD6WNKTD7WDTPTGTOVFLBKLPIHMYZPBKBWUQHVL3OQQZZIJDX4GKCY5",
+        "type": "public_key",
+        "description": "Another valid key"
+      }
+    ],
+    "muxedAccounts": [
+      {
+        "address": "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ",
+        "type": "muxed_account",
+        "memoId": 0,
+        "baseAccount": "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+        "description": "Memo ID = 0, valid CRC"
+      },
+      {
+        "address": "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVAAAAAAAAAAAAAJLK",
+        "type": "muxed_account",
+        "memoId": 9223372036854775808,
+        "baseAccount": "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ",
+        "description": "Large memo ID (2^63), valid CRC"
+      }
+    ]
+  },
+  "invalid": [
+    {
+      "address": "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZA",
+      "type": "public_key",
+      "reason": "Valid format but wrong checksum (last char changed)"
+    },
+    {
+      "address": "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUR",
+      "type": "muxed_account",
+      "reason": "Valid format but wrong checksum (last char changed)"
+    },
+    {
+      "address": "MAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "type": "invalid",
+      "reason": "Too short for M-address (56 chars instead of 69)"
+    },
+    {
+      "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAW",
+      "type": "public_key",
+      "reason": "Too short (55 chars)"
+    },
+    {
+      "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "type": "public_key",
+      "reason": "Too long (57 chars)"
+    },
+    {
+      "address": "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQA",
+      "type": "muxed_account",
+      "reason": "Too long (70 chars)"
+    },
+    {
+      "address": "gaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaawhf",
+      "type": "public_key",
+      "reason": "Lowercase — not in base32 alphabet"
+    },
+    {
+      "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAA0AAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "type": "public_key",
+      "reason": "Contains 0 (not in base32 alphabet [A-Z2-7])"
+    },
+    {
+      "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAA1AAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "type": "public_key",
+      "reason": "Contains 1 (not in base32 alphabet)"
+    },
+    {
+      "address": "",
+      "type": "empty",
+      "reason": "Empty string"
+    },
+    {
+      "address": "not-a-stellar-address",
+      "type": "invalid",
+      "reason": "Invalid format"
+    }
+  ]
+}
