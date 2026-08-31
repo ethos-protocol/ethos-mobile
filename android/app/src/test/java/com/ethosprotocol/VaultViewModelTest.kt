@@ -8,6 +8,7 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.services.ConnectionState
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -17,9 +18,12 @@ import com.ethosprotocol.services.VaultEventSocket
 import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
@@ -43,7 +47,9 @@ class VaultViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        every { vaultEventSocket.events(any()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<String>()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<List<String>>()) } returns emptyFlow()
+        every { vaultEventSocket.connectionState } returns MutableStateFlow(ConnectionState.DISCONNECTED).asStateFlow()
         vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
     }
 
@@ -140,12 +146,12 @@ class VaultViewModelTest {
         vm.load()
 
         val refreshedV1 = v1.copy(lastCheckIn = "2026-05-01T00:00:00Z", ttlRemaining = 2_592_000L)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Success(Unit)
         coEvery { apiClient.getVault("v1") } returns ApiResult.Success(refreshedV1)
 
         vm.checkIn("v1")
 
-        coVerify { apiClient.checkIn("v1") }
+        coVerify { apiClient.checkIn("v1", any()) }
         coVerify { apiClient.getVault("v1") }
         coVerify(exactly = 1) { apiClient.listVaults(limit = 20) }
         coVerify(exactly = 0) { apiClient.getVault("v2") }
@@ -154,7 +160,7 @@ class VaultViewModelTest {
 
     @Test
     fun `checkIn network unavailable queues a pending action and schedules sync`() = runTest {
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.NetworkUnavailable
         coEvery { pendingActionDao.getAll() } returns emptyList()
 
         vm.checkIn("v1")
@@ -171,19 +177,20 @@ class VaultViewModelTest {
     @Test
     fun `createVault success reloads vaults`() = runTest {
         val vaults = listOf(makeVault("v1"))
-        coEvery { apiClient.createVault(any()) } returns ApiResult.Success(makeVault("v1"))
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.Success(makeVault("v1"))
         coEvery { apiClient.listVaults(limit = 20) } returns
             ApiResult.Success(VaultPage(vaults, nextCursor = null, hasMore = false))
 
         vm.createVault("GXYZ", 30)
 
-        coVerify { apiClient.createVault(any()) }
+        coVerify { apiClient.createVault(any(), any()) }
         coVerify { apiClient.listVaults(limit = 20) }
+        assertFalse(vm.state.value.isCreatingVault)
     }
 
     @Test
     fun `createVault network unavailable queues a pending action and schedules sync`() = runTest {
-        coEvery { apiClient.createVault(any()) } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.NetworkUnavailable
         coEvery { pendingActionDao.getAll() } returns emptyList()
 
         vm.createVault("GXYZ", 30)
@@ -195,6 +202,37 @@ class VaultViewModelTest {
             })
         }
         verify { PendingActionSyncWorker.schedule(context) }
+        assertFalse(vm.state.value.isCreatingVault)
+    }
+
+    @Test
+    fun `two rapid createVault calls while the first is in flight only submit once`() = runTest {
+        val gate = CompletableDeferred<ApiResult<Vault>>()
+        coEvery { apiClient.createVault(any(), any()) } coAnswers { gate.await() }
+
+        // First call starts and suspends on the network response (gate not yet completed).
+        vm.createVault("GXYZ", 30)
+        assertTrue(vm.state.value.isCreatingVault)
+
+        // A second tap while the first is still in flight must not reach the api at all.
+        vm.createVault("GXYZ", 30)
+
+        gate.complete(ApiResult.NetworkUnavailable)
+
+        coVerify(exactly = 1) { apiClient.createVault(any(), any()) }
+        coVerify(exactly = 1) { pendingActionDao.insert(any()) }
+    }
+
+    @Test
+    fun `two createVault calls with different arguments both queue separately once offline`() = runTest {
+        coEvery { apiClient.createVault(any(), any()) } returns ApiResult.NetworkUnavailable
+        coEvery { pendingActionDao.getAll() } returns emptyList()
+
+        vm.createVault("GXYZ", 30)
+        vm.createVault("GABC", 60)
+
+        coVerify(exactly = 2) { apiClient.createVault(any(), any()) }
+        coVerify(exactly = 2) { pendingActionDao.insert(any()) }
     }
 
     // MARK: - #112 Pagination tests
@@ -314,6 +352,39 @@ class VaultViewModelTest {
         assertFalse(vm.state.value.beneficiaryUpdated)
     }
 
+    // #218: label update mirrors updateBeneficiary's flag-and-reload pattern.
+    @Test
+    fun `updateLabel success sets labelUpdated and reloads vaults`() = runTest {
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        val labeled = v1.copy(label = "Emergency Fund")
+        coEvery { apiClient.updateVaultLabel("v1", "Emergency Fund") } returns ApiResult.Success(labeled)
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(labeled), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", "Emergency Fund")
+
+        coVerify { apiClient.updateVaultLabel("v1", "Emergency Fund") }
+        assertTrue(vm.state.value.labelUpdated)
+        assertEquals("Emergency Fund", vm.state.value.vaults.first().label)
+    }
+
+    @Test
+    fun `updateLabel with null clears the label`() = runTest {
+        val v1 = makeVault("v1").copy(label = "Old Label")
+        coEvery { apiClient.updateVaultLabel("v1", null) } returns ApiResult.Success(v1.copy(label = null))
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1.copy(label = null)), nextCursor = null, hasMore = false))
+
+        vm.updateLabel("v1", null)
+
+        coVerify { apiClient.updateVaultLabel("v1", null) }
+        assertNull(vm.state.value.vaults.first().label)
+    }
+
     @Test
     fun `updateBeneficiary error sets error message`() = runTest {
         coEvery { apiClient.updateBeneficiary("v1", "GNEW") } returns ApiResult.Error("Server error", 500)
@@ -330,6 +401,49 @@ class VaultViewModelTest {
         vm.updateBeneficiary("v1", "GNEW")
 
         assertNotNull(vm.state.value.error)
+    }
+
+    // #223: a poll (refreshSingle, via getVault) and a `vault_updated` push (the
+    // vaultEventSocket flow) both funnel through updateVaultInPlace. Whichever is
+    // applied last always wins outright — see the "Reconciling a poll/push
+    // disagreement" rule in shared/api-contract.md.
+
+    @Test
+    fun `poll then push disagreement, push wins when applied last`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        // A poll response lands first.
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(v1.copy(balance = 20_000_000L))
+        vm.refreshSingle("v1")
+
+        // A `vault_updated` push disagrees and arrives after.
+        eventsFlow.emit(VaultEvent(type = "vault_updated", vault = v1.copy(balance = 30_000_000L)))
+
+        assertEquals(30_000_000L, vm.state.value.vaults.first { it.id == "v1" }.balance)
+    }
+
+    @Test
+    fun `push then poll disagreement, poll wins when applied last`() = runTest {
+        val eventsFlow = MutableSharedFlow<VaultEvent>(replay = 1)
+        every { vaultEventSocket.events("v1") } returns eventsFlow
+        val v1 = makeVault("v1")
+        coEvery { apiClient.listVaults(limit = 20) } returns
+            ApiResult.Success(VaultPage(listOf(v1), nextCursor = null, hasMore = false))
+        vm.load()
+
+        // A `vault_updated` push lands first.
+        eventsFlow.emit(VaultEvent(type = "vault_updated", vault = v1.copy(balance = 30_000_000L)))
+
+        // A poll response disagrees and arrives after.
+        coEvery { apiClient.getVault("v1") } returns ApiResult.Success(v1.copy(balance = 20_000_000L))
+        vm.refreshSingle("v1")
+
+        assertEquals(20_000_000L, vm.state.value.vaults.first { it.id == "v1" }.balance)
     }
 
     private fun makeVault(id: String) = Vault(

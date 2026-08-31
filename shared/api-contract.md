@@ -52,6 +52,9 @@ The server must:
 | POST | `/auth/register` | Register new passkey credential, returns `AuthToken` directly (#2) — no separate `/auth/verify` call is needed right after registering |
 | POST | `/auth/refresh` | Proactively refresh the current session before it expires, returns a new `AuthToken` (#3) |
 | POST | `/auth/recover/link` | Link a new passkey to an existing account, once identity is proven via email/backup code ("lost your device" recovery) |
+| GET | `/auth/sessions` | List active sessions (devices) holding a valid JWT for the calling account — see §Session/Device List (#208) |
+| DELETE | `/auth/sessions/{id}` | Revoke a single session by id ("Sign out this device") — see §Session/Device List (#208) |
+| DELETE | `/auth/sessions` | Revoke every session except the caller's current one ("Sign out all other devices") — see §Session/Device List (#208) |
 
 ### Vaults
 | Method | Path | Description |
@@ -156,6 +159,14 @@ deposit, withdrawal, beneficiary change, status transition).
 { "type": "ping" }
 ```
 
+**`subscribed`** — server acknowledgement of a client `subscribe` request.
+```json
+{
+  "type": "subscribed",
+  "vault_ids": ["string", "..."]
+}
+```
+
 **`error`** — server signals a recoverable error (e.g. invalid vault_id on connect).
 ```json
 {
@@ -172,11 +183,92 @@ deposit, withdrawal, beneficiary change, status transition).
 { "type": "pong" }
 ```
 
+**`subscribe`** — sent immediately after connect to subscribe to additional vault IDs on the same connection, supporting N vaults over a single WebSocket rather than N connections.
+```json
+{
+  "type": "subscribe",
+  "vault_ids": ["string", "..."]
+}
+```
+The server routes subsequent `vault_updated`/`vault_expired`/`vault_released` events for all listed vault IDs over this connection. Clients connecting to a single vault via the URL query parameter need not send `subscribe`. The server acknowledges with a `subscribed` message.
+
 #### Connection lifecycle
 - Reconnect with exponential backoff (base 1 s, max 60 s) on any non-4401 close.
 - On `vault_updated`, merge the embedded `vault` object into the local vault list in-place
   (do not full-reload from REST).
 - On `vault_expired` / `vault_released`, trigger a local notification if the app is backgrounded.
+- Client SHOULD send a `pong` text frame in response to every `ping` to signal liveness to the server.
+- Client SHOULD also send periodic `ping` frames (interval: 30 s) to detect silently-dead TCP connections before the OS closes the socket. If the send fails, the client MUST treat it as a connection drop and reconnect with backoff.
+- If the server closes the socket with code 4401, do NOT reconnect — re-authenticate first.
+
+### Backoff/Jitter Formula (#254)
+
+Both platforms use full-jitter exponential backoff for WebSocket reconnects:
+
+```
+base_delay = 1 s
+max_delay  = 30 s
+capped     = min(max_delay, base_delay * 2^attempt)
+actual     = random_uniform(0, capped)
+```
+
+- `attempt` is 0-based and resets to 0 on the first message successfully received from a new connection.
+- Full jitter (not additive) spreads reconnect storms across the full `[0, capped)` window instead of clustering near `capped`.
+- iOS: `ReconnectBackoff.delay(forAttempt:)` in `VaultEventSocket.swift`.
+- Android: `ReconnectBackoff.delayForAttempt()` in `VaultEventSocket.kt`.
+
+---
+
+## Session/Device List (#208)
+
+Visibility and control over which devices currently hold a valid JWT for the account,
+addressing the gap where token storage was entirely server-side and invisible to the user
+(e.g. no way to remotely sign out a lost phone).
+
+### `GET /auth/sessions`
+
+Response: `200` with a JSON array of `Session` (see §Models). The session for the device
+making the request has `is_current: true`. Ordered most-recently-active first.
+
+### `DELETE /auth/sessions/{id}`
+
+Revokes the session identified by `id` — the corresponding JWT is invalidated server-side.
+Revoking a session other than the caller's own signs that device out ("Sign out this
+device"); revoking the caller's own current session is equivalent to a normal sign-out.
+Response: `204 No Content` on success; `404` if `id` does not belong to the caller's account.
+
+### `DELETE /auth/sessions`
+
+Revokes every session for the account **except** the one making the request ("Sign out all
+other devices"). Response: `204 No Content`.
+
+### Platform requirement: biometric gate
+
+Both `DELETE /auth/sessions/{id}` and `DELETE /auth/sessions` are destructive, remote-facing
+actions and must be gated behind a biometric (or device passcode) prompt client-side before
+the request is sent — the same `BiometricService`/`BiometricHelper` used for withdrawals and
+2FA disable.
+
+#### Reconciling a poll/push disagreement (#223)
+
+The `Vault` object carries no per-field update timestamp, so a client cannot tell
+whether a `vault_updated` push or a concurrent `GET /vaults/{id}` poll response
+reflects newer server state — both are reads of the same server-side row, taken
+at slightly different moments. The rule both clients implement is **last-applied-wins**:
+whichever of the two (poll response or push) is *received* last simply overwrites
+the in-memory vault in place, with no comparison against what was there before.
+
+This falls directly out of §WebSocket's framing of the stream as "a latency
+optimization, not the source of truth": a push is not treated as more or less
+authoritative than a poll, it is just another delivery of the same kind of data,
+applied whenever it arrives. Concretely:
+- A poll response and a push are merged through the exact same code path
+  (iOS: `VaultStore.applyUpdate`; Android: `VaultViewModel.updateVaultInPlace`).
+- Neither implementation buffers, timestamps, or compares values before merging —
+  the most recently *received* update is always what's displayed.
+- This applies to every field on `Vault`, including `ttl_remaining` — see
+  `TTLCountdown`/`TtlCountdown`'s reconciliation logic (#221), which is likewise
+  indifferent to whether the fresh value came from a poll or a push.
 
 ---
 
@@ -294,9 +386,19 @@ GET /vaults?limit={n}&after={cursor}
   "check_in_interval": 0,
   "last_check_in": "ISO8601",
   "ttl_remaining": 0,
-  "status": "active|expired|released|paused"
+  "status": "active|expired|released|paused",
+  "asset_code": "XLM",
+  "asset_issuer": "string | null"
 }
 ```
+`asset_code`/`asset_issuer` (#222) identify which Stellar asset `balance` is
+denominated in, the same way `ACCEPTED_ASSETS` entries do elsewhere in this API:
+`asset_code` alone (native XLM) or `asset_code` + `asset_issuer` (any other
+asset). Both fields are optional and absent responses default to native XLM
+(`asset_code: "XLM"`, `asset_issuer: null`) — every vault today holds XLM, so
+this is purely preparatory: it lets a future non-XLM vault be represented
+without a breaking schema change, and both clients already decode it
+defensively for exactly that reason.
 
 ### VaultPage (#112 — paginated list response)
 ```json
@@ -342,6 +444,13 @@ No request body. Requires the current (possibly near-expiry, not-yet-expired) `A
 Bearer <jwt>` header. Response: `AuthToken`. `401` if the current token is no longer valid — the
 client falls back to its normal delete-and-reauth behavior in that case.
 
+**Refresh margin (#209):** both clients treat a token as due for proactive refresh once it is
+within **60 seconds** of `expires_at`. iOS (`AuthStore.refreshLeadTime`) schedules a one-shot
+timer for `expires_at - 60s` the moment a token is stored, independent of whether a request is
+in flight. Android (`TokenProvider.isNearExpiry`, default `threshold = 60s`) additionally runs a
+periodic check (`AuthViewModel`'s scheduled-refresh loop, every 30s while signed in) so a token
+is refreshed even if the app is foregrounded but idle, not just before the next API call.
+
 ### RecoverAccessLinkRequest
 ```json
 {
@@ -358,6 +467,14 @@ normal WebAuthn registration ceremony against a `/auth/challenge` obtained for t
 account) rather than issuing a session directly. Clients call `POST /auth/verify`
 afterwards to authenticate with the newly linked passkey.
 
+**Expiry (#211):** the same applies to Android's `RecoveryCompleteRequest`/`recovery_token`,
+issued by `POST /auth/recovery/initiate` with a limited lifetime. If the recovery token/proof
+has expired by the time the client completes the ceremony, the server responds `401` with a
+human-readable message in the body: `{"error": "<message>"}` (e.g. `"Your recovery code has
+expired. Please request a new one."`). Clients must surface this message as-is rather than the
+generic "sign in again" copy normally shown for a `401`, and let the user request a fresh code
+instead of leaving them on a dead-end error.
+
 ### BeneficiaryUpdateRequest
 ```json
 { "beneficiary": "string" }
@@ -372,3 +489,18 @@ Response: `204 No Content`.
 
 ### WebSocketMessage (#110)
 See §WebSocket Message Schema above for the full discriminated-union schema.
+
+### Session (#208)
+```json
+{
+  "id": "string",
+  "device_name": "string",
+  "platform": "ios|android",
+  "created_at": "ISO8601",
+  "last_active_at": "ISO8601",
+  "is_current": true
+}
+```
+`device_name` is a human-readable label (e.g. "iPhone 15 Pro", "Pixel 8") the server derives
+from the device that registered the session. `is_current` marks the session belonging to the
+device making the `GET /auth/sessions` request.

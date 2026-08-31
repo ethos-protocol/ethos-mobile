@@ -52,20 +52,22 @@ class PendingActionSyncWorkerTest {
         val result = worker.doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        coVerify(exactly = 0) { apiClient.checkIn(any()) }
-        coVerify(exactly = 0) { apiClient.createVault(any()) }
+        coVerify(exactly = 0) { apiClient.checkIn(any(), any()) }
+        coVerify(exactly = 0) { apiClient.createVault(any(), any()) }
     }
 
     @Test
     fun `successful check-in is removed from the queue`() = runTest {
         val item = checkInAction("v1")
         coEvery { dao.getAll() } returnsMany listOf(listOf(item), emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
+        coEvery { apiClient.checkIn("v1", item.idempotencyKey) } returns ApiResult.Success(Unit)
+        coEvery { dao.markSynced(item.id) } just Runs
         coEvery { dao.delete(item) } just Runs
 
         val result = worker.doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
+        coVerify { dao.markSynced(item.id) }
         coVerify { dao.delete(item) }
         verify { notificationHelper.cancelQueuedActions() }
     }
@@ -74,7 +76,7 @@ class PendingActionSyncWorkerTest {
     fun `network unavailable retries and keeps the item queued`() = runTest {
         val item = checkInAction("v1")
         coEvery { dao.getAll() } returns listOf(item)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.checkIn("v1", item.idempotencyKey) } returns ApiResult.NetworkUnavailable
 
         val result = worker.doWork()
 
@@ -86,7 +88,7 @@ class PendingActionSyncWorkerTest {
     fun `non-retryable error drops the item and still succeeds`() = runTest {
         val item = checkInAction("v1")
         coEvery { dao.getAll() } returnsMany listOf(listOf(item), emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Not found", 404)
+        coEvery { apiClient.checkIn("v1", item.idempotencyKey) } returns ApiResult.Error("Not found", 404)
         coEvery { dao.delete(item) } just Runs
 
         val result = worker.doWork()
@@ -99,12 +101,48 @@ class PendingActionSyncWorkerTest {
     fun `retryable server error keeps the item queued and retries`() = runTest {
         val item = checkInAction("v1")
         coEvery { dao.getAll() } returns listOf(item)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Server error", 500)
+        coEvery { apiClient.checkIn("v1", item.idempotencyKey) } returns ApiResult.Error("Server error", 500)
 
         val result = worker.doWork()
 
         assertEquals(ListenableWorker.Result.retry(), result)
         coVerify(exactly = 0) { dao.delete(any()) }
+    }
+
+    @Test
+    fun `resubmission after simulated crash sends the same idempotency key`() = runTest {
+        val item = checkInAction("v1").copy(idempotencyKey = "stable-key")
+        coEvery { dao.getAll() } returns listOf(item)
+        coEvery { apiClient.checkIn("v1", "stable-key") } returns ApiResult.Success(Unit)
+        // Simulates the process dying between the server accepting the request and
+        // dao.markSynced's write committing.
+        coEvery { dao.markSynced(item.id) } throws RuntimeException("process died")
+
+        runCatching { worker.doWork() }
+
+        // Fresh run: the row is still present (markSynced never committed), so it's
+        // resubmitted — but it must carry the identical idempotency key, not a new one.
+        coEvery { dao.markSynced(item.id) } just Runs
+        coEvery { dao.delete(item) } just Runs
+        worker.doWork()
+
+        coVerify(exactly = 2) { apiClient.checkIn("v1", "stable-key") }
+    }
+
+    @Test
+    fun `already-synced item is cleaned up without resubmitting or double counting success`() = runTest {
+        // Simulates the process dying between dao.markSynced committing and dao.delete
+        // running on a prior run: the row survives with synced == true.
+        val item = checkInAction("v1").copy(synced = true)
+        coEvery { dao.getAll() } returnsMany listOf(listOf(item), emptyList())
+        coEvery { dao.delete(item) } just Runs
+
+        val result = worker.doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        coVerify { dao.delete(item) }
+        coVerify(exactly = 0) { apiClient.checkIn(any(), any()) }
+        coVerify(exactly = 0) { dao.markSynced(any()) }
     }
 
     @Test
@@ -118,14 +156,15 @@ class PendingActionSyncWorkerTest {
             queuedAt = 2L
         )
         coEvery { dao.getAll() } returnsMany listOf(listOf(checkIn, createVault), emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Success(Unit)
-        coEvery { apiClient.createVault(vaultReq) } returns ApiResult.Success(makeVault())
+        coEvery { apiClient.checkIn("v1", checkIn.idempotencyKey) } returns ApiResult.Success(Unit)
+        coEvery { apiClient.createVault(vaultReq, createVault.idempotencyKey) } returns ApiResult.Success(makeVault())
+        coEvery { dao.markSynced(any()) } just Runs
         coEvery { dao.delete(any()) } just Runs
 
         val result = worker.doWork()
 
         assertEquals(ListenableWorker.Result.success(), result)
-        coVerify { apiClient.createVault(vaultReq) }
+        coVerify { apiClient.createVault(vaultReq, createVault.idempotencyKey) }
         coVerify { dao.delete(checkIn) }
         coVerify { dao.delete(createVault) }
     }

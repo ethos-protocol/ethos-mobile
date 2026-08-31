@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.DestructiveConfirmation
 import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
@@ -31,8 +32,10 @@ import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
+import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import com.ethosprotocol.services.NotificationDeliveryLog
 
 // MARK: - Auth Screen
 
@@ -199,6 +202,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onDebugLogClick: (() -> Unit)? = null,
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -261,6 +265,12 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                // #235: debug/QA-only entry to the notification delivery log — never
+                // shown in a release build (onDebugLogClick is only non-null when
+                // MainActivity's nav graph wires it in under BuildConfig.DEBUG).
+                onDebugLogClick?.let { onClick ->
+                    IconButton(onClick = onClick) { Icon(Icons.Default.BugReport, "Notification log") }
+                }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -344,6 +354,63 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
             TextButton(onClick = onConfirm) { Text("Confirm") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+// MARK: - Destructive Confirmation (#220)
+
+/**
+ * Shared confirmation UI for any irreversible, destructive vault action
+ * (delete, archive, …) on either platform. The confirm button stays disabled
+ * until the user types [requiredText] (typically the vault's own name/ID)
+ * exactly — a plain Yes/No tap is not enough given the financial and
+ * beneficiary implications of getting this wrong. [onConfirm] is only ever
+ * invoked once [DestructiveConfirmation.isConfirmed] is true.
+ */
+@Composable
+fun DestructiveConfirmationDialog(
+    title: String,
+    message: String,
+    requiredText: String,
+    confirmLabel: String = "Delete",
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var enteredText by remember { mutableStateOf("") }
+    val confirmation = DestructiveConfirmation(requiredText, enteredText)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(message, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Type \"$requiredText\" to confirm.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = enteredText,
+                    onValueChange = { enteredText = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                // Guarded via confirmIfMatched, not just `enabled` below — `enabled`
+                // only stops a tap from reaching this closure through the button's own
+                // click handler; it is not what makes this safe.
+                onClick = { confirmation.confirmIfMatched(onConfirm) },
+                enabled = confirmation.isConfirmed,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -1490,6 +1557,75 @@ fun VaultDetailScreen(
                 }
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Notification Debug Log (#235)
+
+/**
+ * Debug-only screen listing the local notification delivery log, for
+ * QA/support to answer "did this notification actually get scheduled,
+ * delivered, or suppressed?" without backend log correlation. Never shows
+ * anything beyond vault ID / event type / timestamp — see
+ * [NotificationDeliveryLog]'s doc comment for what
+ * is deliberately excluded. Only reachable when [com.ethosprotocol.BuildConfig.DEBUG].
+ */
+@Composable
+fun NotificationDebugScreen(
+    onBack: () -> Unit,
+    vm: NotificationDebugViewModel = hiltViewModel()
+) {
+    val deliveryLog = vm.deliveryLog
+    var events by remember {
+        mutableStateOf(deliveryLog.recentEvents())
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Notification Log") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        deliveryLog.clear()
+                        events = deliveryLog.recentEvents()
+                    }) { Icon(Icons.Default.Delete, "Clear") }
+                }
+            )
+        }
+    ) { padding ->
+        if (events.isEmpty()) {
+            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No notification events logged yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(Modifier.padding(padding)) {
+                items(events) { event ->
+                    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(
+                                event.kind.name.lowercase().replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(event.source.name.lowercase(), style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(event.eventType, style = MaterialTheme.typography.bodyMedium)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(event.vaultId.take(12) + "…", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                java.text.DateFormat.getTimeInstance().format(java.util.Date(event.timestampMillis)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    HorizontalDivider()
                 }
             }
         }

@@ -1,4 +1,60 @@
-
-# Byte-compiled CI helper scripts
+# ── Python / CI scripts ───────────────────────────────────────────────────────
 __pycache__/
 *.pyc
+*.pyo
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Android build artefacts (see also android/.gitignore) ─────────────────────
+**/build/
+.gradle/
+local.properties
+/local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+/dependency-check-data/
+
+# ── Android test snapshots (Paparazzi / screenshot tests) ─────────────────────
+# These are generated artefacts — regenerate locally with ./gradlew recordPaparazziDebug.
+# Committing them bloats the repo and causes spurious diffs on every UI change.
+**/src/test/snapshots/
+**/snapshots/images/
+**/__snapshots__/
+
+# ── iOS / Xcode build artefacts (see also ios/EthosProtocol/.gitignore) ───────
+ios/EthosProtocol/Xcode/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+.build/
+
+# ── iOS test snapshots (swift-snapshot-testing / FBSnapshotTestCase) ──────────
+**/__Snapshots__/
+**/*_snapshots/
+**/ReferenceImages/
+**/FailureDiffs/
+
+# ── Secrets / credentials (never commit) ─────────────────────────────────────
+google-services.json
+GoogleService-Info.plist
+*.keystore
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+secrets.properties

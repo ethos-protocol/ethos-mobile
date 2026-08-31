@@ -149,6 +149,32 @@ public final class APIClient {
         let _: EmptyBody = try await post(path: "/auth/recover/link", body: body)
     }
 
+    // MARK: - Sessions (#208)
+
+    func listSessions() async throws -> [Session] {
+        try await get(path: "/auth/sessions")
+    }
+
+    /// "Sign out this device" for a specific session (may be the caller's own current session).
+    func revokeSession(id: String) async throws {
+        var req = request(path: "/auth/sessions/\(id)")
+        req.httpMethod = "DELETE"
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
+    }
+
+    /// "Sign out all other devices" — revokes every session except the one making this call.
+    func revokeOtherSessions() async throws {
+        var req = request(path: "/auth/sessions")
+        req.httpMethod = "DELETE"
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(req)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"
@@ -213,13 +239,13 @@ public final class APIClient {
         try await get(path: "/vaults/\(id)")
     }
 
-    func createVault(beneficiary: String, checkInInterval: UInt64) async throws -> Vault {
+    func createVault(beneficiary: String, checkInInterval: UInt64, idempotencyKey: String? = nil) async throws -> Vault {
         let body = CreateVaultRequest(beneficiary: beneficiary, checkInInterval: checkInInterval)
-        return try await post(path: "/vaults", body: body)
+        return try await post(path: "/vaults", body: body, idempotencyKey: idempotencyKey)
     }
 
-    func checkIn(vaultID: String) async throws {
-        let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/checkin", body: EmptyBody())
+    func checkIn(vaultID: String, idempotencyKey: String? = nil) async throws {
+        let _: EmptyBody = try await post(path: "/vaults/\(vaultID)/checkin", body: EmptyBody(), idempotencyKey: idempotencyKey)
     }
 
     func deposit(vaultID: String, amount: Int64) async throws -> Vault {
@@ -289,6 +315,26 @@ public final class APIClient {
         _ = try await execute(req)
     }
 
+    // #231: Persist notification preferences server-side so they survive reinstall.
+    // Best-effort: a failure here does not block the local preference save.
+    func updateNotificationPreferences(_ preferences: NotificationPreferences) async throws {
+        struct Body: Encodable {
+            let ttlWarningsEnabled: Bool
+            let checkInRemindersEnabled: Bool
+            let quietHoursEnabled: Bool
+            let quietHoursStart: Int
+            let quietHoursEnd: Int
+        }
+        let body = Body(
+            ttlWarningsEnabled: preferences.ttlWarningsEnabled,
+            checkInRemindersEnabled: preferences.checkInRemindersEnabled,
+            quietHoursEnabled: preferences.quietHoursEnabled,
+            quietHoursStart: preferences.quietHoursStart,
+            quietHoursEnd: preferences.quietHoursEnd
+        )
+        let _: EmptyBody = try await post(path: "/notifications/preferences", body: body)
+    }
+
     // MARK: - Logging Redaction Audit (#111)
     //
     // iOS uses URLSession directly — there is no logging plugin or interceptor in this file.
@@ -314,13 +360,19 @@ public final class APIClient {
         return try decode(data, path: path)
     }
 
-    private func post<B: Encodable, T: Decodable>(path: String, body: B) async throws -> T {
+    private func post<B: Encodable, T: Decodable>(path: String, body: B, idempotencyKey: String? = nil) async throws -> T {
         var req = request(path: path)
         req.httpMethod = "POST"
         req.httpBody = try JSONEncoder().encode(body)
         // Anti-replay: add nonce + timestamp to every mutating request (task #121).
         for (field, value) in Self.makeAntiReplayHeaders() {
             req.setValue(value, forHTTPHeaderField: field)
+        }
+        // idempotencyKey stays the same across retries of the same logical action (e.g. a
+        // queued check-in resubmitted by CheckInSyncTask after a crash), unlike X-Nonce which
+        // is intentionally fresh per attempt — see makeAntiReplayHeaders().
+        if let idempotencyKey {
+            req.setValue(idempotencyKey, forHTTPHeaderField: "X-Idempotency-Key")
         }
         let (data, _) = try await execute(req)
         return try decode(data, path: path)
@@ -395,6 +447,14 @@ public final class APIClient {
             // The token the server rejected is no longer valid — drop it locally so we
             // don't keep sending it, and so a relaunch correctly shows the sign-in screen.
             KeychainService.shared.deleteToken()
+            // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
+            // recovery token/proof on /auth/recover/link) — surface it instead of the
+            // generic "Authentication required" so the caller isn't left on a dead end.
+            // Ordinary session-token 401s have an empty body, so this falls through to the
+            // existing .unauthorized behavior unchanged.
+            if let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"] {
+                throw APIError.serverError(message)
+            }
             throw APIError.unauthorized
         case 404: throw APIError.notFound
         default:

@@ -164,85 +164,98 @@ final class OTPRateLimiterTests: XCTestCase {
             "4th failure cooldown must be longer than 3rd failure cooldown")
     }
 
-    // ── Persistence across instances (#171) ───────────────────────────────
+    // ── Persistence across process death (#172) ─────────────────────────────
 
-    /// Dismissing and re-presenting the 2FA screen recreates the `@StateObject`,
-    /// which previously reset the cooldown to zero between guesses.
     @MainActor
-    func test_newInstance_afterCooldownStarted_staysBlocked() async {
-        let store = makeTestStore()
-        let first = makeTestLimiter(store: store)
-        for _ in 1...3 { first.recordFailure() }
-        XCTAssertTrue(first.isBlocked, "Precondition: blocked after 3 failures")
+    func test_processDeath_rehydratesFailureCountAndRecomputesCooldown() async {
+        let defaults = makeTestDefaults()
+        var fakeNow = Date()
 
-        let second = makeTestLimiter(store: store)
+        let limiter1 = makeTestLimiter(defaults: defaults, now: { fakeNow })
+        for _ in 1...3 { limiter1.recordFailure() }
+        XCTAssertEqual(limiter1.failureCount, 3)
+        XCTAssertEqual(limiter1.cooldownSecondsRemaining, 30)
 
-        XCTAssertTrue(second.isBlocked,
-            "A recreated limiter must resume the in-progress cooldown, not start fresh")
-        XCTAssertGreaterThan(second.cooldownSecondsRemaining, 0)
-        XCTAssertEqual(second.failureCount, 3,
-            "The failure count must survive so the cooldown keeps escalating")
+        // Simulate the process being killed and relaunched 10s later: a fresh instance
+        // backed by the same storage should rehydrate, with the cooldown recomputed
+        // against the current wall clock rather than reset to the full 30s.
+        fakeNow = fakeNow.addingTimeInterval(10)
+        let limiter2 = makeTestLimiter(defaults: defaults, now: { fakeNow })
+
+        XCTAssertEqual(limiter2.failureCount, 3,
+            "Failure count must survive process death")
+        XCTAssertEqual(limiter2.cooldownSecondsRemaining, 20,
+            "Cooldown must be recomputed from the persisted absolute deadline, not reset")
+        XCTAssertTrue(limiter2.isBlocked)
     }
 
-    /// The deadline is stored as an absolute timestamp, so a limiter created
-    /// after it has passed is no longer blocked.
     @MainActor
-    func test_newInstance_afterCooldownExpired_isNotBlocked() async {
-        let store = makeTestStore()
-        let start = Date()
-        let first = makeTestLimiter(store: store, now: { start })
-        for _ in 1...3 { first.recordFailure() }   // 30 s cooldown
+    func test_processDeath_afterCooldownDeadlinePasses_unblocks() async {
+        let defaults = makeTestDefaults()
+        var fakeNow = Date()
 
-        let second = makeTestLimiter(store: store, now: { start.addingTimeInterval(31) })
+        let limiter1 = makeTestLimiter(defaults: defaults, now: { fakeNow })
+        for _ in 1...3 { limiter1.recordFailure() }
+        XCTAssertEqual(limiter1.cooldownSecondsRemaining, 30)
 
-        XCTAssertFalse(second.isBlocked)
-        XCTAssertEqual(second.cooldownSecondsRemaining, 0)
-        XCTAssertEqual(second.failureCount, 3)
+        // Process was dead well past the cooldown deadline.
+        fakeNow = fakeNow.addingTimeInterval(60)
+        let limiter2 = makeTestLimiter(defaults: defaults, now: { fakeNow })
+
+        XCTAssertEqual(limiter2.cooldownSecondsRemaining, 0)
+        XCTAssertFalse(limiter2.isBlocked)
+        XCTAssertEqual(limiter2.failureCount, 3,
+            "Failure count still survives even once the cooldown itself has elapsed")
     }
 
     @MainActor
     func test_reset_clearsPersistedState() async {
-        let store = makeTestStore()
-        let first = makeTestLimiter(store: store)
-        for _ in 1...3 { first.recordFailure() }
-        first.reset()
+        let defaults = makeTestDefaults()
+        let limiter1 = makeTestLimiter(defaults: defaults)
+        for _ in 1...3 { limiter1.recordFailure() }
+        limiter1.reset()
 
-        let second = makeTestLimiter(store: store)
+        let limiter2 = makeTestLimiter(defaults: defaults)
+        XCTAssertEqual(limiter2.failureCount, 0,
+            "reset() must clear the persisted failure count, not just the in-memory value")
+        XCTAssertEqual(limiter2.cooldownSecondsRemaining, 0)
+    }
 
-        XCTAssertEqual(second.failureCount, 0,
-            "A successful verification must not leave the user throttled by stale state")
-        XCTAssertFalse(second.isBlocked)
+    @MainActor
+    func test_freshInstance_withNoPriorState_startsUnblocked() async {
+        let defaults = makeTestDefaults()
+        let limiter = makeTestLimiter(defaults: defaults)
+
+        XCTAssertEqual(limiter.failureCount, 0)
+        XCTAssertFalse(limiter.isBlocked)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
-    /// Creates an `OTPRateLimiter` with a no-op timer (no real `Timer` is scheduled)
-    /// and a throwaway `UserDefaults` suite, keeping tests synchronous, free of side
-    /// effects, and isolated from `UserDefaults.standard`.
-    ///
-    /// Pass the same `store` to two calls to simulate the view being dismissed and
-    /// re-presented (a new limiter instance over the same persisted state).
-    @MainActor
-    private func makeTestLimiter(
-        store: UserDefaults? = nil,
-        now: @escaping () -> Date = { Date() },
-        onTimerCreated: ((_ interval: TimeInterval, _ handler: @escaping () -> Void) -> Void)? = nil
-    ) -> OTPRateLimiter {
-        OTPRateLimiter(
-            store: store ?? makeTestStore(),
-            now: now,
-            makeTimer: { interval, handler in
-                onTimerCreated?(interval, handler)
-                return TimerToken(cancel: {})
-            }
-        )
+    /// Creates an isolated `UserDefaults` suite so persistence tests don't leak state
+    /// into each other or into `.standard`.
+    private func makeTestDefaults() -> UserDefaults {
+        let suiteName = "OTPRateLimiterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        return defaults
     }
 
-    /// A `UserDefaults` suite unique to one test, removed from disk on teardown.
-    private func makeTestStore() -> UserDefaults {
-        let suiteName = "OTPRateLimiterTests.\(UUID().uuidString)"
-        let store = UserDefaults(suiteName: suiteName)!
-        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suiteName) }
-        return store
+    /// Creates an `OTPRateLimiter` with a no-op timer (no real `Timer` is scheduled),
+    /// keeping tests synchronous and free of side effects.
+    @MainActor
+    private func makeTestLimiter(
+        defaults: UserDefaults? = nil,
+        now: (() -> Date)? = nil,
+        onTimerCreated: ((_ interval: TimeInterval, _ handler: @escaping () -> Void) -> Void)? = nil
+    ) -> OTPRateLimiter {
+        // Always back tests with an isolated suite (never `.standard`) so persisted
+        // rate-limit state can't leak between test methods or real app data.
+        let limiter = OTPRateLimiter(defaults: defaults ?? makeTestDefaults(), now: now ?? { Date() })
+        limiter.makeTimer = { interval, handler in
+            onTimerCreated?(interval, handler)
+            return TimerToken(cancel: {})
+        }
+        return limiter
     }
 }

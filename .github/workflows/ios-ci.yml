@@ -33,11 +33,19 @@ jobs:
       # untouched, matching PinningDelegate's documented "empty pins disables
       # pinning for local dev" design (see check_tls_pinning.py).
       - name: Verify TLS certificate pinning is configured (Release)
+        env:
+          ETHOS_CERTIFICATE_EXPIRY: ${{ vars.ETHOS_CERTIFICATE_EXPIRY }}
         run: |
-          python3 "$GITHUB_WORKSPACE/.github/scripts/check_tls_pinning.py" \
-            --configuration Release \
-            --target "EthosProtocol:EthosProtocol/Info.plist" \
+          ARGS=(
+            --configuration Release
+            --target "EthosProtocol:EthosProtocol/Info.plist"
             --target "TTLWidget:TTLWidget/Info.plist"
+          )
+          if [ -n "$ETHOS_CERTIFICATE_EXPIRY" ]; then
+            ARGS+=(--certificate-expiry "$ETHOS_CERTIFICATE_EXPIRY")
+          fi
+
+          python3 "$GITHUB_WORKSPACE/.github/scripts/check_tls_pinning.py" "${ARGS[@]}"
 
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app

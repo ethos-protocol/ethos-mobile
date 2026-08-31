@@ -1,0 +1,37 @@
+name: Release notes parity check
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  validate-parity-gap-claims:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Gather merged PRs since the last release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
+
+      - name: Capture release notes
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${{ github.event.release.tag_name }}" --json body --jq .body > release-notes.md
+
+      - name: Validate parity-gap claims in release notes and merged PRs
+        run: |
+          python3 .github/scripts/release_notes_parity_check.py \
+            --parity-file PARITY.md \
+            --prs-file merged-prs.json \
+            --release-notes-file release-notes.md

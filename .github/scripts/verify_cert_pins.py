@@ -38,6 +38,7 @@ import argparse
 import base64
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 
 # A Base64-encoded SHA-256 digest: 43 payload characters plus one '=' pad.
 PIN_PATTERN = re.compile(r"^[A-Za-z0-9+/]{43}=$")
@@ -108,7 +109,63 @@ def placeholder_reason(pin):
     return None
 
 
-def verify(build_type, build_config, source, warn_if_unconfigured=False):
+def parse_certificate_expiry(raw):
+    """Parses YYYY-MM-DD or ISO-8601 timestamps into UTC-aware datetimes."""
+    value = (raw or "").strip()
+    if not value:
+        raise ValueError("certificate expiry must not be empty")
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError(
+                "certificate expiry must be ISO-8601 or YYYY-MM-DD, got "
+                f"{raw!r}"
+            ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed
+
+
+def check_certificate_expiry(certificate_expiry, warning_days=60, fail_days=14):
+    if not certificate_expiry:
+        return 0
+
+    try:
+        expires_at = parse_certificate_expiry(certificate_expiry)
+    except ValueError as exc:
+        error(f"Invalid certificate expiry '{certificate_expiry}': {exc}")
+        return 1
+
+    now = datetime.now(timezone.utc)
+    remaining = expires_at - now
+    if remaining <= timedelta(0):
+        error(
+            "Configured certificate expiry is in the past: {} (today is {}). "
+            "Rotate it before release.".format(expires_at.isoformat(), now.isoformat())
+        )
+        return 1
+
+    if remaining <= timedelta(days=warning_days):
+        message = (
+            "Current certificate expires on {} ({} days remaining). Rotate the "
+            "certificate before it falls within {} days."
+        ).format(expires_at.date().isoformat(), remaining.days, warning_days)
+        if remaining <= timedelta(days=fail_days):
+            error(message)
+            return 1
+        warn(message)
+    return 0
+
+
+def verify(build_type, build_config, source, warn_if_unconfigured=False,
+           certificate_expiry=None, expiry_warning_days=60, expiry_fail_days=14):
     if build_type != "release":
         print("Build type '{}' is not gated — pinning may legitimately be "
               "disabled outside release builds.".format(build_type))
@@ -148,6 +205,14 @@ def verify(build_type, build_config, source, warn_if_unconfigured=False):
             annotate(problem + suffix)
         return 0 if advisory else 1
 
+    expiry_code = check_certificate_expiry(
+        certificate_expiry,
+        warning_days=expiry_warning_days,
+        fail_days=expiry_fail_days,
+    )
+    if expiry_code:
+        return expiry_code
+
     print("Release certificate pins OK ({} pin(s) from {}).".format(len(pins), origin))
     return 0
 
@@ -163,8 +228,23 @@ def main(argv=None):
     parser.add_argument("--warn-if-unconfigured", action="store_true",
                         help="Report (rather than fail on) placeholder pins when no pin set "
                              "was configured at all — for release builds that cannot ship.")
+    parser.add_argument("--certificate-expiry",
+                        default=None,
+                        help="Documented certificate expiry date in YYYY-MM-DD or ISO-8601 format.")
+    parser.add_argument("--expiry-warning-days", type=int, default=60,
+                        help="Warn when the certificate has fewer than this many days remaining.")
+    parser.add_argument("--expiry-fail-days", type=int, default=14,
+                        help="Fail the build when the certificate has fewer than this many days remaining.")
     args = parser.parse_args(argv)
-    return verify(args.build_type, args.build_config, args.source, args.warn_if_unconfigured)
+    return verify(
+        args.build_type,
+        args.build_config,
+        args.source,
+        args.warn_if_unconfigured,
+        certificate_expiry=args.certificate_expiry,
+        expiry_warning_days=args.expiry_warning_days,
+        expiry_fail_days=args.expiry_fail_days,
+    )
 
 
 if __name__ == "__main__":

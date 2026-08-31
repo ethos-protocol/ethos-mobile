@@ -276,4 +276,9 @@ dependencies {
     // @HiltAndroidTest / HiltAndroidRule, used by the instrumented tests under androidTest/.
     androidTestImplementation(libs.hilt.android.testing)
     kspAndroidTest(libs.hilt.compiler)
+    // Espresso accessibility-checks module + the Android Accessibility Test Framework (ATF)
+    // itself, used by AccessibilityScanTest to guard minimum touch target size (and other a11y
+    // checks) in CI.
+    androidTestImplementation("androidx.test.espresso:espresso-accessibility:3.6.1")
+    androidTestImplementation("com.google.android.apps.common.testing.accessibility.framework:accessibility-test-framework:4.0.0")
 }

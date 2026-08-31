@@ -46,6 +46,7 @@ class VaultListPullToRefreshTest {
             notificationHelper = mockk(relaxed = true),
             pendingActionDao = mockk(relaxed = true),
             vaultEventSocket = mockk(relaxed = true),
+            notificationDeliveryLog = mockk(relaxed = true),
             context = InstrumentationRegistry.getInstrumentation().targetContext
         )
 

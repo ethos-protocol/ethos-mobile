@@ -43,6 +43,46 @@ final class NetworkMonitor {
     }
 }
 
+// MARK: - CacheTelemetry
+
+/// Tracks cache access events for debug/support diagnostics.
+///
+/// Counters are intentionally non-atomic integers: they are only incremented on
+/// `OfflineCache` load operations (typically called on a background thread but never
+/// contended to the extent that torn reads matter for diagnostic purposes). Use
+/// `snapshot()` to capture a point-in-time copy for display or logging.
+final class CacheTelemetry {
+    static let shared = CacheTelemetry()
+    private init() {}
+
+    /// Number of cache loads that returned valid, non-expired data.
+    private(set) var hits: Int = 0
+    /// Number of cache loads where no entry existed on disk.
+    private(set) var misses: Int = 0
+    /// Number of cache loads where an entry existed but had exceeded `maxAge`
+    /// and was therefore refused (not served to the caller).
+    private(set) var staleServed: Int = 0
+
+    func recordHit() { hits += 1 }
+    func recordMiss() { misses += 1 }
+    func recordStaleServed() { staleServed += 1 }
+
+    /// Reset all counters to zero. Called from `SupportDebugView` when the user
+    /// taps "Reset Counters".
+    func reset() { hits = 0; misses = 0; staleServed = 0 }
+
+    struct Snapshot {
+        let hits: Int
+        let misses: Int
+        let staleServed: Int
+    }
+
+    /// Returns an immutable point-in-time copy of the current counters.
+    func snapshot() -> Snapshot { Snapshot(hits: hits, misses: misses, staleServed: staleServed) }
+}
+
+// MARK: - OfflineCache
+
 /// Simple disk-based cache for offline reads. Entries are timestamped so callers can surface
 /// staleness ("as of 3 days ago") and so entries older than `maxAge` can be treated as absent.
 /// Bounded to `maxBytes` total via LRU eviction (least-recently-*loaded* entry evicted first).
@@ -50,9 +90,8 @@ final class OfflineCache {
     static let shared = OfflineCache()
     private let dir: URL
 
-    /// Entries older than this are treated as absent by `load(for:)`/`age(for:)`. `nil`
-    /// (the default) disables expiry enforcement — staleness is still tracked and can be
-    /// surfaced in the UI even when it isn't used to refuse serving the entry.
+    /// Entries older than this are treated as absent by `load(for:)`/`age(for:)`. Defaults
+    /// to 24 hours so the UI can surface staleness clearly without serving arbitrarily old data.
     var maxAge: TimeInterval?
 
     /// Total on-disk size cap across all cached entries. Exceeding this on `save(_:for:)`
@@ -63,6 +102,9 @@ final class OfflineCache {
         dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("EthosProtocolOfflineCache", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Default to 24 h so stale entries are refused after a day without connectivity
+        // rather than being served indefinitely (#243).
+        maxAge = 24 * 3_600
     }
 
     func save(_ data: Data, for key: String) {
@@ -73,9 +115,19 @@ final class OfflineCache {
     }
 
     func load(for key: String) -> Data? {
-        guard !isExpired(key) else { return nil }
+        guard !isExpired(key) else {
+            // Entry exists on disk but has exceeded maxAge — record as stale and refuse it.
+            CacheTelemetry.shared.recordStaleServed()
+            return nil
+        }
         let file = dataFile(for: key)
-        guard let data = try? Data(contentsOf: file) else { return nil }
+        guard let data = try? Data(contentsOf: file) else {
+            // No entry on disk at all — record as miss.
+            CacheTelemetry.shared.recordMiss()
+            return nil
+        }
+        // Served valid, non-expired data — record as hit.
+        CacheTelemetry.shared.recordHit()
         // Bump the entry's mtime so it's treated as recently used for LRU eviction, without
         // touching the separate `.meta` timestamp `age(for:)` reports — a cache hit shouldn't
         // reset how stale the underlying data actually is.
