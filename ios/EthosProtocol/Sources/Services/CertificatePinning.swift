@@ -8,18 +8,27 @@ import CryptoKit
 ///
 /// ## Pin rotation strategy
 ///
-/// Pins are stored in Info.plist under the key `TLS_PUBLIC_KEY_PINS` as an array
+/// Pins are read from Info.plist under the key `TLS_PUBLIC_KEY_PINS` as an array
 /// of Base64-encoded SHA-256 hashes of the Subject Public Key Info (SPKI) of the
-/// leaf certificate.  Two or more pins should always be present:
+/// leaf certificate.  Two entries are always present:
 ///
 ///   1. **Current** — the hash of the certificate that is live in production.
 ///   2. **Backup** — the hash of the next certificate that will replace it.
 ///
+/// Their *values* come from the `TLS_PUBLIC_KEY_PIN_CURRENT` /
+/// `TLS_PUBLIC_KEY_PIN_BACKUP` build settings (see `project.yml`), which each
+/// target's Info.plist expands, so pins differ per build configuration without
+/// editing plist XML. Both are blank by default: **pinning is not active until
+/// they are configured** (#170). Empty entries are ignored, so an unconfigured
+/// build falls back to system CA validation — the documented local-dev
+/// behavior — and `.github/scripts/check_tls_pinning.py` fails any Release build
+/// left in that state.
+///
 /// On certificate renewal:
 ///   1. Generate the new certificate and compute its SPKI SHA-256 hash.
-///   2. Add the new hash as a *second* entry in `TLS_PUBLIC_KEY_PINS` and ship
-///      the app update.
-///   3. Once the old certificate is replaced, remove its hash in the next release.
+///   2. Set it as `TLS_PUBLIC_KEY_PIN_BACKUP` and ship the app update.
+///   3. Once the old certificate is replaced, promote it to
+///      `TLS_PUBLIC_KEY_PIN_CURRENT` in the next release.
 ///
 /// This rolling two-pin approach avoids a hard app outage when the server
 /// certificate is rotated, while still preventing MITM attacks.
@@ -35,9 +44,10 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
     // MARK: - State
 
     /// Pinned SHA-256 hashes of SPKI bytes (Base64-encoded).
-    /// Populated from `TLS_PUBLIC_KEY_PINS` in Info.plist; falls back to an
-    /// empty set, which disables pinning (useful for local-dev builds that hit
-    /// a different host).
+    /// Populated from `TLS_PUBLIC_KEY_PINS` in Info.plist; entries that are
+    /// absent, blank, or an unexpanded `$(BUILD_SETTING)` placeholder are
+    /// ignored. An empty result disables pinning (useful for local-dev builds
+    /// that hit a different host).
     public let pinnedHashes: Set<String>
 
     /// The hostname that pinning is enforced for.
@@ -49,9 +59,31 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
     // MARK: - Init
 
     public convenience init(pinnedHost: String = "api.ethos-protocol.app") {
-        let hashes: [String] = Bundle.main
+        let raw: [String] = Bundle.main
             .object(forInfoDictionaryKey: "TLS_PUBLIC_KEY_PINS") as? [String] ?? []
-        self.init(pinnedHost: pinnedHost, pinnedHashes: Set(hashes))
+        let hashes = Self.usablePins(from: raw)
+        #if DEBUG
+        if hashes.isEmpty {
+            print("[PinningDelegate] WARNING: certificate pinning is DISABLED for \(pinnedHost) — "
+                + "TLS_PUBLIC_KEY_PINS is unset or unconfigured. Set TLS_PUBLIC_KEY_PIN_CURRENT / "
+                + "TLS_PUBLIC_KEY_PIN_BACKUP (see project.yml). Release builds are gated in CI.")
+        }
+        #endif
+        self.init(pinnedHost: pinnedHost, pinnedHashes: hashes)
+    }
+
+    /// Filters out plist entries that carry no pin: blank strings, and
+    /// `$(BUILD_SETTING)` / `${BUILD_SETTING}` placeholders left unexpanded when
+    /// the corresponding build setting is undefined. Keeping them would make
+    /// `isPinningEnabled` true for an unconfigured build and reject every
+    /// certificate, since no real SPKI hash can ever match them.
+    static func usablePins(from raw: [String]) -> Set<String> {
+        Set(raw.compactMap { entry -> String? in
+            let pin = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pin.isEmpty else { return nil }
+            guard !(pin.hasPrefix("$(") || pin.hasPrefix("${")) else { return nil }
+            return pin
+        })
     }
 
     /// Designated initialiser — used by tests to inject known pin values.

@@ -27,6 +27,37 @@ final class CertificatePinningTests: XCTestCase {
         XCTAssertTrue(delegate.isPinningEnabled)
     }
 
+    // MARK: - #170 Info.plist pin configuration
+
+    /// `TLS_PUBLIC_KEY_PINS` is expanded from build settings that are blank by
+    /// default, so the bundle under test carries no usable pins and the
+    /// production convenience initializer must report pinning as disabled.
+    /// Update this test (do not delete it) once real pins are configured for
+    /// the configuration these tests run in, so a regression that empties the
+    /// pin set again is still caught.
+    func test_convenienceInit_withUnconfiguredBundle_pinningDisabled() {
+        let delegate = PinningDelegate()
+        XCTAssertFalse(delegate.isPinningEnabled,
+            "With no pins configured, pinning falls back to system CA validation")
+    }
+
+    func test_usablePins_ignoresBlankAndUnexpandedPlaceholders() {
+        let pins = PinningDelegate.usablePins(from: [
+            "", "   ", "$(TLS_PUBLIC_KEY_PIN_CURRENT)", "${TLS_PUBLIC_KEY_PIN_BACKUP}"
+        ])
+        XCTAssertTrue(pins.isEmpty,
+            "An unconfigured plist array must disable pinning, not pin to an unmatchable value")
+    }
+
+    func test_usablePins_keepsConfiguredPins() {
+        let current = "k1Vw6WsE9scmn9tRAWjOTNTWyfPpWWx3fV1c/dCLwyQ="
+        let pins = PinningDelegate.usablePins(from: [current, "$(TLS_PUBLIC_KEY_PIN_BACKUP)"])
+
+        XCTAssertEqual(pins, [current],
+            "A configured current pin must survive even while the backup slot is empty")
+        XCTAssertTrue(PinningDelegate(pinnedHost: "api.example.com", pinnedHashes: pins).isPinningEnabled)
+    }
+
     func test_pinnedHost_isStoredCorrectly() {
         let delegate = PinningDelegate(
             pinnedHost: "api.ethos-protocol.app",

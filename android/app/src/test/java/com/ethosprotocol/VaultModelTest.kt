@@ -37,10 +37,34 @@ class VaultModelTest {
         assertEquals("0.0000000 XLM", vault.formattedBalance)
     }
 
-    private fun makeVault(balance: Long = 0L, ttlRemaining: Long? = null) = Vault(
+    // #222: assetCode defaults to "XLM" when the server omits it, but formats
+    // whatever code is actually present — preparation for a non-XLM vault.
+    @Test
+    fun `formattedBalance uses assetCode default of XLM when unset`() {
+        val vault = makeVault(balance = 10_000_000L)
+        assertEquals("XLM", vault.assetCode)
+        assertNull(vault.assetIssuer)
+    }
+
+    @Test
+    fun `formattedBalance formats a non-XLM asset amount correctly`() {
+        val vault = makeVault(
+            balance = 500_000_000L,
+            assetCode = "USDC",
+            assetIssuer = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        )
+        assertEquals("50.0000000 USDC", vault.formattedBalance)
+    }
+
+    private fun makeVault(
+        balance: Long = 0L,
+        ttlRemaining: Long? = null,
+        assetCode: String = "XLM",
+        assetIssuer: String? = null
+    ) = Vault(
         id = "v1", owner = "GABC", beneficiary = "GXYZ",
         balance = balance, checkInInterval = 2_592_000L,
         lastCheckIn = "2026-04-01T00:00:00Z", ttlRemaining = ttlRemaining,
-        status = VaultStatus.active
+        status = VaultStatus.active, assetCode = assetCode, assetIssuer = assetIssuer
     )
 }

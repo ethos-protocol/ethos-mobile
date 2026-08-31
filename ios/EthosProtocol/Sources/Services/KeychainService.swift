@@ -9,6 +9,10 @@ final class KeychainService {
     private let tokenExpiryKey = "com.ethosprotocol.auth_token_expiry"
     private let credentialKey = "com.ethosprotocol.passkey_credential"
     private let pushTokenKey = "com.ethosprotocol.push_token"
+    /// A device token seen (via APNs callback) but not yet confirmed registered
+    /// with the server — set when registration fails after retrying, cleared
+    /// once it succeeds. See NotificationService's retry-on-foreground (#234).
+    private let pendingPushTokenKey = "com.ethosprotocol.pending_push_token"
 
     /// `expiresAt`, when provided, is persisted alongside the token so AuthStore can
     /// schedule a proactive refresh (#3) against `AuthToken.expiresAt` even across an
@@ -67,39 +71,18 @@ final class KeychainService {
         delete(forKey: pushTokenKey)
     }
 
-    // MARK: - #226 Trusted-Device Token
-
-    /// Persists the per-vault trusted-device token issued by the server after a
-    /// successful 2FA verification with `trust_device: true`.  Stored under a
-    /// vault-scoped key so trusting one vault does not accidentally skip 2FA on another.
-    func saveTrustToken(_ token: String, vaultID: String, expiresAt: Date) {
-        let key = trustTokenKey(for: vaultID)
-        save(token, forKey: key, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
-        let expiryKey = key + ".expiry"
-        save(String(expiresAt.timeIntervalSince1970), forKey: expiryKey,
-             accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    /// #234: a device token that failed registration after retrying, to be
+    /// retried again the next time the app comes to the foreground.
+    func savePendingPushToken(_ token: String) {
+        save(token, forKey: pendingPushTokenKey)
     }
 
-    func loadTrustToken(vaultID: String) -> String? {
-        load(forKey: trustTokenKey(for: vaultID))
+    func loadPendingPushToken() -> String? {
+        load(forKey: pendingPushTokenKey)
     }
 
-    /// Returns the expiry of the stored trust token for `vaultID`, or nil if absent/expired.
-    func trustTokenExpiry(vaultID: String) -> Date? {
-        let key = trustTokenKey(for: vaultID) + ".expiry"
-        guard let raw = load(forKey: key), let interval = TimeInterval(raw) else { return nil }
-        return Date(timeIntervalSince1970: interval)
-    }
-
-    /// Deletes the trusted-device token for `vaultID` (e.g. on remote revocation or sign-out).
-    func deleteTrustToken(vaultID: String) {
-        let key = trustTokenKey(for: vaultID)
-        delete(forKey: key)
-        delete(forKey: key + ".expiry")
-    }
-
-    private func trustTokenKey(for vaultID: String) -> String {
-        "com.ethosprotocol.device_trust_token.\(vaultID)"
+    func deletePendingPushToken() {
+        delete(forKey: pendingPushTokenKey)
     }
 
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {

@@ -1,71 +1,60 @@
-# Byte-compiled CI helper scripts
+# ── Python / CI scripts ───────────────────────────────────────────────────────
 __pycache__/
 *.pyc
+*.pyo
 
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
-**/.DS_Store
-._*
+.AppleDouble
+.LSOverride
 
-# IDE / editor
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
 .idea/
 *.iml
-*.suo
-*.user
 .vscode/
 *.swp
 *.swo
 *~
 
-# Android build outputs
-android/build/
-android/**/build/
-android/local.properties
-android/.gradle/
-android/**/.gradle/
-android/captures/
-android/.externalNativeBuild/
-android/.cxx/
-android/dependency-check-data/
+# ── Android build artefacts (see also android/.gitignore) ─────────────────────
+**/build/
+.gradle/
+local.properties
+/local.properties
+/captures/
+.externalNativeBuild/
+.cxx/
+/dependency-check-data/
 
-# Android test snapshots (Paparazzi / screenshot tests) — generated artifacts, not source
-android/**/src/test/snapshots/
-android/**/snapshots/
+# ── Android test snapshots (Paparazzi / screenshot tests) ─────────────────────
+# These are generated artefacts — regenerate locally with ./gradlew recordPaparazziDebug.
+# Committing them bloats the repo and causes spurious diffs on every UI change.
+**/src/test/snapshots/
+**/snapshots/images/
+**/__snapshots__/
 
-# iOS generated project (XcodeGen output) — regenerated from project.yml, never committed
+# ── iOS / Xcode build artefacts (see also ios/EthosProtocol/.gitignore) ───────
 ios/EthosProtocol/Xcode/
-
-# iOS build
-ios/**/build/
-ios/**/*.xcarchive
-ios/**/*.ipa
-ios/**/*.dSYM.zip
-
-# iOS test snapshots (__Snapshots__ directories from XCTest / swift-snapshot-testing)
-ios/**/__Snapshots__/
-ios/**/__Fixtures__/
-
-# iOS derived data / SPM cached artifacts
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
 .build/
-ios/**/.build/
 
-# Gradle wrapper (keep gradle-wrapper.jar but not downloaded distribution)
-!android/gradle/wrapper/gradle-wrapper.jar
-android/gradle/wrapper/dists/
+# ── iOS test snapshots (swift-snapshot-testing / FBSnapshotTestCase) ──────────
+**/__Snapshots__/
+**/*_snapshots/
+**/ReferenceImages/
+**/FailureDiffs/
 
-# Google services (device-specific, never committed)
-android/**/google-services.json
-
-# Keystore / signing configs
-*.jks
+# ── Secrets / credentials (never commit) ─────────────────────────────────────
+google-services.json
+GoogleService-Info.plist
 *.keystore
-android/keystore.properties
-
-# Node / JS (if any tooling is added)
-node_modules/
-npm-debug.log*
-yarn-error.log*
-
-# Coverage reports
-coverage/
-*.lcov
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+secrets.properties

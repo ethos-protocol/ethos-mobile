@@ -43,11 +43,28 @@ FAIL=0
 
 # ── 1. Fetch ──────────────────────────────────────────────────────────────────
 echo "Fetching: $ASSETLINKS_URL"
+CURL_EXIT=0
 HTTP_CODE=$(curl --silent --output /tmp/assetlinks.json \
                  --write-out "%{http_code}" \
                  --max-time 15 \
                  --fail-with-body \
-                 "$ASSETLINKS_URL" 2>/tmp/assetlinks_err.txt || true)
+                 "$ASSETLINKS_URL" 2>/tmp/assetlinks_err.txt) || CURL_EXIT=$?
+
+# curl never reached the server, so there is no HTTP status to report. Naming the
+# transport failure separately keeps "the domain isn't live / DNS is broken" from
+# being reported as "the file is misconfigured" — they need different fixes.
+if [[ "$CURL_EXIT" -ne 0 && "$HTTP_CODE" == "000" ]]; then
+    case "$CURL_EXIT" in
+        6)  REASON="could not resolve host — the domain has no DNS record (is it registered/live yet?)" ;;
+        7)  REASON="could not connect to the host" ;;
+        28) REASON="request timed out after 15s" ;;
+        35|60) REASON="TLS handshake/certificate failure" ;;
+        *)  REASON="curl failed with exit code $CURL_EXIT" ;;
+    esac
+    echo "ERROR: $ASSETLINKS_URL is unreachable: $REASON" >&2
+    cat /tmp/assetlinks_err.txt >&2 2>/dev/null || true
+    exit 1
+fi
 
 if [[ "$HTTP_CODE" != "200" ]]; then
     echo "ERROR: Expected HTTP 200, got $HTTP_CODE" >&2

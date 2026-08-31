@@ -11,6 +11,8 @@
         android:label="Ethos-Protocol"
         android:theme="@style/Theme.EthosProtocol"
         android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/backup_rules"
         android:supportsRtl="true">
 
         <!-- EthosProtocolApplication implements Configuration.Provider to install the Hilt

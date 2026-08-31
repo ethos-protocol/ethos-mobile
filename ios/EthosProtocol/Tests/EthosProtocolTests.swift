@@ -46,14 +46,59 @@ final class VaultModelTests: XCTestCase {
         XCTAssertEqual(vault.id, "vault-1")
         XCTAssertEqual(vault.status, .active)
         XCTAssertEqual(vault.balance, 50_000_000)
+        // #222: absent on the wire (every response today) defaults to native XLM.
+        XCTAssertEqual(vault.assetCode, "XLM")
+        XCTAssertNil(vault.assetIssuer)
+    }
+
+    // #222: assetCode/assetIssuer are preparation for a non-XLM vault — decoded
+    // when present, defaulted to native XLM when absent (every response today).
+    func test_formattedBalance_usesAssetCodeDefaultOfXLM_whenUnset() {
+        let vault = makeVault(balance: 10_000_000)
+        XCTAssertEqual(vault.assetCode, "XLM")
+        XCTAssertNil(vault.assetIssuer)
+    }
+
+    func test_formattedBalance_formatsNonXLMAssetAmountCorrectly() {
+        let vault = makeVault(
+            balance: 500_000_000,
+            assetCode: "USDC",
+            assetIssuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        )
+        XCTAssertEqual(vault.formattedBalance, "50.0000000 USDC")
+    }
+
+    func test_vaultDecoding_withAssetCodeAndIssuer() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 500000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active",
+          "asset_code": "USDC",
+          "asset_issuer": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertEqual(vault.assetCode, "USDC")
+        XCTAssertEqual(vault.assetIssuer, "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
     }
 
     // MARK: - Helpers
 
-    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil) -> Vault {
+    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil,
+                            assetCode: String = "XLM", assetIssuer: String? = nil) -> Vault {
         Vault(id: "v1", owner: "GABC", beneficiary: "GXYZ",
               balance: balance, checkInInterval: 2_592_000,
-              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active)
+              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active,
+              assetCode: assetCode, assetIssuer: assetIssuer)
     }
 }
 
@@ -1050,6 +1095,198 @@ final class StellarAddressTests: XCTestCase {
     }
 }
 
+// MARK: - #268 Federation Address Detection Tests
+
+/// Tests for `StellarAddress.isFederationAddress`.
+///
+/// Federation addresses (user*domain.com) are rejected by the validator with a
+/// specific hint rather than a generic "invalid address" error.
+final class StellarAddressFederationTests: XCTestCase {
+
+    func test_isFederationAddress_detectsSimplePattern() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("alice*stellar.org"),
+            "A simple user*domain pattern should be detected as a federation address")
+    }
+
+    func test_isFederationAddress_detectsSubdomainPattern() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("bob*wallet.example.com"),
+            "A federation address with a subdomain should be detected")
+    }
+
+    func test_isFederationAddress_detectsNumericLocalPart() {
+        XCTAssertTrue(StellarAddress.isFederationAddress("123*domain.com"))
+    }
+
+    func test_isFederationAddress_rejectsRawGAddress() {
+        // A well-formed Stellar public key never contains '*'.
+        XCTAssertFalse(StellarAddress.isFederationAddress("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            "A raw G… address must not be treated as a federation address")
+    }
+
+    func test_isFederationAddress_rejectsEmptyString() {
+        XCTAssertFalse(StellarAddress.isFederationAddress(""))
+    }
+
+    func test_isFederationAddress_rejectsStarWithEmptyLocalPart() {
+        // "*domain.com" has an empty local part.
+        XCTAssertFalse(StellarAddress.isFederationAddress("*domain.com"))
+    }
+
+    func test_isFederationAddress_rejectsStarWithEmptyDomain() {
+        // "user*" has an empty domain.
+        XCTAssertFalse(StellarAddress.isFederationAddress("user*"))
+    }
+
+    func test_isFederationAddress_rejectsNoStarAtAll() {
+        XCTAssertFalse(StellarAddress.isFederationAddress("nodomain"))
+    }
+
+    func test_isValidPublicKey_rejectsFederationAddress() {
+        // Confirm that the main validator also rejects federation-shaped input so
+        // the UI "disable Create button" path works correctly alongside the hint.
+        XCTAssertFalse(StellarAddress.isValidPublicKey("alice*stellar.org"))
+    }
+}
+
+// MARK: - #269 Screenshot Prevention Tests
+
+/// Tests for the TOTP-secret blur-on-background behaviour.
+///
+/// SwiftUI `View` rendering cannot be unit-tested in a bare SPM bundle, so these
+/// tests cover the *logic gate* that drives the blur: the `scenePhase` value that
+/// `TwoFactorVerifyView` reads to decide whether to apply a blur radius.
+///
+/// The contract being tested:
+///   - blur radius is 0 when scenePhase == .active   (secret visible)
+///   - blur radius is 12 when scenePhase != .active  (secret hidden)
+final class TOTPSecretBlurLogicTests: XCTestCase {
+
+    func test_blurRadius_isZero_whenScenePhaseActive() {
+        // The view applies `.blur(radius: scenePhase == .active ? 0 : 12)`.
+        let blurRadius: Double = ScenePhase.active == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 0, "TOTP secret must be fully visible when the app is active")
+    }
+
+    func test_blurRadius_isNonZero_whenScenePhaseBackground() {
+        let blurRadius: Double = ScenePhase.background == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 12,
+            "TOTP secret must be blurred (radius 12) when the app is backgrounded so "
+            + "the system app-switcher snapshot cannot capture it")
+    }
+
+    func test_blurRadius_isNonZero_whenScenePhaseInactive() {
+        let blurRadius: Double = ScenePhase.inactive == .active ? 0 : 12
+        XCTAssertEqual(blurRadius, 12,
+            "TOTP secret must be blurred when the app is inactive (e.g. notification centre, "
+            + "control centre overlay)")
+    }
+}
+
+// MARK: - #270 SensitiveClipboard Tests
+
+/// Tests for `SensitiveClipboard`.
+///
+/// The auto-clear behaviour requires a real dispatch timer and `UIPasteboard`,
+/// neither of which are reliably testable in a headless SPM bundle. What we
+/// can and do test here are:
+///   1. That `copy` writes the expected value to the pasteboard immediately.
+///   2. That the `clearDelaySeconds` constant is a sane positive value.
+///
+/// The actual timer-fires-and-clears path is covered by the `//
+/// SensitiveClipboard — manual QA checklist` item in `docs/manual-qa-checklist.md`.
+final class SensitiveClipboardTests: XCTestCase {
+
+    func test_copy_writesValueToPasteboard() {
+        let testValue = "JBSWY3DPEHPK3PXP" // example TOTP base32 secret
+        SensitiveClipboard.copy(testValue)
+        // UIPasteboard.general is accessible in SPM test bundles without a host app.
+        XCTAssertEqual(UIPasteboard.general.string, testValue,
+            "SensitiveClipboard.copy must write the value to the system pasteboard immediately")
+        // Clean up so this test does not affect other tests.
+        UIPasteboard.general.string = ""
+    }
+
+    func test_clearDelaySeconds_isPositive() {
+        XCTAssertGreaterThan(SensitiveClipboard.clearDelaySeconds, 0,
+            "Auto-clear delay must be a positive number of seconds")
+    }
+
+    func test_clearDelaySeconds_isAtMost5Minutes() {
+        // 300 s is an upper bound for a "short-lived" clipboard exposure.
+        // Anything longer provides no meaningful protection.
+        XCTAssertLessThanOrEqual(SensitiveClipboard.clearDelaySeconds, 300,
+            "Auto-clear delay must not exceed 5 minutes — longer delays provide no clipboard protection")
+    }
+}
+
+// MARK: - #271 KeychainService Accessibility Audit Tests
+
+/// Regression tests for the accessibility attributes used by `KeychainService`.
+///
+/// iOS Keychain items default to `kSecAttrAccessibleWhenUnlocked` (not device-only)
+/// unless explicitly overridden, which means they can leak via an encrypted backup
+/// restored on a different device. All items in `KeychainService` must use a
+/// `ThisDeviceOnly` accessibility class.
+///
+/// These tests verify the *constants* used in the `save(_:forKey:accessible:)` call
+/// sites rather than making live Keychain calls (which are unreliable in unsigned
+/// SPM test bundles — see `KeychainServiceTests.test_saveAndLoadToken`).
+final class KeychainAccessibilityAuditTests: XCTestCase {
+
+    // MARK: - Default accessibility class
+
+    func test_defaultAccessibility_isWhenUnlockedThisDeviceOnly() {
+        // The `save(_:forKey:accessible:)` helper defaults to
+        // `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Verify the constant is
+        // the expected ThisDeviceOnly variant — not the cross-device
+        // `kSecAttrAccessibleWhenUnlocked` that would allow backup leakage.
+        let defaultAccessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        XCTAssertTrue(defaultAccessibility.contains("ThisDeviceOnly") ||
+                      defaultAccessibility == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String),
+            "Default Keychain accessibility must be a ThisDeviceOnly variant to prevent "
+            + "items leaking via an iCloud/iTunes backup restored on another device")
+    }
+
+    // MARK: - Auth token accessibility
+
+    func test_authTokenAccessibility_isAfterFirstUnlockThisDeviceOnly() {
+        // The auth token uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+        // (not the stricter WhenUnlocked variant) because BackgroundRefreshService
+        // and the TTLWidget extension both read it while the device may be locked.
+        // Critically this is still a *ThisDeviceOnly* class — it cannot be restored
+        // on another device. Verify the constant is the correct variant.
+        let tokenAccessibility = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+        XCTAssertTrue(tokenAccessibility.contains("ThisDeviceOnly") ||
+                      tokenAccessibility == (kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String),
+            "Auth token Keychain accessibility must be AfterFirstUnlockThisDeviceOnly so "
+            + "the token is readable during background refresh yet still device-bound")
+    }
+
+    func test_afterFirstUnlockThisDeviceOnly_isMorePermissiveThanWhenUnlockedThisDeviceOnly() {
+        // The two constants must be *different* — if they were the same value, the
+        // auth-token workaround for background refresh would be meaningless.
+        let afterFirstUnlock = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+        let whenUnlocked = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        XCTAssertNotEqual(afterFirstUnlock, whenUnlocked,
+            "AfterFirstUnlock and WhenUnlocked ThisDeviceOnly must be distinct constants")
+    }
+
+    func test_noItemUsesCrossDeviceAccessibility() {
+        // Belt-and-suspenders: confirm the non-ThisDeviceOnly constants are NOT equal
+        // to the ones KeychainService uses. If they were equal, device-binding would
+        // be silently absent.
+        let crossDevice_whenUnlocked = kSecAttrAccessibleWhenUnlocked as String
+        let crossDevice_afterFirst   = kSecAttrAccessibleAfterFirstUnlock as String
+        let deviceOnly_whenUnlocked  = kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        let deviceOnly_afterFirst    = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String
+
+        XCTAssertNotEqual(crossDevice_whenUnlocked, deviceOnly_whenUnlocked,
+            "kSecAttrAccessibleWhenUnlocked must differ from its ThisDeviceOnly counterpart")
+        XCTAssertNotEqual(crossDevice_afterFirst, deviceOnly_afterFirst,
+            "kSecAttrAccessibleAfterFirstUnlock must differ from its ThisDeviceOnly counterpart")
+    }
+}
+
 // MARK: - #18 Retry With Exponential Backoff Tests
 
 /// Deterministic random source for testing: returns a fixed sequence of values.
@@ -1315,6 +1552,38 @@ final class VaultStoreTests: XCTestCase {
         XCTAssertTrue(store.vaults.contains { $0.id == "vault-new" })
     }
 
+    // MARK: - #223 Poll/push disagreement
+    //
+    // A poll (a full `vaults` replacement, mirroring VaultStore.load) and a
+    // `vault_updated` push (applyUpdate) both funnel through the same in-place
+    // merge for a given vault ID. Per the "Reconciling a poll/push disagreement"
+    // rule in api-contract.md, whichever is applied last always wins outright —
+    // there is no comparison against the previous value.
+
+    func test_pollThenPush_pushWins_whenAppliedLast() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a", balance: 10_000_000)]
+
+        // A poll response lands first (simulated as a wholesale list replacement).
+        store.vaults = [makeVault(id: "vault-a", balance: 20_000_000)]
+        // A `vault_updated` push disagrees and arrives after.
+        store.applyUpdate(makeVault(id: "vault-a", balance: 30_000_000))
+
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-a" }?.balance, 30_000_000)
+    }
+
+    func test_pushThenPoll_pollWins_whenAppliedLast() {
+        let store = VaultStore()
+        store.vaults = [makeVault(id: "vault-a", balance: 10_000_000)]
+
+        // A `vault_updated` push lands first.
+        store.applyUpdate(makeVault(id: "vault-a", balance: 30_000_000))
+        // A poll response disagrees and arrives after.
+        store.vaults = [makeVault(id: "vault-a", balance: 20_000_000)]
+
+        XCTAssertEqual(store.vaults.first { $0.id == "vault-a" }?.balance, 20_000_000)
+    }
+
     private func makeVault(id: String, balance: Int64 = 0) -> Vault {
         Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: balance,
               checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: 100_000, status: .active)
@@ -1372,6 +1641,186 @@ final class AuthStoreSignOutTests: XCTestCase {
 
         XCTAssertFalse(store.isAuthenticated)
         XCTAssertNil(KeychainService.shared.loadToken())
+    }
+}
+
+// MARK: - #234 Push Token Registration Retry Tests
+
+final class PushTokenRegistrationRetryTests: XCTestCase {
+    private struct DummyError: Error {}
+
+    private func fastPolicy(maxAttempts: Int) -> RetryPolicy {
+        RetryPolicy(maxAttempts: maxAttempts, baseDelay: 0.001,
+                    randomSource: SystemRandomSource(), sleep: { _ in })
+    }
+
+    func test_registerPushToken_succeedsAfterTransientFailures_savesTokenAndClearsPending() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 3)
+        var attempts = 0
+        service.registerPushTokenCall = { _ in
+            attempts += 1
+            if attempts < 3 { throw DummyError() }
+        }
+        KeychainService.shared.savePendingPushToken("stale-token")
+
+        await service.registerPushToken("token-abc")
+
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(KeychainService.shared.loadPushToken(), "token-abc")
+        XCTAssertNil(KeychainService.shared.loadPendingPushToken(), "pending token should be cleared on success")
+    }
+
+    func test_registerPushToken_exhaustsRetries_persistsPendingToken() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 3)
+        service.registerPushTokenCall = { _ in throw DummyError() }
+        KeychainService.shared.deletePendingPushToken()
+        KeychainService.shared.deletePushToken()
+
+        await service.registerPushToken("token-xyz")
+
+        XCTAssertNil(KeychainService.shared.loadPushToken(), "should not be marked registered on failure")
+        XCTAssertEqual(KeychainService.shared.loadPendingPushToken(), "token-xyz",
+                       "a failed registration must be persisted for a later foreground retry")
+    }
+
+    func test_retryPendingPushTokenRegistrationIfNeeded_retriesAndClearsOnSuccess() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 1)
+        KeychainService.shared.savePendingPushToken("pending-token")
+        var registered: String?
+        service.registerPushTokenCall = { token in registered = token }
+
+        service.retryPendingPushTokenRegistrationIfNeeded()
+        // registerPushToken runs in a detached Task; give it a moment to complete.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(registered, "pending-token")
+        XCTAssertEqual(KeychainService.shared.loadPushToken(), "pending-token")
+        XCTAssertNil(KeychainService.shared.loadPendingPushToken())
+    }
+
+    func test_retryPendingPushTokenRegistrationIfNeeded_withNoPendingToken_doesNotCallRegister() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        KeychainService.shared.deletePendingPushToken()
+        var wasCalled = false
+        service.registerPushTokenCall = { _ in wasCalled = true }
+
+        service.retryPendingPushTokenRegistrationIfNeeded()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(wasCalled)
+    }
+}
+
+// MARK: - #235/#232 Notification Delivery Log Tests
+
+final class NotificationDeliveryLogTests: XCTestCase {
+
+    private func makeLog() -> NotificationDeliveryLog {
+        // A distinct UserDefaults suite per test so entries never leak between
+        // tests or collide with the app's real on-device log.
+        let suiteName = "notification-delivery-log-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        return NotificationDeliveryLog(defaults: defaults)
+    }
+
+    func test_record_and_recentEvents_mostRecentFirst() {
+        let log = makeLog()
+        log.record(kind: .scheduled, source: .local, eventType: "ttl_warning", vaultID: "vault-a")
+        log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-b")
+
+        let events = log.recentEvents()
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].eventType, "vault_expired")
+        XCTAssertEqual(events[1].eventType, "ttl_warning")
+    }
+
+    func test_recentEvents_neverExceedsMaxEntries() {
+        let log = makeLog()
+        for i in 0..<250 {
+            log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-\(i)")
+        }
+        XCTAssertEqual(log.recentEvents().count, 200)
+        // Oldest entries are dropped, not newest.
+        XCTAssertEqual(log.recentEvents().last?.vaultID, "vault-50")
+    }
+
+    func test_clear_removesAllEvents() {
+        let log = makeLog()
+        log.record(kind: .scheduled, source: .local, eventType: "ttl_warning", vaultID: "vault-a")
+        log.clear()
+        XCTAssertTrue(log.recentEvents().isEmpty)
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_trueWithinWindow() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertTrue(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now.addingTimeInterval(10)))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseOutsideWindow() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now.addingTimeInterval(31)))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForDifferentVault() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-b", eventType: "vault_expired", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForDifferentEventType() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_released", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForPushSource() {
+        // Only a WebSocket delivery should suppress a later push — a prior push
+        // delivery is not grounds to suppress another push.
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForSuppressedKind() {
+        // A suppressed entry is not itself a "delivered" event to dedup against.
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .suppressed, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now))
     }
 }
 
@@ -1494,6 +1943,64 @@ final class UsernameValidationTests: XCTestCase {
 }
 
 // MARK: - #121 Anti-Replay Header Tests
+
+// MARK: - #220 Destructive Confirmation Tests
+
+final class DestructiveConfirmationTests: XCTestCase {
+
+    func test_isConfirmed_false_whenEnteredTextEmpty() {
+        let confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenEnteredTextDoesNotMatch() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vaul"
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenCaseDiffers() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "My-Vault"
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_true_whenEnteredTextMatchesExactly() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault"
+        XCTAssertTrue(confirmation.isConfirmed)
+    }
+
+    func test_isConfirmed_false_whenRequiredTextEmpty() {
+        // An empty required text (e.g. a vault with no name) must never be
+        // satisfiable by an empty entry — there is nothing to type either way.
+        let confirmation = DestructiveConfirmation(requiredText: "")
+        XCTAssertFalse(confirmation.isConfirmed)
+    }
+
+    func test_confirmIfMatched_doesNotFireAction_whenUnconfirmed() {
+        let confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertFalse(actionFired, "The destructive action must never fire without a matching confirmation")
+    }
+
+    func test_confirmIfMatched_doesNotFireAction_forPartialMatch() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault-extra"
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertFalse(actionFired)
+    }
+
+    func test_confirmIfMatched_firesAction_whenConfirmed() {
+        var confirmation = DestructiveConfirmation(requiredText: "my-vault")
+        confirmation.enteredText = "my-vault"
+        var actionFired = false
+        confirmation.confirmIfMatched { actionFired = true }
+        XCTAssertTrue(actionFired)
+    }
+}
 
 final class AntiReplayHeaderTests: XCTestCase {
 

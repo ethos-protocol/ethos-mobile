@@ -12,15 +12,51 @@ data class Vault(
     @SerialName("check_in_interval") val checkInInterval: Long,
     @SerialName("last_check_in") val lastCheckIn: String,
     @SerialName("ttl_remaining") val ttlRemaining: Long? = null,
-    val status: VaultStatus
+    val status: VaultStatus,
+    // Which Stellar asset `balance` is denominated in (#222). Every vault today
+    // holds native XLM; this — and assetIssuer — exist so a future non-XLM vault
+    // doesn't need a breaking schema change. Absent on a server response (every
+    // response today) defaults to "XLM", mirroring iOS's Vault.assetCode.
+    @SerialName("asset_code") val assetCode: String = "XLM",
+    // The issuing account for assetCode, or null for native XLM (mirrors
+    // AcceptedAsset's convention server-side). See api-contract.md §Vault (#222).
+    @SerialName("asset_issuer") val assetIssuer: String? = null
 ) {
     val isExpiringSoon: Boolean get() = (ttlRemaining ?: Long.MAX_VALUE) < 86_400L
-    val formattedBalance: String get() = "%.7f XLM".format(balance / 10_000_000.0)
+
+    // Assumes the 7-decimal stroop scale that applies to every Stellar classic
+    // asset regardless of code — only the unit label varies (#222).
+    val formattedBalance: String get() = "%.7f %s".format(balance / 10_000_000.0, assetCode)
 }
 
 // A single real-time event delivered over the `wss://.../ws?vault_id={id}` socket
 // (see shared/api-contract.md). `vault` carries the full updated Vault so consumers
 // can update state in place without an extra round trip.
+/**
+ * Guards an irreversible action (delete/archive a vault, etc.) behind a typed
+ * confirmation rather than a plain Yes/No tap — codified now as a guardrail
+ * before any delete/archive endpoint is wired up on either client (#220),
+ * given the financial and beneficiary implications of getting this wrong.
+ * [requiredText] is typically the vault's own name/ID, so confirming requires
+ * the user to actually read and type it back exactly. Mirrors iOS's
+ * `DestructiveConfirmation` (Sources/Models/Models.swift).
+ */
+data class DestructiveConfirmation(
+    val requiredText: String,
+    val enteredText: String = ""
+) {
+    val isConfirmed: Boolean get() = requiredText.isNotEmpty() && enteredText == requiredText
+
+    /**
+     * Runs [action] only if [isConfirmed] — the single choke point the
+     * destructive-confirmation dialog uses, so "the button is disabled" and
+     * "the underlying action never fires" can't drift apart from each other.
+     */
+    fun confirmIfMatched(action: () -> Unit) {
+        if (isConfirmed) action()
+    }
+}
+
 @Serializable
 data class VaultEvent(
     val type: String,

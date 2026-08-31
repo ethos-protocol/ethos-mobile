@@ -13,6 +13,8 @@ final class DeepLinkLogger {
         case vaultActionWithdraw = "deep_link_vault_action_withdraw"
         case vaultActionViewDetails = "deep_link_vault_action_view_details"
         case vaultActionManageBeneficiary = "deep_link_vault_action_manage_beneficiary"
+        /// #258: Account recovery via emailed link.
+        case recoveryLink = "deep_link_recovery_link"
     }
 
     private var eventLog: [DeepLinkLogEntry] = []

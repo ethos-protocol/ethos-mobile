@@ -16,4 +16,9 @@
           }
         }]
     </string>
+
+    <string name="widget_configure_title">Select Vault for Widget</string>
+    <string name="widget_balance_label">Balance</string>
+    <string name="widget_beneficiary_label">Beneficiary</string>
+    <string name="widget_no_vaults">No vaults available</string>
 </resources>

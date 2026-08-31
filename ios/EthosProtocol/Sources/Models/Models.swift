@@ -14,9 +14,46 @@ public struct Vault: Codable, Identifiable, Equatable {
     public let lastCheckIn: Date
     public let ttlRemaining: UInt64?
     public let status: VaultStatus
+    /// Which Stellar asset `balance` is denominated in (#222). Every vault today
+    /// holds native XLM; this — and `assetIssuer` — exist so a future non-XLM
+    /// vault doesn't need a breaking schema change. Decoded defensively:
+    /// absent on a server response (every response today) defaults to `"XLM"`.
+    public let assetCode: String
+    /// The issuing account for `assetCode`, or `nil` for native XLM (mirrors
+    /// `AcceptedAsset.issuer`'s convention). See api-contract.md §Vault (#222).
+    public let assetIssuer: String?
 
     public enum VaultStatus: String, Codable {
         case active, expired, released, paused
+    }
+
+    public init(id: String, owner: String, beneficiary: String, balance: Int64,
+                checkInInterval: UInt64, lastCheckIn: Date, ttlRemaining: UInt64?,
+                status: VaultStatus, assetCode: String = "XLM", assetIssuer: String? = nil) {
+        self.id = id
+        self.owner = owner
+        self.beneficiary = beneficiary
+        self.balance = balance
+        self.checkInInterval = checkInInterval
+        self.lastCheckIn = lastCheckIn
+        self.ttlRemaining = ttlRemaining
+        self.status = status
+        self.assetCode = assetCode
+        self.assetIssuer = assetIssuer
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        owner = try container.decode(String.self, forKey: .owner)
+        beneficiary = try container.decode(String.self, forKey: .beneficiary)
+        balance = try container.decode(Int64.self, forKey: .balance)
+        checkInInterval = try container.decode(UInt64.self, forKey: .checkInInterval)
+        lastCheckIn = try container.decode(Date.self, forKey: .lastCheckIn)
+        ttlRemaining = try container.decodeIfPresent(UInt64.self, forKey: .ttlRemaining)
+        status = try container.decode(VaultStatus.self, forKey: .status)
+        assetCode = try container.decodeIfPresent(String.self, forKey: .assetCode) ?? "XLM"
+        assetIssuer = try container.decodeIfPresent(String.self, forKey: .assetIssuer)
     }
 
     public var isExpiringSoon: Bool {
@@ -24,9 +61,46 @@ public struct Vault: Codable, Identifiable, Equatable {
         return ttl < 86_400 // < 24 hours
     }
 
+    /// Formats `balance` (stroops) in `assetCode`. Assumes the 7-decimal stroop
+    /// scale that applies to every Stellar classic asset regardless of code —
+    /// only the unit label varies (#222).
     public var formattedBalance: String {
-        let xlm = Double(balance) / 10_000_000
-        return String(format: "%.7f XLM", xlm)
+        let amount = Double(balance) / 10_000_000
+        return String(format: "%.7f", amount) + " " + assetCode
+    }
+}
+
+/// Client-side countdown derived from a server-provided TTL snapshot (`GET
+/// /vaults/{id}/ttl`), ticked locally between refreshes so the displayed value
+/// counts down in real time instead of visibly freezing until the next poll or
+/// `vault_updated` push (#221).
+struct TTLCountdown: Equatable {
+    /// The TTL value (seconds remaining) last reported by the server.
+    private(set) var serverValue: UInt64
+    /// When `serverValue` was fetched — the baseline the local tick counts down from.
+    private(set) var fetchedAt: Date
+
+    init(serverValue: UInt64, fetchedAt: Date = Date()) {
+        self.serverValue = serverValue
+        self.fetchedAt = fetchedAt
+    }
+
+    /// Seconds remaining as of `now`, ticking down from `serverValue`. Never goes
+    /// below zero, even once the local tick has run past a stale server value.
+    func remaining(at now: Date = Date()) -> UInt64 {
+        let elapsed = now.timeIntervalSince(fetchedAt)
+        guard elapsed > 0 else { return serverValue }
+        let remaining = Double(serverValue) - elapsed
+        return remaining > 0 ? UInt64(remaining) : 0
+    }
+
+    /// Reconciles with a fresh server value, from either a poll or a `vault_updated`
+    /// push (#223: both are treated identically — whichever arrives is applied). The
+    /// server value always wins over wherever the local tick has drifted to: this
+    /// replaces the baseline outright rather than comparing against it.
+    mutating func reconcile(serverValue: UInt64, at now: Date = Date()) {
+        self.serverValue = serverValue
+        self.fetchedAt = now
     }
 }
 
@@ -115,6 +189,29 @@ enum UsernameValidation {
         guard trimmed.count <= maxLength else { return .failure(.tooLong) }
         guard trimmed.unicodeScalars.allSatisfy(allowedCharacters.contains) else { return .failure(.invalidCharacters) }
         return .success(trimmed)
+    }
+}
+
+/// Guards an irreversible action (delete/archive a vault, etc.) behind a typed
+/// confirmation rather than a plain Yes/No tap — codified now as a guardrail
+/// before any delete/archive endpoint is wired up on either client (#220),
+/// given the financial and beneficiary implications of getting this wrong.
+/// `requiredText` is typically the vault's own name/ID, so confirming requires
+/// the user to actually read and type it back exactly.
+struct DestructiveConfirmation: Equatable {
+    let requiredText: String
+    var enteredText: String = ""
+
+    var isConfirmed: Bool {
+        !requiredText.isEmpty && enteredText == requiredText
+    }
+
+    /// Runs `action` only if `isConfirmed` — the single choke point the
+    /// destructive-confirmation views use, so "the button is disabled" and
+    /// "the underlying action never fires" can't drift apart from each other.
+    func confirmIfMatched(_ action: () -> Void) {
+        guard isConfirmed else { return }
+        action()
     }
 }
 

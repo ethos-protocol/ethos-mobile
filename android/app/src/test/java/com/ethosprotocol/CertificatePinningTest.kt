@@ -106,6 +106,44 @@ class CertificatePinningTest {
         tm.checkServerTrusted(fakeCertChain(), "RSA")   // must not throw
     }
 
+    // ── Default (production) pin configuration — #169 ─────────────────────
+
+    @Test
+    fun `DEFAULT_PINS is empty when no pins are configured for the build`() {
+        // BuildConfig.CERT_PINS is blank for debug/unit-test builds; release builds get
+        // their value from ETHOS_CERT_PINS. Nothing may be compiled in as a fallback —
+        // a placeholder pin here would reject every real certificate at runtime.
+        assertTrue(
+            "Unconfigured builds must have an empty pin set, not placeholder pins",
+            CertificatePinner.DEFAULT_PINS.isEmpty()
+        )
+    }
+
+    @Test
+    fun `default CertificatePinner disables pinning when unconfigured`() {
+        // This is the pinner ApiClient's production HttpClientEngine builds (see
+        // ApiClient.kt's default `engine` argument), constructed with no arguments.
+        assertFalse(CertificatePinner().isPinningEnabled)
+    }
+
+    @Test
+    fun `default PinningTrustManager accepts a system-trusted certificate`() {
+        // Regression test for #169: with the default pin set, a certificate that matches
+        // no pin must still be accepted (system trust decides), rather than every HTTPS
+        // connection failing with SSLPeerUnverifiedException.
+        val tm = PinningTrustManager(CertificatePinner(), mockk<X509TrustManager>(relaxed = true))
+        tm.checkServerTrusted(fakeCertChain(), "RSA")   // must not throw
+    }
+
+    @Test(expected = SSLPeerUnverifiedException::class)
+    fun `configured pins still reject a mismatching certificate`() {
+        // The fix must not disable pinning altogether: once real pins are configured,
+        // a non-matching certificate is still rejected.
+        val p = pinner("k1Vw6WsE9scmn9tRAWjOTNTWyfPpWWx3fV1c-dCLwyQ=", mockHash = "mitmPin==")
+        val tm = PinningTrustManager(p, mockk(relaxed = true))
+        tm.checkServerTrusted(fakeCertChain(), "RSA")   // must throw
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /**

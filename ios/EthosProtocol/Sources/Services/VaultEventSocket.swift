@@ -7,6 +7,7 @@ protocol WebSocketTasking: AnyObject {
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func receive(completionHandler: @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping (Error?) -> Void)
 }
 
 extension URLSessionWebSocketTask: WebSocketTasking {}
@@ -74,6 +75,8 @@ final class VaultEventSocket {
         case vaultReleased(vaultID: String, releasedAt: Date, amount: Int64)
         /// Server keepalive — no action required; clients may reply with `pong`.
         case ping
+        /// Server acknowledgement of a multi-vault subscribe request (#253).
+        case subscribed(vaultIDs: [String])
         /// Server signals a recoverable error (e.g. invalid vault_id on connect).
         case error(code: String, message: String)
         /// Unrecognised message type — ignored per api-contract.md §WebSocket
@@ -101,6 +104,10 @@ final class VaultEventSocket {
     private var vaultID: String?
     private var isStopped = true
     private var reconnectTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    /// Interval between client-initiated heartbeat pings. 30 s matches most NAT timeout windows.
+    var heartbeatInterval: TimeInterval = 30
+    private var subscribedVaultIDs: [String] = []
 
     init(baseURL: URL,
          maxReconnectAttempts: Int = 5,
@@ -126,12 +133,23 @@ final class VaultEventSocket {
         openSocket()
     }
 
+    /// Connects and subscribes to events for multiple vaults over a single connection.
+    /// The primary vault_id in the URL query param is vaultIDs.first; the rest are subscribed
+    /// via a post-connect "subscribe" message per shared/api-contract.md §WebSocket.
+    func connect(vaultIDs: [String]) {
+        guard !vaultIDs.isEmpty else { return }
+        subscribedVaultIDs = vaultIDs
+        connect(vaultID: vaultIDs[0])
+    }
+
     /// Stops the stream and cancels any pending reconnect. Safe to call
     /// regardless of current state.
     func stop() {
         isStopped = true
         reconnectTask?.cancel()
         reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         state = .disconnected
@@ -162,6 +180,8 @@ final class VaultEventSocket {
         // reaching maxReconnectAttempts / .fallbackToPolling.
         state = .connected
         listen()
+        sendSubscribe(vaultIDs: subscribedVaultIDs)
+        startHeartbeat()
     }
 
     /// Builds `wss://<host>/<path>/ws?vault_id=<id>` from an `https://` (or
@@ -224,6 +244,9 @@ final class VaultEventSocket {
             event = .vaultReleased(vaultID: msg.vaultId, releasedAt: msg.releasedAt, amount: msg.amount)
         case "ping":
             event = .ping
+        case "subscribed":
+            guard let msg = try? decoder.decode(WireSubscribed.self, from: data) else { return }
+            event = .subscribed(vaultIDs: msg.vaultIds)
         case "error":
             guard let msg = try? decoder.decode(WireError.self, from: data) else { return }
             event = .error(code: msg.code, message: msg.message)
@@ -232,6 +255,11 @@ final class VaultEventSocket {
             event = .unknown
         }
         onEvent?(event)
+        // #252: Reply to server pings with a pong frame so the connection isn't
+        // dropped by intermediate proxies that treat an un-replied ping as a stale link.
+        if case .ping = event {
+            task?.send(.string(#"{"type":"pong"}"#)) { _ in }
+        }
     }
 
     private func handleFailure() {
@@ -252,6 +280,35 @@ final class VaultEventSocket {
             guard !Task.isCancelled, !self.isStopped else { return }
             self.openSocket()
         }
+    }
+
+    // MARK: - Heartbeat (#252)
+
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled && !isStopped {
+                try? await self.backoff.sleep(heartbeatInterval)
+                guard !Task.isCancelled && !isStopped else { return }
+                self.task?.send(.string(#"{"type":"ping"}"#)) { [weak self] error in
+                    if error != nil {
+                        Task { @MainActor in self?.handleFailure() }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Multi-vault subscribe (#253)
+
+    /// Sends a multi-vault subscribe message post-connect.
+    private func sendSubscribe(vaultIDs: [String]) {
+        guard !vaultIDs.isEmpty, let task else { return }
+        // Encode manually to avoid bringing in Codable for a simple payload.
+        let idsJSON = vaultIDs.map { "\"\($0)\"" }.joined(separator: ",")
+        let msg = "{\"type\":\"subscribe\",\"vault_ids\":[\(idsJSON)]}"
+        task.send(.string(msg)) { _ in }
     }
 
     // MARK: - Wire message decoders (internal, one per server→client type)
@@ -284,5 +341,9 @@ final class VaultEventSocket {
     private struct WireError: Decodable {
         let code: String
         let message: String
+    }
+
+    private struct WireSubscribed: Decodable {
+        let vaultIds: [String]
     }
 }
