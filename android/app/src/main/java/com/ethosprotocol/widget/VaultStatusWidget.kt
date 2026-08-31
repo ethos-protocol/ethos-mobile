@@ -104,27 +104,28 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val result = apiClient.listVaults()
-        if (result is ApiResult.Success) {
-            // Pick the active vault with the lowest ttlRemaining — the same
-            // "most urgent vault" selection that iOS TTLTimelineProvider uses
-            // (min(by:) on ttlRemaining). Using firstOrNull() would show a
-            // different vault than iOS for accounts with multiple vaults.
-            val vault = result.data
-                .filter { it.status == VaultStatus.active }
-                .minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
-                ?: return Result.success()
-            val ttl = formatTtl(vault.ttlRemaining)
+        // Pick the active vault with the lowest ttlRemaining — the same
+        // "most urgent vault" selection that iOS TTLTimelineProvider uses
+        // (min(by:) on ttlRemaining). Using firstOrNull() would show a
+        // different vault than iOS for accounts with multiple vaults.
+        val vault = (apiClient.listVaults() as? ApiResult.Success)?.data
+            ?.filter { it.status == VaultStatus.active }
+            ?.minByOrNull { it.ttlRemaining ?: Long.MAX_VALUE }
+
+        if (vault != null) {
             VaultStatusWidget.saveVaultData(
                 applicationContext,
                 vaultId = vault.id,
                 vaultName = vault.id.take(12) + "…",
-                ttlRemaining = ttl,
+                ttlRemaining = formatTtl(vault.ttlRemaining),
                 lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn)
             )
             VaultStatusWidget.refreshAll(applicationContext)
-            schedule(applicationContext, determineUpdateInterval(vault.ttlRemaining))
         }
+
+        // Always queue the next run — this worker is its own scheduler, so skipping it on an
+        // error or an empty vault list would stop the widget updating for good.
+        schedule(applicationContext, determineUpdateInterval(vault?.ttlRemaining))
         return Result.success()
     }
 
@@ -138,32 +139,52 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME = "vault_widget_update"
 
-        // WorkManager enforces a 15-minute floor on periodic work, so that's the shortest
-        // interval available for a vault close to expiring. Once it's not urgent, back off
-        // to a much longer interval to conserve battery (coordinated with iOS's #33 gap).
-        private const val URGENT_INTERVAL_MINUTES = 15L
-        private const val NORMAL_INTERVAL_MINUTES = 60L
-        private const val URGENCY_THRESHOLD_SECONDS = 86_400L // 24h, matches Vault.isExpiringSoon
+        // Refresh interval tiers ported from iOS TTLWidget.computeNextUpdateInterval (#199):
+        // the closer a vault is to expiring, the more often the widget is refreshed. The
+        // 60-minute idle tier is Android-only — a vault more than a day from expiry moves too
+        // slowly to be worth an hourly-or-better wake-up on a battery-budgeted device.
+        private const val IDLE_INTERVAL_MINUTES = 60L
+        private const val NORMAL_INTERVAL_MINUTES = 15L
+        private const val ELEVATED_INTERVAL_MINUTES = 10L
+        private const val URGENT_INTERVAL_MINUTES = 5L
+        private const val CRITICAL_INTERVAL_MINUTES = 2L
+
+        private const val IDLE_THRESHOLD_SECONDS = 86_400L    // 24h, matches Vault.isExpiringSoon
+        private const val NORMAL_THRESHOLD_SECONDS = 21_600L  // 6h
+        private const val ELEVATED_THRESHOLD_SECONDS = 3_600L // 1h
+        private const val URGENT_THRESHOLD_SECONDS = 1_800L   // 30m
 
         /** Picks the widget refresh interval based on how close the most urgent vault is to expiring. */
-        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long =
-            if ((ttlRemainingSeconds ?: Long.MAX_VALUE) < URGENCY_THRESHOLD_SECONDS) {
-                URGENT_INTERVAL_MINUTES
-            } else {
-                NORMAL_INTERVAL_MINUTES
+        internal fun determineUpdateInterval(ttlRemainingSeconds: Long?): Long {
+            val ttl = ttlRemainingSeconds ?: return IDLE_INTERVAL_MINUTES
+            return when {
+                ttl >= IDLE_THRESHOLD_SECONDS -> IDLE_INTERVAL_MINUTES
+                ttl >= NORMAL_THRESHOLD_SECONDS -> NORMAL_INTERVAL_MINUTES
+                ttl >= ELEVATED_THRESHOLD_SECONDS -> ELEVATED_INTERVAL_MINUTES
+                ttl >= URGENT_THRESHOLD_SECONDS -> URGENT_INTERVAL_MINUTES
+                else -> CRITICAL_INTERVAL_MINUTES
             }
+        }
 
-        fun schedule(context: Context, intervalMinutes: Long = NORMAL_INTERVAL_MINUTES) {
-            val request = PeriodicWorkRequestBuilder<VaultWidgetUpdateWorker>(intervalMinutes, TimeUnit.MINUTES)
+        /**
+         * Queues the next widget refresh [intervalMinutes] from now.
+         *
+         * One-time work rather than periodic work: WorkManager enforces a 15-minute floor on
+         * periodic intervals, which is too coarse for the near-expiry tiers. Each run
+         * re-schedules the next one, mirroring iOS's `.after(nextUpdate)` timeline policy.
+         */
+        fun schedule(context: Context, intervalMinutes: Long = IDLE_INTERVAL_MINUTES) {
+            val request = OneTimeWorkRequestBuilder<VaultWidgetUpdateWorker>()
+                .setInitialDelay(intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)
                         .build()
                 )
                 .build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            WorkManager.getInstance(context).enqueueUniqueWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.UPDATE,
+                ExistingWorkPolicy.REPLACE,
                 request
             )
         }
