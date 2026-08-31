@@ -16,6 +16,19 @@ import Foundation
 ///   5+ failures   → 120 s (capped)
 ///
 /// A successful verification resets all counters.
+///
+/// ## Persistence (#171)
+///
+/// The failure count and the cooldown *deadline* (an absolute timestamp) are
+/// persisted in `UserDefaults`, keyed by [scope], and restored on `init`. The
+/// limiter is held as a `@StateObject` in `TwoFactorVerifyView`, whose identity
+/// is recreated on ordinary navigation — dismissing and re-presenting the
+/// verification screen, no app kill required. Without persistence that reset the
+/// escalating cooldown to zero between guesses, which made the throttle
+/// bypassable. State now survives view recreation and process restarts; it is a
+/// throttle, not secret material, so `UserDefaults` (not the Keychain) is the
+/// right store, and it remains a defense-in-depth complement to server-side
+/// rate limiting rather than a substitute for it.
 @MainActor
 final class OTPRateLimiter: ObservableObject {
 
@@ -32,11 +45,8 @@ final class OTPRateLimiter: ObservableObject {
     var now: () -> Date = { Date() }
 
     /// Schedules a repeated action on the main run-loop. Overridable in tests.
-    var makeTimer: (_ interval: TimeInterval, _ handler: @escaping () -> Void) -> TimerToken = {
-        interval, handler in
-        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in handler() }
-        return TimerToken(cancel: { timer.invalidate() })
-    }
+    var makeTimer: (_ interval: TimeInterval, _ handler: @escaping () -> Void) -> TimerToken =
+        OTPRateLimiter.scheduleRunLoopTimer
 
     private var timerToken: TimerToken?
     private let defaults: UserDefaults
@@ -61,6 +71,35 @@ final class OTPRateLimiter: ObservableObject {
         resumeTicking(seconds: remaining)
     }
 
+    // MARK: - Persistence
+
+    private let store: UserDefaults
+    private let failureCountKey: String
+    private let deadlineKey: String
+
+    /// - Parameters:
+    ///   - scope: Namespace for the persisted keys — one throttle per flow (or
+    ///     per vault, by passing the vault ID).
+    ///   - store: Backing store, overridable so tests stay isolated from
+    ///     `UserDefaults.standard`.
+    ///   - now: See [now]; passed here as well so restored state can be
+    ///     evaluated against a test clock.
+    ///   - makeTimer: See [makeTimer]; passed here as well so restoring an
+    ///     in-progress cooldown doesn't schedule a real `Timer` in tests.
+    init(
+        scope: String = "2fa-verify",
+        store: UserDefaults = .standard,
+        now: (() -> Date)? = nil,
+        makeTimer: ((_ interval: TimeInterval, _ handler: @escaping () -> Void) -> TimerToken)? = nil
+    ) {
+        self.store = store
+        self.failureCountKey = "otp_rate_limiter.\(scope).failure_count"
+        self.deadlineKey = "otp_rate_limiter.\(scope).cooldown_deadline"
+        if let now { self.now = now }
+        if let makeTimer { self.makeTimer = makeTimer }
+        restorePersistedState()
+    }
+
     // MARK: - Public API
 
     /// Records a failed verification attempt and starts the cooldown if appropriate.
@@ -69,10 +108,14 @@ final class OTPRateLimiter: ObservableObject {
         defaults.set(failureCount, forKey: Self.failureCountKey)
         let cooldown = cooldownSeconds(for: failureCount)
         guard cooldown > 0 else { return }
+        store.set(now().addingTimeInterval(TimeInterval(cooldown)).timeIntervalSince1970,
+                  forKey: deadlineKey)
         startCooldown(seconds: cooldown)
     }
 
     /// Resets all state — call this on a successful OTP verification.
+    /// Clears the persisted state too, so a legitimate user who eventually
+    /// enters the correct code is not throttled by leftover failures.
     func reset() {
         failureCount = 0
         cooldownSecondsRemaining = 0
@@ -119,6 +162,10 @@ final class OTPRateLimiter: ObservableObject {
                 } else {
                     self.timerToken?.cancel()
                     self.timerToken = nil
+                    // The deadline has passed; drop it so a later instance doesn't
+                    // re-evaluate it. The failure count is kept so the schedule keeps
+                    // escalating until a successful verification calls reset().
+                    self.store.removeObject(forKey: self.deadlineKey)
                 }
             }
         }

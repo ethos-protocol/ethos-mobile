@@ -26,9 +26,16 @@ import javax.inject.Singleton
  *   - **Current**: SHA-256 of the live certificate's SPKI.
  *   - **Backup**: SHA-256 of the next certificate that will replace it.
  *
+ * Pins are never hardcoded here: [CertificatePinner.DEFAULT_PINS] reads the
+ * comma-separated `BuildConfig.CERT_PINS` field, which the release build type
+ * populates from the `ETHOS_CERT_PINS` environment variable / `ethos.certPins`
+ * Gradle property (see `android/app/build.gradle.kts`). An unconfigured build —
+ * debug by default — therefore has an *empty* pin set, which disables pinning
+ * and defers to the system trust store.
+ *
  * Rotation procedure:
  *   1. Generate the new certificate and compute `sha256(SPKI)`.
- *   2. Add the new hash to [pinnedHashes] and ship the app update.
+ *   2. Add the new hash to `ETHOS_CERT_PINS` and ship the app update.
  *   3. Once the old certificate is replaced on the server, remove its hash in
  *      the next release.
  *
@@ -86,20 +93,11 @@ open class CertificatePinner(
          *
          * Release builds take their pins from the `ETHOS_CERT_PINS` environment variable /
          * `ethos.certPins` Gradle property, so a certificate rotation is a configuration
-         * change rather than a source change. When nothing is configured the compiled-in
-         * [PLACEHOLDER_PINS] are used — a combination CI rejects for release builds.
-         */
-        val DEFAULT_PINS: Set<String>
-            get() = BuildConfig.CERT_PINS
-                .split(',')
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-                .toSet()
-                .ifEmpty { PLACEHOLDER_PINS }
-
-        /**
-         * Placeholder pins — replace with real SPKI SHA-256 hashes before
-         * shipping to production.
+         * change rather than a source change. There is deliberately no compiled-in
+         * fallback: when nothing is configured this is the empty set, which *disables*
+         * pinning and falls back to the system trust store (#169) rather than pinning to
+         * a value no real certificate can ever match. Shipping a release with no pins
+         * configured is caught by CI (`.github/scripts/verify_cert_pins.py`).
          *
          * To compute a pin from a live certificate:
          *   openssl s_client -connect api.ethos-protocol.app:443 2>/dev/null \
@@ -107,16 +105,13 @@ open class CertificatePinner(
          *     | openssl pkey -pubin -outform der \
          *     | openssl dgst -sha256 -binary \
          *     | openssl enc -base64
-         *
-         * Two entries are required: the current certificate pin and a backup
-         * pin for the next certificate (rotation strategy — see class docs).
          */
-        val PLACEHOLDER_PINS: Set<String> = setOf(
-            // Current certificate SPKI SHA-256 (replace with real value)
-            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            // Backup certificate SPKI SHA-256 (replace with real value)
-            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="
-        )
+        val DEFAULT_PINS: Set<String>
+            get() = BuildConfig.CERT_PINS
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
     }
 }
 
@@ -144,8 +139,8 @@ class PinningTrustManager(
             throw javax.net.ssl.SSLPeerUnverifiedException(
                 "Certificate pin mismatch for ${pinner.pinnedHost} — connection rejected. " +
                 "None of the ${chain.size} certificate(s) in the chain matched any pinned hash. " +
-                "If the server certificate was recently renewed, update the pins in " +
-                "CertificatePinner.DEFAULT_PINS."
+                "If the server certificate was recently renewed, update the configured " +
+                "pins (ETHOS_CERT_PINS / ethos.certPins) and ship a new build."
             )
         }
     }

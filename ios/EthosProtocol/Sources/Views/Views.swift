@@ -1210,7 +1210,9 @@ struct TwoFactorVerifyView: View {
     @State private var isVerifying = false
     @State private var error: String?
 
-    // #119: Escalating cooldown after repeated OTP failures.
+    // #119: Escalating cooldown after repeated OTP failures. State is persisted
+    // (#171), so dismissing and re-presenting this view resumes any cooldown in
+    // progress instead of recreating the limiter with a zeroed failure count.
     @StateObject private var rateLimiter = OTPRateLimiter()
 
     private var isInitialSetup: Bool {

@@ -12,7 +12,9 @@ or a new target/config is added without it, with no signal to anyone.
 
 This script re-reads a target's Info.plist the same way Bundle.main does
 (plistlib, not string-matching) and fails if TLS_PUBLIC_KEY_PINS is missing,
-empty, or not an array of non-empty strings. It is a no-op for any
+empty, not an array of non-empty strings, or contains nothing but unexpanded
+$(BUILD_SETTING) placeholders (i.e. the pins were never configured for this
+build configuration — see project.yml). It is a no-op for any
 --configuration other than Release, matching PinningDelegate's documented
 "empty pins disables pinning for local dev" design.
 
@@ -67,6 +69,16 @@ def check_target(name: str, plist_path: str) -> str | None:
         return (
             f"{name}: {PINS_KEY} in {plist_path} must be an array of "
             f"non-empty strings (Base64-encoded SPKI SHA-256 hashes)."
+        )
+    # The plist declares its entries as $(TLS_PUBLIC_KEY_PIN_CURRENT) / $(..._BACKUP)
+    # build settings, which are blank until configured for the build. PinningDelegate
+    # ignores such entries, so a plist carrying only placeholders means pinning is off.
+    if not [p for p in pins if not p.strip().startswith(("$(", "${"))]:
+        return (
+            f"{name}: {PINS_KEY} in {plist_path} contains only unconfigured build-setting "
+            f"placeholders ({', '.join(pins)}). Set TLS_PUBLIC_KEY_PIN_CURRENT / "
+            f"TLS_PUBLIC_KEY_PIN_BACKUP for this configuration, or certificate pinning is "
+            f"silently disabled for this target."
         )
     return None
 

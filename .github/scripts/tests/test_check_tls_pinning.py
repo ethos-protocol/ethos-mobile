@@ -45,9 +45,11 @@ BASE_PLIST = {
 
 class CheckTargetTests(unittest.TestCase):
     def test_fails_against_current_repo_info_plists(self):
-        """The checked-in Info.plists (pre-Issue-2-fix) don't carry
-        TLS_PUBLIC_KEY_PINS yet — the Release check must fail against them
-        exactly as it would in CI today."""
+        """The checked-in Info.plists declare TLS_PUBLIC_KEY_PINS as
+        $(TLS_PUBLIC_KEY_PIN_CURRENT)/$(..._BACKUP) build settings that are blank
+        until configured — so pinning is still off and the Release check must
+        fail against them exactly as it would in CI today. Update this test (do
+        not delete it) once real pins are configured for Release."""
         ios_root = REPO_ROOT / "ios" / "EthosProtocol"
         app_plist = ios_root / "EthosProtocol" / "Info.plist"
         widget_plist = ios_root / "TTLWidget" / "Info.plist"
@@ -127,6 +129,41 @@ class CheckTargetTests(unittest.TestCase):
             ])
 
             self.assertEqual(code, 1)
+
+    def test_fails_when_pins_are_only_unexpanded_build_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist_path = write_plist(Path(tmp), "Info.plist", {
+                **BASE_PLIST,
+                "TLS_PUBLIC_KEY_PINS": [
+                    "$(TLS_PUBLIC_KEY_PIN_CURRENT)",
+                    "$(TLS_PUBLIC_KEY_PIN_BACKUP)",
+                ],
+            })
+
+            code, output = run_main([
+                "--configuration", "Release",
+                "--target", f"EthosProtocol:{plist_path}",
+            ])
+
+            self.assertEqual(code, 1)
+            self.assertIn("TLS_PUBLIC_KEY_PINS", output)
+
+    def test_passes_when_one_pin_configured_and_backup_slot_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plist_path = write_plist(Path(tmp), "Info.plist", {
+                **BASE_PLIST,
+                "TLS_PUBLIC_KEY_PINS": [
+                    "k1Vw6WsE9scmn9tRAWjOTNTWyfPpWWx3fV1c/dCLwyQ=",
+                    "$(TLS_PUBLIC_KEY_PIN_BACKUP)",
+                ],
+            })
+
+            code, _output = run_main([
+                "--configuration", "Release",
+                "--target", f"EthosProtocol:{plist_path}",
+            ])
+
+            self.assertEqual(code, 0)
 
     def test_fails_when_plist_file_is_missing(self):
         code, output = run_main([
