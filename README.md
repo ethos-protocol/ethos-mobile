@@ -128,3 +128,32 @@ Workflow files:
 - iOS: `.github/workflows/ios-dependency-check.yml`
 
 Both workflows treat dependency-scan failures as a consistent, human-readable warning in the job log and create a scheduled-run issue alert when the scan fails outside a PR context.
+
+### Release notes parity-gap validation
+Release notes are expected to stay aligned with the "Known gaps" table in [PARITY.md](PARITY.md). To prevent a release from claiming a parity issue is closed while the table still lists it as open, CI includes a parity audit workflow:
+
+- Workflow: `.github/workflows/release-notes-parity-check.yml`
+- Script: `.github/scripts/release_notes_parity_check.py`
+
+The validator:
+- extracts issue numbers from the "Known gaps" table in [PARITY.md](PARITY.md)
+- scans merged PRs for parity-gap issue references and close verbs such as "closes #..." or "fixes #..."
+- checks the current release notes for the same claim patterns
+- fails when a listed parity gap is explicitly called out as closed without the table being updated
+
+Run it locally from the repo root with:
+
+```bash
+python3 .github/scripts/release_notes_parity_check.py \
+  --parity-file PARITY.md \
+  --prs-file merged-prs.json \
+  --release-notes-file release-notes.md
+```
+
+To generate the JSON input for the PR scan:
+
+```bash
+gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
+```
+
+This keeps parity-status messaging consistent with the cross-platform tracking table and helps release notes communicate platform catch-up progress accurately.
