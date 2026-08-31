@@ -66,6 +66,14 @@ mobile/
 - `OfflineCache` stores last successful GET responses keyed by URL (SHA-256 filename)
 - On network unavailable: cached data served transparently; mutations show "offline" error
 - iOS: `CryptoKit.SHA256` for cache keys; Android: `MessageDigest("SHA-256")`
+- **Offline check-in queue**: a check-in made while offline is queued for retry rather
+  than just failing.
+  - iOS: `PendingCheckInStore` (disk-backed JSON) is the sole insertion point; `CheckInSyncTask`
+    drains it via a `BGProcessingTask` once connectivity returns. This is the only check-in
+    queue implementation — an earlier duplicate (`CheckInQueue`/`CheckInSyncService`) was
+    removed in 8d8d59d; see `PendingCheckInStoreTests`/`CheckInSyncTaskTests` for the
+    regression guard.
+  - Android: `PendingActionDao`/`PendingActionDatabase` (Room), drained by `PendingActionSyncWorker` (WorkManager)
 
 ### State Management
 - **iOS**: `@StateObject` / `ObservableObject` stores (`AuthStore`, `VaultStore`) injected via SwiftUI environment
@@ -109,6 +117,26 @@ XcodeGen-generated project; CI runs this the same way, via `xcodebuild test` aga
 an iOS Simulator destination (`swift test` alone defaults to macOS, which can't build
 the app's iOS-only framework imports).
 
+#### iOS SPM Dependency Vulnerability Scanning
+CI runs a weekly (and per-PR on `Package.swift` / `Package.resolved` changes) vulnerability
+scan against all pinned SPM dependencies using [osv-scanner](https://github.com/google/osv-scanner),
+querying the [OSV database](https://osv.dev). The scan fails the build for any dependency
+with a published CVE at CVSS ≥ 7.0 (high or critical). This mirrors the Android
+`android-dependency-check.yml` OWASP scan.
+
+Workflow: `.github/workflows/ios-dependency-check.yml`
+
+False-positive suppressions: `ios/EthosProtocol/spm-vulnerability-suppressions.toml`
+(follows the same pattern as `android/dependency-check-suppressions.xml` — each entry
+requires a documented rationale).
+
+To run locally:
+```bash
+brew install osv-scanner
+cd ios/EthosProtocol
+osv-scanner --lockfile "swift:Package.resolved" --fail-on-severity HIGH
+```
+
 ### Android
 ```bash
 cd android
@@ -116,3 +144,57 @@ cd android
 ./gradlew connectedAndroidTest  # Instrumented tests (device/emulator)
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
+
+<<<<<<< HEAD
+### Dependency vulnerability scanning
+The repo runs a dependency scan for both platforms with the same trigger model:
+- `push` to `main` when dependency manifests change
+- `pull_request` to `main` for the same dependency-focused paths
+- weekly `schedule` runs to catch newly disclosed CVEs between dependency bumps
+
+Workflow files:
+- Android: `.github/workflows/android-dependency-check.yml`
+- iOS: `.github/workflows/ios-dependency-check.yml`
+
+Both workflows treat dependency-scan failures as a consistent, human-readable warning in the job log and create a scheduled-run issue alert when the scan fails outside a PR context.
+
+### Release notes parity-gap validation
+Release notes are expected to stay aligned with the "Known gaps" table in [PARITY.md](PARITY.md). To prevent a release from claiming a parity issue is closed while the table still lists it as open, CI includes a parity audit workflow:
+
+- Workflow: `.github/workflows/release-notes-parity-check.yml`
+- Script: `.github/scripts/release_notes_parity_check.py`
+
+The validator:
+- extracts issue numbers from the "Known gaps" table in [PARITY.md](PARITY.md)
+- scans merged PRs for parity-gap issue references and close verbs such as "closes #..." or "fixes #..."
+- checks the current release notes for the same claim patterns
+- fails when a listed parity gap is explicitly called out as closed without the table being updated
+
+Run it locally from the repo root with:
+
+```bash
+python3 .github/scripts/release_notes_parity_check.py \
+  --parity-file PARITY.md \
+  --prs-file merged-prs.json \
+  --release-notes-file release-notes.md
+```
+
+To generate the JSON input for the PR scan:
+
+```bash
+gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
+```
+
+This keeps parity-status messaging consistent with the cross-platform tracking table and helps release notes communicate platform catch-up progress accurately.
+=======
+### Staging Smoke Test
+
+`.github/workflows/staging-smoke-test.yml` runs `scripts/smoke_test_staging.sh`
+against a staging deployment (a separate `STAGING_API_BASE_URL` from the
+per-client `API_BASE_URL` set in `Info.plist` / `build.gradle.kts` — staging
+is a fixed CI-only target, not something either app build points at). It
+exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
+backend/client contract mismatch (see `shared/api-contract.md`) before a
+release build is cut. The workflow is exposed via `workflow_call` so a release
+workflow can add `needs:` on it once one exists.
+>>>>>>> pr-365-merge

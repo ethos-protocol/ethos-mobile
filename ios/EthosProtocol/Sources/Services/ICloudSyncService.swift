@@ -31,6 +31,14 @@ final class ICloudSyncService {
     // MARK: - Associations
 
     /// Save a vault-to-credential association locally; push to iCloud if sync is on.
+    ///
+    /// Conflict rule (#205): last-write-wins per vault ID, compared by `timestamp` — the
+    /// moment this device durably persisted the association, immediately following the
+    /// server-accepted passkey registration or check-in it records. `pushAssociations`
+    /// merges against the current remote state rather than overwriting it outright, so two
+    /// devices racing to sync after each queued an offline check-in for the same vault
+    /// converge on the newer association instead of one device's push silently discarding
+    /// the other's.
     func save(vaultID: String, credentialID: String) {
         var assoc = loadLocalAssociations()
         assoc[vaultID] = VaultAssociation(credentialID: credentialID, timestamp: Date().timeIntervalSince1970)
@@ -55,16 +63,24 @@ final class ICloudSyncService {
     /// Pull associations from iCloud and merge into local storage using last-write-wins strategy.
     func restoreFromICloud() {
         guard isSyncEnabled else { return }
-        let remote = remoteAssociations()
-        var local = loadLocalAssociations()
-        for (k, remoteValue) in remote {
-            if let localValue = local[k] {
-                local[k] = remoteValue.timestamp > localValue.timestamp ? remoteValue : localValue
+        persist(Self.merge(local: loadLocalAssociations(), remote: remoteAssociations()))
+    }
+
+    /// Merges two association maps using the last-write-wins conflict rule (#205): for a
+    /// vault ID present on both sides, the entry with the newer `timestamp` wins; a vault ID
+    /// present on only one side is kept as-is. `internal` (not `private`) so
+    /// ICloudSyncServiceTests can exercise the merge/conflict rule directly, without needing
+    /// the iCloud entitlement NSUbiquitousKeyValueStore requires (unavailable in CI).
+    static func merge(local: [String: VaultAssociation], remote: [String: VaultAssociation]) -> [String: VaultAssociation] {
+        var merged = local
+        for (vaultID, remoteValue) in remote {
+            if let localValue = merged[vaultID] {
+                if remoteValue.timestamp > localValue.timestamp { merged[vaultID] = remoteValue }
             } else {
-                local[k] = remoteValue
+                merged[vaultID] = remoteValue
             }
         }
-        persist(local)
+        return merged
     }
 
     // MARK: - Private helpers
@@ -81,7 +97,11 @@ final class ICloudSyncService {
     }
 
     private func pushAssociations(_ associations: [String: VaultAssociation]) {
-        guard let data = try? JSONEncoder().encode(associations) else { return }
+        // #205: merge against the current remote state instead of overwriting it wholesale —
+        // otherwise a second device's push, racing this one, could clobber an association the
+        // first device just wrote for a vault the second device never touched locally.
+        let merged = Self.merge(local: associations, remote: remoteAssociations())
+        guard let data = try? JSONEncoder().encode(merged) else { return }
         store.set(data, forKey: associationsKey)
         store.synchronize()
     }

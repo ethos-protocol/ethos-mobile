@@ -11,8 +11,11 @@ import javax.net.ssl.SSLException
 
 // Marks a message that is already user-presentable (server status text, "No network
 // connection") so ApiErrorMapper passes it through instead of replacing it with the
-// generic fallback.
-class ApiCallFailedException(message: String) : Exception(message)
+// generic fallback. `code` carries the originating ApiResult.Error's HTTP status (0 when
+// there wasn't one, e.g. "No network connection") so callers like PasskeyService's recovery
+// flow (#211) can distinguish "the token/proof was rejected" (401) from other failures
+// without parsing the message text.
+class ApiCallFailedException(message: String, val code: Int = 0) : Exception(message)
 
 object ApiErrorMapper {
 

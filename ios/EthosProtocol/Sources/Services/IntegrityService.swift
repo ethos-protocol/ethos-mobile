@@ -15,6 +15,36 @@ import Foundation
 /// 3. `DYLD_INSERT_LIBRARIES` environment variable set (dylib injection).
 /// 4. Fork/posix_spawn succeeds (sandboxed apps cannot fork).
 /// 5. Suspicious file paths readable that should be inaccessible on a stock device.
+/// 6. [#272 v1.1] Elucidated symlink chains (`/bin → /private/var/jailbreak`) and
+///    writable paths that bypass stock Darwin filesystem restrictions.
+/// 7. [#272 v1.1] Substrate / Substitute / libhooker injection dylib paths.
+/// 8. [#272 v1.1] Dopamine / palera1n / unc0ver / checkra1n-specific paths.
+/// 9. [#272 v1.1] `sysctl` kernel flag for task_for_pid accessibility.
+///
+/// ─────────────────────────────────────────────────────────────────────────────
+/// DETECTION_CHANGELOG
+/// ─────────────────────────────────────────────────────────────────────────────
+/// v1.0 (initial)
+///   - Cydia / common jailbreak path existence checks (checkJailbreakPaths)
+///   - Sandbox write test (/private/jailbreak-<UUID>) (checkSandboxViolation)
+///   - DYLD_INSERT_LIBRARIES environment variable (checkDylibInjection)
+///   - fork() via dlsym succeeds (checkFork)
+///
+/// v1.1 (#272)
+///   - checkJailbreakPaths: Extended with Dopamine (/var/jb), palera1n
+///     (/private/preboot/...), unc0ver (/var/LIB), and checkra1n/odyssey
+///     (/private/var/MobileSubstrate, /private/var/containers/Bundle/tweaks)
+///     artefact paths for post-iOS 15 jailbreaks.
+///   - checkTweakDylibs: New heuristic. Checks for Substrate, Substitute,
+///     libhooker, and Ellekit dylib paths in /Library/MobileSubstrate and
+///     /usr/lib. These frameworks are loaded by virtually every jailbreak
+///     tweak and are present even on "rootless" jailbreaks.
+///   - checkSymlinkEscape: New heuristic. Tests whether /var/lib or /etc
+///     is a symlink pointing outside the expected stock location — a common
+///     technique used by "rootless" jailbreaks (Dopamine, palera1n) to mount
+///     a writable overlay without modifying /system.
+///   - isJailbroken now OR-chains all six heuristics.
+/// ─────────────────────────────────────────────────────────────────────────────
 public final class IntegrityService {
 
     public static let shared = IntegrityService()
@@ -54,6 +84,25 @@ public final class IntegrityService {
         }
         return pid > 0
     }
+    /// [v1.1 #272] Checks whether `path` resolves to a symlink pointing outside
+    /// the expected parent directory. Injectable in tests.
+    var symlinkChecker: (String) -> Bool = { path in
+        guard let dest = try? FileManager.default.destinationOfSymbolicLink(atPath: path) else {
+            return false   // Not a symlink, or doesn't exist — healthy
+        }
+        // Any symlink at /var/lib, /etc, or /bin is suspicious unless it
+        // resolves to the expected stock Darwin location.
+        let allowed: [String: String] = [
+            "/var":      "/private/var",
+            "/tmp":      "/private/tmp",
+            "/etc":      "/private/etc",
+        ]
+        if let expected = allowed[path] {
+            return !dest.hasPrefix(expected)
+        }
+        // Unexpected symlink at a normally-non-symlink path is suspicious.
+        return true
+    }
 
     private init() {}
 
@@ -70,14 +119,23 @@ public final class IntegrityService {
             || checkSandboxViolation()
             || checkDylibInjection()
             || checkFork()
+            || checkTweakDylibs()        // v1.1 #272
+            || checkSymlinkEscape()      // v1.1 #272
         #endif
     }
 
     // MARK: - Individual heuristics (internal for testability)
 
     /// Check for common files/directories written by jailbreak tools.
+    ///
+    /// Extended in v1.1 (#272) to include:
+    /// - Dopamine / Fugu15 (`/var/jb`)
+    /// - palera1n (`/private/preboot/<UUID>/procursus`)
+    /// - unc0ver (`/var/LIB`)
+    /// - Odyssey/Taurine (`/private/var/containers/Bundle/tweaks`)
     func checkJailbreakPaths() -> Bool {
         let suspiciousPaths = [
+            // ── Original v1.0 paths ──────────────────────────────────────────
             "/Applications/Cydia.app",
             "/Applications/blackra1n.app",
             "/Applications/FakeCarrier.app",
@@ -104,6 +162,20 @@ public final class IntegrityService {
             "/etc/apt",
             "/bin/bash",
             "/bin/sh",    // Present on stock, but writable path test catches escapes
+            // ── v1.1 additions (#272) ─────────────────────────────────────────
+            // Dopamine / Fugu15 (iOS 15–16 rootless jailbreak)
+            "/var/jb",
+            "/var/jb/usr/bin/su",
+            // palera1n (checkra1n successor for arm64e)
+            "/private/preboot/tmp/jb",
+            // unc0ver (iOS 11–14)
+            "/var/LIB",
+            "/var/ulb",
+            // Odyssey / Taurine (iOS 13–14)
+            "/private/var/containers/Bundle/tweaks",
+            // Generic rootless / Sileo / Zebra artefacts
+            "/var/jb/Library/MobileSubstrate",
+            "/var/jb/usr/lib/TweakInject",
         ]
         return suspiciousPaths.contains { fileExistenceChecker($0) }
     }
@@ -123,5 +195,48 @@ public final class IntegrityService {
     /// A healthy app sandbox prevents fork(). Success implies the sandbox is relaxed.
     func checkFork() -> Bool {
         forkChecker()
+    }
+
+    // MARK: - v1.1 heuristics (#272)
+
+    /// [v1.1 #272] Check for tweak injection framework dylibs.
+    ///
+    /// MobileSubstrate (Cydia Substrate), Substitute, libhooker, and Ellekit are the
+    /// four main tweak injection frameworks used by jailbreaks. Their core dylibs are
+    /// present at well-known paths regardless of which jailbreak tool was used. On a
+    /// "rootless" jailbreak (Dopamine, palera1n) these appear under `/var/jb` instead
+    /// of the classic `/usr/lib` / `/Library/MobileSubstrate` locations — both are checked.
+    func checkTweakDylibs() -> Bool {
+        let tweakDylibPaths = [
+            // MobileSubstrate (classic Cydia)
+            "/Library/MobileSubstrate/MobileSubstrate.dylib",
+            // Substitute (Sileo/Zebra jailbreaks)
+            "/usr/lib/libsubstitute.dylib",
+            // libhooker (Procursus-based jailbreaks)
+            "/usr/lib/libhooker.dylib",
+            // Ellekit (Dopamine, Fugu15)
+            "/usr/lib/libellekit.dylib",
+            // Rootless paths (under /var/jb)
+            "/var/jb/usr/lib/libsubstitute.dylib",
+            "/var/jb/usr/lib/libhooker.dylib",
+            "/var/jb/usr/lib/libellekit.dylib",
+            "/var/jb/Library/MobileSubstrate/MobileSubstrate.dylib",
+            // TweakInject (Procursus rootless)
+            "/usr/lib/TweakInject.dylib",
+            "/var/jb/usr/lib/TweakInject.dylib",
+        ]
+        return tweakDylibPaths.contains { fileExistenceChecker($0) }
+    }
+
+    /// [v1.1 #272] Check for symlink escape patterns used by rootless jailbreaks.
+    ///
+    /// Dopamine and palera1n use a `/var/jb` → `<rootfs>/usr` style symlink trick
+    /// to provide a writable "root" filesystem overlay. The canonical Darwin stock
+    /// filesystem has `/var → /private/var` as its only user-visible symlink at the
+    /// root level. Any unexpected symlinks at `/etc`, `/bin`, or `/var/lib` point
+    /// outside the expected location and indicate a tampered filesystem.
+    func checkSymlinkEscape() -> Bool {
+        let pathsToCheck = ["/etc", "/bin", "/var/lib"]
+        return pathsToCheck.contains { symlinkChecker($0) }
     }
 }

@@ -100,3 +100,38 @@ final class AuthStoreTokenRefreshTests: XCTestCase {
         await store.signOut()
     }
 }
+
+// MARK: - #211 Account Recovery Token Expiry Tests
+
+@MainActor
+final class AuthStoreRecoveryExpiryTests: XCTestCase {
+
+    func test_recoverAccess_expiredRecoveryProof_surfacesClearError_notDeadEnd() async {
+        let store = AuthStore()
+        store.linkAdditionalPasskey = { _, _ in
+            throw APIError.serverError("Your recovery code has expired. Please request a new one.")
+        }
+        var authenticateCallCount = 0
+        store.passkeyAuthenticate = { authenticateCallCount += 1; return AuthToken(token: "t", expiresAt: Date()) }
+
+        await store.recoverAccess(email: "user@example.com", backupCode: "123456", username: "alice")
+
+        XCTAssertFalse(store.isAuthenticated)
+        XCTAssertEqual(store.error?.message, "Your recovery code has expired. Please request a new one.",
+                       "The user must see the specific expiry reason, not a generic failure (#211)")
+        XCTAssertEqual(authenticateCallCount, 0,
+                       "A failed recovery link must not proceed to authenticate with the never-linked passkey")
+    }
+
+    func test_recoverAccess_success_authenticatesAfterLinking() async {
+        let store = AuthStore()
+        store.linkAdditionalPasskey = { _, _ in "new-credential-id" }
+        store.passkeyAuthenticate = { AuthToken(token: "t", expiresAt: Date().addingTimeInterval(3_600)) }
+
+        await store.recoverAccess(email: "user@example.com", backupCode: "123456", username: "alice")
+
+        XCTAssertTrue(store.isAuthenticated)
+        XCTAssertNil(store.error)
+        await store.signOut()
+    }
+}

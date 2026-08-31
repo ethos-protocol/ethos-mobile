@@ -26,12 +26,19 @@ data class PendingAction(
     // each NULL in a unique index as distinct, so action types with no natural key
     // (e.g. create-vault) can simply leave this null and queue freely.
     val dedupeKey: String? = null
-)
+) {
+    companion object {
+        const val MAX_QUEUE_SIZE = 50
+    }
+}
 
 @Dao
 interface PendingActionDao {
     @Query("SELECT * FROM pending_actions ORDER BY queuedAt ASC")
     suspend fun getAll(): List<PendingAction>
+
+    @Query("SELECT * FROM pending_actions ORDER BY queuedAt ASC LIMIT :n")
+    suspend fun getOldest(n: Int): List<PendingAction>
 
     @Query("SELECT COUNT(*) FROM pending_actions")
     fun observeCount(): Flow<Int>
