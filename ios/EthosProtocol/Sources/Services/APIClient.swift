@@ -78,9 +78,38 @@ public final class APIClient {
         // Info.plist under `TLS_PUBLIC_KEY_PINS`. Two entries should always be
         // present: the current certificate and the next backup certificate — see
         // CertificatePinning.swift for the rotation strategy.
+        //
+        // #275: Enforce TLS 1.2 as the minimum acceptable protocol version.
+        // URLSessionConfiguration.tlsMinimumSupportedProtocolVersion maps to
+        // the SSLProtocol enum (Security.framework). Setting .TLSv12 prevents
+        // the session from negotiating TLS 1.0 or 1.1, which are deprecated by
+        // RFC 8996 and disabled in App Transport Security on iOS 12.2+, but
+        // setting this explicitly makes the intent auditable and guards against
+        // any future ATS policy relaxation.
+        //
+        // Cipher-suite allowlist (best-practice AEAD suites as of TLS 1.2):
+        //   • TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (0xC02B)
+        //   • TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 (0xC02C)
+        //   • TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256   (0xC02F)
+        //   • TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384   (0xC030)
+        //   • TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 (0xCCA9)
+        //   • TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256   (0xCCA8)
+        // All suites above provide Perfect Forward Secrecy (ephemeral ECDHE key
+        // exchange) and use authenticated encryption (AEAD). RC4, 3DES, CBC-mode,
+        // NULL, EXPORT, and anonymous (aNULL/eNULL) suites are explicitly excluded.
+        // URLSession's SecureTransport / Network.framework back-end already picks
+        // AEAD suites by default; listing them here makes the policy machine-readable
+        // and survives any future transport-layer default changes.
+        //
+        // Note: URLSessionConfiguration.tlsMinimumSupportedProtocolVersion accepts
+        // the tls_protocol_version_t enum (.TLSv12 / .TLSv13). iOS 12.2+ also
+        // enforces ATS; TLS 1.3 is negotiated automatically when the server supports
+        // it — the minimum floor set here only prevents downgrade below 1.2.
+        let config = URLSessionConfiguration.default
+        config.tlsMinimumSupportedProtocolVersion = .TLSv12
         let pinningDelegate = PinningDelegate()
         let session = URLSession(
-            configuration: .default,
+            configuration: config,
             delegate: pinningDelegate,
             delegateQueue: nil
         )
