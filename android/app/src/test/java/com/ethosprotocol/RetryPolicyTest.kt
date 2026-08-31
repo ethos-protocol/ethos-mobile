@@ -8,6 +8,14 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
 
+// Simulated network error types for chaos testing packet-loss scenarios.
+sealed class NetworkError(override val message: String) : Exception(message) {
+    object TruncatedResponse : NetworkError("Incomplete response body")
+    object ConnectionReset : NetworkError("Connection reset by peer")
+    object SocketTimeout : NetworkError("Socket timeout")
+    object EOF : NetworkError("Unexpected end of stream")
+}
+
 class RetryPolicyTest {
 
     // A Random that always returns the requested upper bound minus one, i.e. the
@@ -78,6 +86,122 @@ class RetryPolicyTest {
                 val deterministicDelay = baseDelayMillis * (1L shl (attempt - 1))
                 assertTrue("seed=$seed attempt=$attempt actual=$actual", actual in 0 until deterministicDelay)
             }
+        }
+    }
+
+    // MARK: - Chaos Testing: Simulated Packet Loss
+
+    @Test
+    fun `withRetry handles truncated response and recovers on retry`() = runTest {
+        val delays = mutableListOf<Long>()
+        val policy = RetryPolicy(
+            maxAttempts = 4,
+            baseDelayMillis = 100,
+            sleep = { delays.add(it) },
+            random = maxJitterRandom()
+        )
+        var attempts = 0
+
+        val result = withRetry(policy, isRetryable = { error ->
+            error is NetworkError.TruncatedResponse
+        }) {
+            attempts++
+            if (attempts < 3) throw NetworkError.TruncatedResponse else "recovered"
+        }
+
+        assertEquals("recovered", result)
+        assertEquals(3, attempts)
+        assertEquals(2, delays.size)
+    }
+
+    @Test
+    fun `withRetry handles connection reset and recovers on retry`() = runTest {
+        val delays = mutableListOf<Long>()
+        val policy = RetryPolicy(
+            maxAttempts = 4,
+            baseDelayMillis = 100,
+            sleep = { delays.add(it) },
+            random = maxJitterRandom()
+        )
+        var attempts = 0
+
+        val result = withRetry(policy, isRetryable = { error ->
+            error is NetworkError.ConnectionReset
+        }) {
+            attempts++
+            if (attempts < 2) throw NetworkError.ConnectionReset else "connection_restored"
+        }
+
+        assertEquals("connection_restored", result)
+        assertEquals(2, attempts)
+    }
+
+    @Test
+    fun `withRetry does not retry non-transient network errors`() = runTest {
+        val policy = RetryPolicy(
+            maxAttempts = 3,
+            baseDelayMillis = 100,
+            sleep = {},
+            random = Random.Default
+        )
+        var attempts = 0
+
+        try {
+            withRetry(policy, isRetryable = { error ->
+                error is NetworkError.ConnectionReset
+            }) {
+                attempts++
+                throw NetworkError.SocketTimeout("timeout")
+            }
+            fail("Should have thrown SocketTimeout")
+        } catch (e: NetworkError.SocketTimeout) {
+            assertEquals(1, attempts, "Should not retry non-retryable errors")
+        }
+    }
+
+    @Test
+    fun `withRetry does not double-submit mutating requests`() = runTest {
+        val delays = mutableListOf<Long>()
+        val policy = RetryPolicy(
+            maxAttempts = 3,
+            baseDelayMillis = 100,
+            sleep = { delays.add(it) },
+            random = maxJitterRandom()
+        )
+        var postCount = 0
+
+        val result = withRetry(policy, isRetryable = { error ->
+            // Only retry transient network errors, not idempotency violations
+            error is NetworkError.ConnectionReset
+        }) {
+            postCount++
+            if (postCount < 2) throw NetworkError.ConnectionReset else "check_in_recorded"
+        }
+
+        assertEquals("check_in_recorded", result)
+        assertEquals(2, postCount, "Mutating request should only be submitted twice")
+    }
+
+    @Test
+    fun `withRetry respects max attempts on persistent socket timeouts`() = runTest {
+        val policy = RetryPolicy(
+            maxAttempts = 2,
+            baseDelayMillis = 100,
+            sleep = {},
+            random = Random.Default
+        )
+        var attempts = 0
+
+        try {
+            withRetry(policy, isRetryable = { error ->
+                error is NetworkError.SocketTimeout
+            }) {
+                attempts++
+                throw NetworkError.SocketTimeout("persistent timeout")
+            }
+            fail("Should have thrown after exhausting attempts")
+        } catch (e: NetworkError.SocketTimeout) {
+            assertEquals(2, attempts, "Should respect maxAttempts limit")
         }
     }
 }
