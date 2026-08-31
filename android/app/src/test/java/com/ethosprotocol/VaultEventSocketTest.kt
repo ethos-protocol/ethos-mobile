@@ -1,10 +1,13 @@
 package com.ethosprotocol
 
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.models.AuthToken
 import com.ethosprotocol.models.VaultEvent
 import com.ethosprotocol.services.ReconnectBackoff
 import com.ethosprotocol.services.VaultEventSocket
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.WebSocketSession
 import io.mockk.coEvery
@@ -13,6 +16,7 @@ import io.mockk.mockk
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.random.Random
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -85,7 +89,10 @@ class VaultEventSocketTest {
 
         socket.openSession = {
             if (openAttempts.getAndIncrement() == 0) throw IOException("connection refused")
-            mockk<WebSocketSession> { every { incoming } returns channel }
+            mockk<WebSocketSession> {
+                every { incoming } returns channel
+                every { closeReason } returns CompletableDeferred(null)
+            }
         }
 
         val received = socket.events("vault-1").take(1).toList()
@@ -93,6 +100,43 @@ class VaultEventSocketTest {
         assertEquals(listOf(event), received)
         assertEquals(2, openAttempts.get())
         assertEquals(listOf(999L), delays)
+    }
+
+    // #256 — api-contract.md: "clients should ignore unrecognised values instead of erroring".
+    // Sending a made-up future type must not crash and must not surface a VaultEvent (the
+    // runCatching in events() silently drops frames it cannot decode, which is the desired
+    // behaviour — unknown types are handled at the VaultEvent decode level where the Json
+    // deserializer simply skips the unknown discriminator and returns the default null vault).
+    @Test
+    fun `events ignores unknown type discriminator without crashing`() = runTest {
+        val backoff = ReconnectBackoff(
+            baseDelayMillis = 1_000,
+            maxDelayMillis = 30_000,
+            sleep = {},
+            random = maxJitterRandom()
+        )
+        val socket = VaultEventSocket(apiClient, tokenProvider, backoff)
+
+        // Two frames: first has an unrecognised type (must be silently dropped), second is a
+        // known type (must be emitted) — so take(1) collects exactly the known event and
+        // never blocks.
+        val channel = Channel<Frame>(capacity = 2)
+        val unknownFrame = Frame.Text("""{"type":"future_event_type_v99","vault":null}""")
+        val knownEvent = VaultEvent(type = "check_in", vault = null)
+        val knownFrame = Frame.Text(Json.encodeToString(VaultEvent.serializer(), knownEvent))
+        channel.trySend(unknownFrame)
+        channel.trySend(knownFrame)
+
+        socket.openSession = {
+            mockk<WebSocketSession> {
+                every { incoming } returns channel
+                every { closeReason } returns CompletableDeferred(null)
+            }
+        }
+
+        // Collecting does not throw; the unknown frame is silently skipped.
+        val received = socket.events("vault-1").take(1).toList()
+        assertEquals(listOf(knownEvent), received)
     }
 
     @Test
@@ -112,12 +156,16 @@ class VaultEventSocketTest {
         socket.openSession = {
             when (openAttempts.getAndIncrement()) {
                 0 -> throw IOException("connection refused")
-                1 -> mockk<WebSocketSession> { every { incoming } returns Channel<Frame>().apply { close() } }
+                1 -> mockk<WebSocketSession> {
+                    every { incoming } returns Channel<Frame>().apply { close() }
+                    every { closeReason } returns CompletableDeferred(null)
+                }
                 2 -> throw IOException("connection refused")
                 else -> mockk<WebSocketSession> {
                     every { incoming } returns Channel<Frame>(capacity = 1).apply {
                         trySend(Frame.Text(Json.encodeToString(VaultEvent.serializer(), event)))
                     }
+                    every { closeReason } returns CompletableDeferred(null)
                 }
             }
         }
@@ -134,5 +182,111 @@ class VaultEventSocketTest {
         // open#3 connects and delivers the frame; take(1) ends collection before any
         // further delay is recorded.
         assertEquals(listOf(999L, 999L, 1_999L), delays)
+    }
+
+    // =========================================================================
+    // #257 — WebSocket close code 4401 handling
+    // =========================================================================
+
+    /**
+     * Creates a mock [WebSocketSession] whose [incoming] channel closes immediately
+     * (simulating the server closing the socket after the handshake) and whose
+     * [closeReason] resolves to a [CloseReason] with the given [code].
+     */
+    private fun mockSessionWithClose(code: Short, emptyChannel: Channel<Frame> = Channel<Frame>().apply { close() }): WebSocketSession =
+        mockk<WebSocketSession> {
+            every { incoming } returns emptyChannel
+            every { closeReason } returns CompletableDeferred(CloseReason(code, ""))
+        }
+
+    @Test
+    fun `events on 4401 with successful refresh reconnects and emits events`() = runTest {
+        val socket = VaultEventSocket(
+            apiClient, tokenProvider,
+            ReconnectBackoff(1_000, 30_000, sleep = {}, random = maxJitterRandom())
+        )
+
+        val refreshedToken = AuthToken(token = "new-token", expiresAt = "2099-01-01T00:00:00Z")
+        socket.refreshToken = { ApiResult.Success(refreshedToken) }
+
+        val openAttempts = AtomicInteger(0)
+        val knownEvent = VaultEvent(type = "check_in", vault = null)
+
+        socket.openSession = {
+            when (openAttempts.getAndIncrement()) {
+                // First connection: server immediately closes with 4401.
+                0 -> mockSessionWithClose(4401)
+                // Second connection (after silent refresh): delivers a real event.
+                else -> mockk<WebSocketSession> {
+                    every { incoming } returns Channel<Frame>(capacity = 1).apply {
+                        trySend(Frame.Text(Json.encodeToString(VaultEvent.serializer(), knownEvent)))
+                    }
+                    every { closeReason } returns CompletableDeferred(null)
+                }
+            }
+        }
+
+        val received = socket.events("vault-1").take(1).toList()
+
+        assertEquals(listOf(knownEvent), received)
+        assertEquals(2, openAttempts.get())
+    }
+
+    @Test
+    fun `events on 4401 with failed refresh emits auth_failure and terminates`() = runTest {
+        val socket = VaultEventSocket(
+            apiClient, tokenProvider,
+            ReconnectBackoff(1_000, 30_000, sleep = {}, random = maxJitterRandom())
+        )
+
+        // Refresh fails — token is invalid/revoked, not just expired.
+        socket.refreshToken = { ApiResult.Error("Unauthorized", 401) }
+
+        socket.openSession = {
+            mockSessionWithClose(4401)
+        }
+
+        // The flow should emit exactly one auth_failure event and then terminate.
+        val received = socket.events("vault-1").toList()
+
+        assertEquals(1, received.size)
+        assertEquals("auth_failure", received[0].type)
+    }
+
+    @Test
+    fun `events on non-4401 close reconnects with backoff as normal`() = runTest {
+        val delays = mutableListOf<Long>()
+        val socket = VaultEventSocket(
+            apiClient, tokenProvider,
+            ReconnectBackoff(1_000, 30_000, sleep = { delays.add(it) }, random = maxJitterRandom())
+        )
+
+        // refreshToken must NOT be called for non-4401 closes.
+        var refreshCalled = false
+        socket.refreshToken = { refreshCalled = true; ApiResult.Error("should not be called", 0) }
+
+        val openAttempts = AtomicInteger(0)
+        val knownEvent = VaultEvent(type = "check_in", vault = null)
+
+        socket.openSession = {
+            when (openAttempts.getAndIncrement()) {
+                // First connection: server closes with a normal code (e.g. 1001 Going Away).
+                0 -> mockSessionWithClose(1001)
+                // Second connection: delivers an event.
+                else -> mockk<WebSocketSession> {
+                    every { incoming } returns Channel<Frame>(capacity = 1).apply {
+                        trySend(Frame.Text(Json.encodeToString(VaultEvent.serializer(), knownEvent)))
+                    }
+                    every { closeReason } returns CompletableDeferred(null)
+                }
+            }
+        }
+
+        val received = socket.events("vault-1").take(1).toList()
+
+        assertEquals(listOf(knownEvent), received)
+        assertFalse("refreshToken must not be called for non-4401 closes", refreshCalled)
+        // A normal close drops through to the standard backoff path.
+        assertEquals(1, delays.size)
     }
 }
