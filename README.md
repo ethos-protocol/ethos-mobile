@@ -116,3 +116,14 @@ cd android
 ./gradlew connectedAndroidTest  # Instrumented tests (device/emulator)
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
+
+### Staging Smoke Test
+
+`.github/workflows/staging-smoke-test.yml` runs `scripts/smoke_test_staging.sh`
+against a staging deployment (a separate `STAGING_API_BASE_URL` from the
+per-client `API_BASE_URL` set in `Info.plist` / `build.gradle.kts` — staging
+is a fixed CI-only target, not something either app build points at). It
+exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
+backend/client contract mismatch (see `shared/api-contract.md`) before a
+release build is cut. The workflow is exposed via `workflow_call` so a release
+workflow can add `needs:` on it once one exists.
