@@ -3,7 +3,13 @@ package com.ethosprotocol.services
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
-enum class PendingActionType { CHECK_IN, CREATE_VAULT }
+enum class PendingActionType { CHECK_IN, CREATE_VAULT, DEPOSIT, WITHDRAW }
+
+@kotlinx.serialization.Serializable
+data class DepositPayload(val vaultId: String, val amount: Long)
+
+@kotlinx.serialization.Serializable
+data class WithdrawPayload(val vaultId: String, val amount: Long)
 
 @Entity(
     tableName = "pending_actions",

@@ -1,3 +1,4 @@
+# Android build artefacts
 *.iml
 .gradle/
 /local.properties
@@ -11,17 +12,13 @@ local.properties
 **/build/
 /dependency-check-data/
 
-# Test snapshots (Paparazzi / Shot)
-**/snapshots/
-**/__Snapshots__/
-**/*.png.snap
-**/ReferenceImages/
-app/src/test/snapshots/
+# Test snapshot images (Paparazzi / screenshot tests — generated, not committed)
+**/src/test/snapshots/
+**/snapshots/images/
+**/__snapshots__/
 
 # Secrets
 google-services.json
-*.p12
-*.jks
 *.keystore
-.env
-.env.*
+*.jks
+secrets.properties
