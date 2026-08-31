@@ -352,7 +352,8 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    val socketConnectionState: com.ethosprotocol.services.ConnectionState = com.ethosprotocol.services.ConnectionState.DISCONNECTED
 )
 
 private const val PAGE_SIZE = 20
@@ -371,6 +372,14 @@ class VaultViewModel @Inject constructor(
 
     private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
+
+    init {
+        viewModelScope.launch {
+            vaultEventSocket.connectionState.collect { state ->
+                _state.update { it.copy(socketConnectionState = state) }
+            }
+        }
+    }
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
@@ -463,13 +472,28 @@ class VaultViewModel @Inject constructor(
     // check-ins/deposits/withdrawals made elsewhere (another device, an expiry)
     // update this list in place instead of requiring a manual refresh.
     private fun subscribeToEvents(vaultIds: List<String>) {
+        // Cancel subscriptions for vaults no longer in the list
         val currentIds = vaultIds.toSet()
         eventJobs.keys.filter { it !in currentIds }.forEach { id -> eventJobs.remove(id)?.cancel() }
-        currentIds.filterNot { eventJobs.containsKey(it) }.forEach { id ->
-            eventJobs[id] = viewModelScope.launch {
-                vaultEventSocket.events(id).collect { event ->
-                    val updated = event.vault ?: return@collect
-                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+        // Subscribe new vaults. If more than one ID is requested, use a single multiplexed connection.
+        if (vaultIds.size > 1 && eventJobs.isEmpty()) {
+            // Multiplex all vaults over a single connection via subscribe message
+            val combinedKey = vaultIds.joinToString(",")
+            if (!eventJobs.containsKey(combinedKey)) {
+                eventJobs[combinedKey] = viewModelScope.launch {
+                    vaultEventSocket.events(vaultIds).collect { event ->
+                        val updated = event.vault ?: return@collect
+                        _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    }
+                }
+            }
+        } else {
+            currentIds.filterNot { eventJobs.containsKey(it) }.forEach { id ->
+                eventJobs[id] = viewModelScope.launch {
+                    vaultEventSocket.events(id).collect { event ->
+                        val updated = event.vault ?: return@collect
+                        _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    }
                 }
             }
         }

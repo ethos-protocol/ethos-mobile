@@ -1382,6 +1382,34 @@ private fun TwoFactorVerifyScreen(
     }
 }
 
+// MARK: - Connection Status Badge
+
+@Composable
+fun ConnectionStatusBadge(state: com.ethosprotocol.services.ConnectionState) {
+    val (label, color, icon) = when (state) {
+        com.ethosprotocol.services.ConnectionState.CONNECTED ->
+            Triple("Live", MaterialTheme.colorScheme.primary, Icons.Default.Wifi)
+        com.ethosprotocol.services.ConnectionState.CONNECTING ->
+            Triple("Connecting…", MaterialTheme.colorScheme.primary, Icons.Default.Wifi)
+        com.ethosprotocol.services.ConnectionState.DISCONNECTED ->
+            Triple("Reconnecting…", MaterialTheme.colorScheme.error, Icons.Default.WifiOff)
+        com.ethosprotocol.services.ConnectionState.FALLBACK_TO_POLLING ->
+            Triple("Polling", MaterialTheme.colorScheme.outline, Icons.Default.Refresh)
+    }
+    SuggestionChip(
+        onClick = {},
+        label = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(12.dp))
+                Spacer(Modifier.width(4.dp))
+                Text(label, style = MaterialTheme.typography.labelSmall)
+            }
+        },
+        modifier = Modifier.testTag("connectionStatus_$label"),
+        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+    )
+}
+
 // MARK: - Vault Detail Screen
 
 /**
@@ -1395,7 +1423,8 @@ private fun TwoFactorVerifyScreen(
 fun VaultDetailScreen(
     vaultId: String,
     onBack: () -> Unit,
-    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+    twoFactorVm: TwoFactorViewModel = hiltViewModel(),
+    vaultVm: VaultViewModel = hiltViewModel()
 ) {
     val state by twoFactorVm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -1432,6 +1461,17 @@ fun VaultDetailScreen(
         ) {
             Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
+
+            val socketState by vaultVm.state.collectAsStateWithLifecycle()
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Connection", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f))
+                ConnectionStatusBadge(socketState.socketConnectionState)
+            }
 
             when {
                 state.isLoading -> CircularProgressIndicator()

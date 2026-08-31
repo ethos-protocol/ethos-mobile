@@ -14,11 +14,17 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
 // Reconnect/backoff schedule for VaultEventSocket. Unlike RetryPolicy (bounded
@@ -49,6 +55,11 @@ data class ReconnectBackoff(
     }
 }
 
+// Connection state for the WebSocket. FALLBACK_TO_POLLING is included for parity
+// with the iOS API contract; on Android the socket retries indefinitely unless
+// maxReconnectAttempts is set to a finite value.
+enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, FALLBACK_TO_POLLING }
+
 // Client for the `wss://.../ws?vault_id={id}` endpoint (shared/api-contract.md).
 // Reuses ApiClient's HttpClient/WebSockets plugin rather than a second client.
 // A dropped or failed connection reconnects with exponential backoff
@@ -58,13 +69,18 @@ data class ReconnectBackoff(
 class VaultEventSocket(
     private val apiClient: ApiClient,
     private val tokenProvider: TokenProvider,
-    private val backoff: ReconnectBackoff = ReconnectBackoff.default
+    private val backoff: ReconnectBackoff = ReconnectBackoff.default,
+    val heartbeatIntervalMillis: Long = 30_000L,
+    val maxReconnectAttempts: Int = Int.MAX_VALUE
 ) {
     // Distinct @Inject constructor for the same reason as ApiClient's: Dagger's
     // codegen calls the full-arg constructor directly and ignores Kotlin default
     // values, so Hilt needs an explicit constructor matching only its bindings.
     @Inject constructor(apiClient: ApiClient, tokenProvider: TokenProvider) :
         this(apiClient, tokenProvider, ReconnectBackoff.default)
+
+    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
     // internal (not private): tests replace this to simulate connect failures/frames
     // without a real server, matching how ApiClient exposes its engine to tests.
@@ -78,21 +94,107 @@ class VaultEventSocket(
     fun events(vaultId: String): Flow<VaultEvent> = flow {
         var attempt = 0
         while (currentCoroutineContext().isActive) {
+            _connectionState.value = ConnectionState.CONNECTING
             try {
                 val session = openSession(vaultId)
                 attempt = 0
-                for (frame in session.incoming) {
-                    if (frame is Frame.Text) {
-                        runCatching { Json.decodeFromString<VaultEvent>(frame.readText()) }
-                            .onSuccess { emit(it) }
+                _connectionState.value = ConnectionState.CONNECTED
+                coroutineScope {
+                    // Periodic client-side heartbeat to detect silent TCP drops.
+                    launch {
+                        while (isActive) {
+                            delay(heartbeatIntervalMillis)
+                            try {
+                                session.send(Frame.Text("""{ "type": "ping" }"""))
+                            } catch (_: Exception) {
+                                // Send failed — session is dead; cancel scope to stop incoming loop too.
+                                cancel()
+                            }
+                        }
                     }
+                    for (frame in session.incoming) {
+                        if (frame is Frame.Text) {
+                            val text = frame.readText()
+                            runCatching { Json.decodeFromString<VaultEvent>(text) }
+                                .onSuccess { event ->
+                                    if (event.type == "ping") {
+                                        // Server keepalive — reply with pong.
+                                        runCatching { session.send(Frame.Text("""{ "type": "pong" }""")) }
+                                    }
+                                    emit(event)
+                                }
+                        }
+                    }
+                    cancel() // incoming closed normally — stop heartbeat too
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // Connection failed or dropped — fall through to backoff and reconnect.
+                _connectionState.value = ConnectionState.DISCONNECTED
             }
             if (!currentCoroutineContext().isActive) break
+            if (attempt >= maxReconnectAttempts) {
+                _connectionState.value = ConnectionState.FALLBACK_TO_POLLING
+                break
+            }
+            backoff.sleep(backoff.delayForAttempt(attempt))
+            attempt++
+        }
+    }
+
+    fun events(vaultIds: List<String>): Flow<VaultEvent> = flow {
+        if (vaultIds.isEmpty()) return@flow
+        // Use the first vault ID as the primary connection URL, then send a subscribe
+        // message for the rest once connected.
+        var attempt = 0
+        while (currentCoroutineContext().isActive) {
+            _connectionState.value = ConnectionState.CONNECTING
+            try {
+                val session = openSession(vaultIds[0])
+                attempt = 0
+                _connectionState.value = ConnectionState.CONNECTED
+                // Send multi-vault subscribe message post-connect
+                if (vaultIds.size > 1) {
+                    val idsJson = vaultIds.joinToString(",") { "\"$it\"" }
+                    runCatching { session.send(Frame.Text("""{ "type": "subscribe", "vault_ids": [$idsJson] }""")) }
+                }
+                coroutineScope {
+                    launch {
+                        while (isActive) {
+                            delay(heartbeatIntervalMillis)
+                            try {
+                                session.send(Frame.Text("""{ "type": "ping" }"""))
+                            } catch (_: Exception) {
+                                cancel()
+                            }
+                        }
+                    }
+                    for (frame in session.incoming) {
+                        if (frame is Frame.Text) {
+                            val text = frame.readText()
+                            runCatching { Json.decodeFromString<VaultEvent>(text) }
+                                .onSuccess { event ->
+                                    if (event.type == "ping") {
+                                        runCatching { session.send(Frame.Text("""{ "type": "pong" }""")) }
+                                    }
+                                    emit(event)
+                                }
+                        }
+                    }
+                    cancel()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // connection failed
+                _connectionState.value = ConnectionState.DISCONNECTED
+            }
+            if (!currentCoroutineContext().isActive) break
+            if (attempt >= maxReconnectAttempts) {
+                _connectionState.value = ConnectionState.FALLBACK_TO_POLLING
+                break
+            }
             backoff.sleep(backoff.delayForAttempt(attempt))
             attempt++
         }

@@ -248,6 +248,8 @@ final class VaultStore: ObservableObject {
     /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
     /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
     @Published private(set) var queuedCheckInCount = 0
+    /// Current WebSocket connection state for the real-time event stream (#255).
+    @Published private(set) var socketConnectionState: VaultEventSocket.ConnectionState = .disconnected
 
     private var eventSocket: VaultEventSocket?
 
@@ -399,6 +401,11 @@ final class VaultStore: ObservableObject {
     /// without waiting for the next poll.
     func subscribeToEvents(vaultID: String, socket: VaultEventSocket) {
         eventSocket = socket
+        socket.onStateChange = { [weak self] state in
+            self?.socketConnectionState = state
+        }
+        // Sync the current state immediately in case socket was already connected
+        socketConnectionState = socket.state
         socket.onEvent = { [weak self] event in
             guard let self else { return }
             switch event {
@@ -411,6 +418,8 @@ final class VaultStore: ObservableObject {
             case .ping:
                 // Server keepalive — no state change.
                 break
+            case .subscribed:
+                break // acknowledgement only — no state change
             case .error(let code, let message):
                 self.error = ErrorPresentation(message: "Vault event stream error (\(code)): \(message)")
             case .unknown:
@@ -423,6 +432,7 @@ final class VaultStore: ObservableObject {
     func unsubscribeFromEvents() {
         eventSocket?.stop()
         eventSocket = nil
+        socketConnectionState = .disconnected
     }
 
     private func scheduleReminders() {

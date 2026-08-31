@@ -8,6 +8,7 @@ import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.VaultUiState
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.api.ApiClient
+import com.ethosprotocol.services.ConnectionState
 import com.ethosprotocol.services.NotificationHelper
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
@@ -20,6 +21,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
 import org.junit.After
@@ -43,7 +46,9 @@ class VaultViewModelTest {
         Dispatchers.setMain(testDispatcher)
         mockkObject(PendingActionSyncWorker.Companion)
         every { PendingActionSyncWorker.schedule(any()) } just Runs
-        every { vaultEventSocket.events(any()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<String>()) } returns emptyFlow()
+        every { vaultEventSocket.events(any<List<String>>()) } returns emptyFlow()
+        every { vaultEventSocket.connectionState } returns MutableStateFlow(ConnectionState.DISCONNECTED).asStateFlow()
         vm = VaultViewModel(apiClient, notificationHelper, pendingActionDao, vaultEventSocket, context)
     }
 
