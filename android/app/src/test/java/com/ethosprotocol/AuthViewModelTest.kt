@@ -230,6 +230,42 @@ class AuthViewModelTest {
         assertEquals(0, vm.state.value.cooldownRemainingSeconds)
     }
 
+    // MARK: - #214 Last-remaining-passkey sign-out warning
+
+    @Test
+    fun `isLastRemainingPasskey with one existing credential returns true`() = runTest {
+        coEvery { apiClient.getChallenge() } returns ApiResult.Success(
+            com.ethosprotocol.models.AuthChallenge(challenge = "ch", expiresAt = "2099-01-01T00:00:00Z", existingCredentialIds = listOf("cred-1"))
+        )
+
+        assertTrue(vm.isLastRemainingPasskey())
+    }
+
+    @Test
+    fun `isLastRemainingPasskey with no existing credentials returns true`() = runTest {
+        coEvery { apiClient.getChallenge() } returns ApiResult.Success(
+            com.ethosprotocol.models.AuthChallenge(challenge = "ch", expiresAt = "2099-01-01T00:00:00Z", existingCredentialIds = emptyList())
+        )
+
+        assertTrue("Zero registered credentials is at least as risky as exactly one", vm.isLastRemainingPasskey())
+    }
+
+    @Test
+    fun `isLastRemainingPasskey with multiple existing credentials returns false`() = runTest {
+        coEvery { apiClient.getChallenge() } returns ApiResult.Success(
+            com.ethosprotocol.models.AuthChallenge(challenge = "ch", expiresAt = "2099-01-01T00:00:00Z", existingCredentialIds = listOf("cred-1", "cred-2"))
+        )
+
+        assertFalse(vm.isLastRemainingPasskey())
+    }
+
+    @Test
+    fun `isLastRemainingPasskey when lookup fails defaults to false`() = runTest {
+        coEvery { apiClient.getChallenge() } returns ApiResult.NetworkUnavailable
+
+        assertFalse("A failed lookup must not block sign-out", vm.isLastRemainingPasskey())
+    }
+
     @Test
     fun `signOut clears cooldown state`() = runTest {
         coEvery { passkeyService.authenticate(activity) } returns Result.failure(RuntimeException("bad"))

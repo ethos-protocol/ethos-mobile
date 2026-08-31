@@ -43,6 +43,20 @@ final class AuthStore: ObservableObject {
     var linkAdditionalPasskey: (String, AccountRecoveryProof) async throws -> String = { username, proof in
         try await PasskeyService.shared.linkAdditionalPasskey(username: username, existingAccountProof: proof)
     }
+    // #214: Used to warn before sign-out when this appears to be the account's only
+    // registered passkey — the same signal registration already uses to populate
+    // excludedCredentials.
+    var fetchExistingCredentialCount: () async throws -> Int = {
+        try await APIClient.shared.getChallenge().existingCredentialIds.count
+    }
+
+    // #212: Client-side rate limiting for recovery-code submission, reusing #119's
+    // escalating cooldown schedule — a recovery backup code is just as brute-forceable
+    // as an OTP.
+    @Published private(set) var recoveryFailureCount: Int = 0
+    @Published private(set) var recoveryCooldownSecondsRemaining: Int = 0
+    var isRecoveryBlocked: Bool { recoveryCooldownSecondsRemaining > 0 }
+    private var recoveryCooldownTask: Task<Void, Never>?
 
     init() {
         isAuthenticated = KeychainService.shared.loadToken() != nil
@@ -94,6 +108,7 @@ final class AuthStore: ObservableObject {
     /// authenticate() ceremony against the freshly-linked credential is what actually
     /// establishes the session, mirroring signIn().
     func recoverAccess(email: String, backupCode: String, username: String) async {
+        guard !isRecoveryBlocked else { return }
         isLoading = true; error = nil
         do {
             _ = try await linkAdditionalPasskey(username, AccountRecoveryProof(email: email, backupCode: backupCode))
@@ -103,10 +118,55 @@ final class AuthStore: ObservableObject {
                 isAuthenticated = true
                 scheduleRefresh(before: token.expiresAt)
             }
+            resetRecoveryRateLimit()
         } catch {
             ifNotCancelled { self.error = ErrorPresentation(error) }
+            recordRecoveryFailure()
         }
         isLoading = false
+    }
+
+    // MARK: - Recovery rate limiting (#212)
+
+    private func recordRecoveryFailure() {
+        recoveryFailureCount += 1
+        let cooldown = OTPRateLimiter.cooldownSeconds(for: recoveryFailureCount)
+        guard cooldown > 0 else { return }
+        startRecoveryCooldown(seconds: cooldown)
+    }
+
+    private func resetRecoveryRateLimit() {
+        recoveryFailureCount = 0
+        recoveryCooldownSecondsRemaining = 0
+        recoveryCooldownTask?.cancel()
+        recoveryCooldownTask = nil
+    }
+
+    private func startRecoveryCooldown(seconds: Int) {
+        recoveryCooldownTask?.cancel()
+        recoveryCooldownSecondsRemaining = seconds
+        recoveryCooldownTask = Task { [weak self] in
+            for _ in 0..<seconds {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.tickRecoveryCooldown()
+            }
+        }
+    }
+
+    private func tickRecoveryCooldown() {
+        guard recoveryCooldownSecondsRemaining > 0 else { return }
+        recoveryCooldownSecondsRemaining -= 1
+    }
+
+    /// Whether this device's passkey appears to be the only one registered to the
+    /// account (#214). Callers should confirm with the user before signing out when
+    /// this is true — with no other device's passkey and no recovery already in hand,
+    /// signing out here could permanently lock them out of a vault holding real funds.
+    /// Best-effort: a failed lookup (e.g. offline) doesn't block sign-out, so it
+    /// defaults to `false` rather than trapping the user in the app.
+    func isLastRemainingPasskey() async -> Bool {
+        (try? await fetchExistingCredentialCount()).map { $0 <= 1 } ?? false
     }
 
     func signOut() async {

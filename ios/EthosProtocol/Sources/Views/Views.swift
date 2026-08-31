@@ -273,7 +273,8 @@ struct RecoverAccessView: View {
     @State private var username = ""
 
     private var canSubmit: Bool {
-        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty && !authStore.isLoading
+        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty
+            && !authStore.isLoading && !authStore.isRecoveryBlocked
     }
 
     var body: some View {
@@ -284,9 +285,11 @@ struct RecoverAccessView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
                     TextField("Backup code", text: $backupCode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
                 } header: {
                     Text("Verify your identity")
                 } footer: {
@@ -296,6 +299,22 @@ struct RecoverAccessView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .disabled(authStore.isRecoveryBlocked)
+                }
+                // #212: Escalating cooldown after repeated recovery-code failures.
+                if authStore.isRecoveryBlocked {
+                    Section {
+                        Label("Too many attempts — wait \(authStore.recoveryCooldownSecondsRemaining)s",
+                              systemImage: "timer")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } else if authStore.recoveryFailureCount > 0 {
+                    Section {
+                        Text("\(authStore.recoveryFailureCount) failed attempt\(authStore.recoveryFailureCount == 1 ? "" : "s")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let error = authStore.error {
                     Section { Text(error.message).foregroundStyle(.red).font(.caption) }
@@ -334,6 +353,9 @@ struct VaultListView: View {
     // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
     // block access to the app, consistent with the "secure digital inheritance" posture.
     @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
+    // #214: Blocking confirmation before sign-out when this is the account's last
+    // remaining passkey — unlike #118, this one gates the action itself.
+    @State private var showLastPasskeySignOutWarning = false
 
     /// #219: filtered view over every vault page already fetched — search and
     /// status filter both apply client-side, so they work across paginated
@@ -388,11 +410,28 @@ struct VaultListView: View {
                         NavigationLink(destination: SettingsView()) {
                             Label("Settings", systemImage: "gear")
                         }
-                        Button("Sign Out") { Task { await authStore.signOut() } }
+                        Button("Sign Out") {
+                            Task {
+                                if await authStore.isLastRemainingPasskey() {
+                                    showLastPasskeySignOutWarning = true
+                                } else {
+                                    await authStore.signOut()
+                                }
+                            }
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
+            }
+            // #214: This is the account's only registered passkey — signing out here
+            // with no recovery already in hand could permanently lock the user out of
+            // a vault holding real funds, so this confirmation blocks the sign-out.
+            .alert("This Is Your Only Passkey", isPresented: $showLastPasskeySignOutWarning) {
+                Button("Cancel", role: .cancel) {}
+                Button("Sign Out Anyway", role: .destructive) { Task { await authStore.signOut() } }
+            } message: {
+                Text("No other device has a passkey for this account. If you sign out without a way to recover access (your account's recovery email and backup code), you could be permanently locked out of any vaults you own.")
             }
             .task { await vaultStore.load() }
             .sheet(isPresented: $showCreate) { CreateVaultView() }
@@ -784,37 +823,77 @@ struct CreateVaultView: View {
     @State private var intervalDays = 30.0
     @State private var isCreating = false
     @State private var error: String?
+    // #215: Vault creation commits real funds to a TTL-gated structure — require an
+    // explicit review step showing exactly what's about to be submitted before the
+    // POST /vaults call fires, rather than submitting straight from the input form.
+    @State private var isConfirming = false
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Beneficiary") {
-                    TextField("Stellar address", text: $beneficiary)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.system(.body, design: .monospaced))
-                    if !beneficiary.isEmpty && !isBeneficiaryValid {
-                        Text("Enter a valid Stellar address (56 characters, starting with G).")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-                Section("Check-in Interval") {
-                    Slider(value: $intervalDays, in: 1...365, step: 1)
-                    Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
-                }
-                if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
-            }
-            .navigationTitle("New Vault")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") { create() }.disabled(!isBeneficiaryValid || isCreating)
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+            if isConfirming {
+                confirmationForm
+            } else {
+                inputForm
             }
         }
+    }
+
+    private var inputForm: some View {
+        Form {
+            Section("Beneficiary") {
+                TextField("Stellar address", text: $beneficiary)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+                if !beneficiary.isEmpty && !isBeneficiaryValid {
+                    Text("Enter a valid Stellar address (56 characters, starting with G).")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            Section("Check-in Interval") {
+                Slider(value: $intervalDays, in: 1...365, step: 1)
+                Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("New Vault")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Next") { isConfirming = true }.disabled(!isBeneficiaryValid)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+        }
+    }
+
+    private var confirmationForm: some View {
+        Form {
+            Section {
+                LabeledContent("Beneficiary") {
+                    Text(beneficiary)
+                        .font(.system(.footnote, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Check-in Interval", value: "\(Int(intervalDays)) days")
+            } header: {
+                Text("Review Vault")
+            } footer: {
+                Text("If you don't check in within the interval above, the vault's funds release to the beneficiary address shown. Double-check the address — this cannot be undone once created.")
+            }
+            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
+        }
+        .navigationTitle("Confirm Vault")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(isCreating ? "Creating…" : "Confirm & Create") { create() }.disabled(isCreating)
+            }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Back") { isConfirming = false }.disabled(isCreating)
+            }
+        }
+        .overlay { if isCreating { ProgressView() } }
     }
 
     private var isBeneficiaryValid: Bool {
