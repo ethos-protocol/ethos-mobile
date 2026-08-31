@@ -15,7 +15,24 @@ enum class VaultDeepLinkAction(val pathSegment: String) {
     }
 }
 
-data class VaultDeepLink(val vaultId: String, val action: VaultDeepLinkAction)
+/**
+ * Source channel attribution for deep link origins. Used to track which channels
+ * drive check-ins, beneficiary acceptances, and other deep-link-triggered actions.
+ */
+enum class DeepLinkSource(val value: String) {
+    PUSH_NOTIFICATION("push"),
+    EMAIL("email"),
+    SHARE_LINK("share"),
+    WIDGET("widget"),
+    UNKNOWN("unknown");
+
+    companion object {
+        fun fromString(value: String?): DeepLinkSource =
+            entries.find { it.value == value } ?: UNKNOWN
+    }
+}
+
+data class VaultDeepLink(val vaultId: String, val action: VaultDeepLinkAction, val source: DeepLinkSource = DeepLinkSource.UNKNOWN)
 
 /**
  * A beneficiary-acceptance universal link
@@ -56,25 +73,29 @@ object VaultDeepLinkParser {
     fun isValidVaultId(vaultId: String): Boolean = VAULT_ID_PATTERN.matches(vaultId)
 
     /**
-     * Fires once per successfully parsed deep link, so usage of the still-stubbed
-     * WITHDRAW/MANAGE_BENEFICIARY actions can be compared against CHECK_IN/VIEW_DETAILS.
+     * Fires once per successfully parsed deep link, carrying the action and source channel
+     * for aggregate analytics. This enables attribution tracking to determine which channels
+     * (push, email, share, widget) drive check-ins and other vault interactions.
      *
-     * Deliberately carries only [action] — never the vault ID or raw URI — so this can double as
-     * an analytics hook without becoming a privacy-sensitive log of who opened which vault.
+     * Deliberately carries only [action] and [source] — never the vault ID or raw URI — so this
+     * can double as an analytics hook without becoming a privacy-sensitive log of who opened which vault.
      *
      * Event schema (kept in sync with iOS #40 so usage is comparable cross-platform):
      *   name: "vault_deep_link_opened"
-     *   properties: { action: "check-in" | "withdraw" | "view-details" | "manage-beneficiary" }
+     *   properties: { 
+     *     action: "check-in" | "withdraw" | "view-details" | "manage-beneficiary"
+     *     source: "push" | "email" | "share" | "widget" | "unknown"
+     *   }
      */
     fun interface EventLogger {
-        fun onDeepLinkParsed(action: VaultDeepLinkAction)
+        fun onDeepLinkParsed(action: VaultDeepLinkAction, source: DeepLinkSource)
     }
 
-    private val defaultEventLogger = EventLogger { action ->
+    private val defaultEventLogger = EventLogger { action, source ->
         // android.util.Log isn't available outside an Android runtime (e.g. plain JVM unit
         // tests), and a logging failure must never break parsing — swallow and move on.
         try {
-            Log.i("VaultDeepLink", "vault_deep_link_opened action=${action.pathSegment}")
+            Log.i("VaultDeepLink", "vault_deep_link_opened action=${action.pathSegment} source=${source.value}")
         } catch (_: Throwable) {
         }
     }
@@ -108,18 +129,18 @@ object VaultDeepLinkParser {
     }
 
     /** Parses ethosprotocol://vault/{vault_id}/{action} from a URL string or returns null if unrecognised. */
-    fun parseUrl(url: String): VaultDeepLink? {
+    fun parseUrl(url: String, source: DeepLinkSource = DeepLinkSource.UNKNOWN): VaultDeepLink? {
         val match = URL_PATTERN.matchEntire(url.trim()) ?: return null
         val vaultId = match.groupValues[1]
         if (!isValidVaultId(vaultId)) return null
         if (!isOwnedVault(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(match.groupValues[2]) ?: return null
-        eventLogger.onDeepLinkParsed(action)
-        return VaultDeepLink(vaultId = vaultId, action = action)
+        eventLogger.onDeepLinkParsed(action, source)
+        return VaultDeepLink(vaultId = vaultId, action = action, source = source)
     }
 
     /** Parses ethosprotocol://vault/{vault_id}/{action} from a Uri or returns null if unrecognised. */
-    fun parse(uri: Uri): VaultDeepLink? {
+    fun parse(uri: Uri, source: DeepLinkSource = DeepLinkSource.UNKNOWN): VaultDeepLink? {
         if (uri.scheme != "ethosprotocol" || uri.host != "vault") return null
         val segments = uri.pathSegments
         if (segments.size != 2) return null
@@ -127,8 +148,8 @@ object VaultDeepLinkParser {
         if (!isValidVaultId(vaultId)) return null
         if (!isOwnedVault(vaultId)) return null
         val action = VaultDeepLinkAction.fromPathSegment(segments[1]) ?: return null
-        eventLogger.onDeepLinkParsed(action)
-        return VaultDeepLink(vaultId = vaultId, action = action)
+        eventLogger.onDeepLinkParsed(action, source)
+        return VaultDeepLink(vaultId = vaultId, action = action, source = source)
     }
 
     /**
