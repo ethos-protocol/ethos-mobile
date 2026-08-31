@@ -8,6 +8,7 @@ import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultAssociationStore
 import com.ethosprotocol.ui.AuthViewModel
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
@@ -38,6 +39,7 @@ class AuthViewModelTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val vaultAssociationStore: VaultAssociationStore = mockk(relaxed = true)
     private val activity: android.app.Activity = mockk(relaxed = true)
     private lateinit var vm: AuthViewModel
 
@@ -51,7 +53,8 @@ class AuthViewModelTest {
             passkeyService = passkeyService,
             tokenProvider = tokenProvider,
             notificationHelper = notificationHelper,
-            pendingActionDao = pendingActionDao
+            pendingActionDao = pendingActionDao,
+            vaultAssociationStore = vaultAssociationStore
         )
     }
 
@@ -92,6 +95,15 @@ class AuthViewModelTest {
 
         verify { tokenProvider.clear() }
         assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `signOut clears local vault associations but leaves the synced copy alone`() = runTest {
+        // #200: only clearAll() (the local store) is called on sign-out — the associations
+        // synced to another still-signed-in device must not be wiped from here.
+        vm.signOut()
+
+        verify { vaultAssociationStore.clearAll() }
     }
 
     @Test
