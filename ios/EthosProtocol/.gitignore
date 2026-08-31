@@ -6,3 +6,16 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+
+# Test snapshots (SnapshotTesting / Nimble-Snapshots)
+**/__Snapshots__/
+**/ReferenceImages/
+**/*.png.snap
+
+# Secrets
+*.p8
+*.p12
+*.mobileprovision
+GoogleService-Info.plist
+.env
+.env.*

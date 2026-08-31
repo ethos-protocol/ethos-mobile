@@ -14,11 +14,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.DestructiveConfirmation
 import com.ethosprotocol.models.TwoFactorMethod
@@ -1243,6 +1245,7 @@ fun TwoFactorSetupScreen(
             vaultId = vaultId,
             method = selectedMethod,
             provisioningUri = state.setupResponse?.provisioningUri,
+            secret = state.setupResponse?.secret,
             onVerified = { onComplete() },
             onDismiss = onDismiss,
             vm = vm
@@ -1316,6 +1319,7 @@ private fun TwoFactorVerifyScreen(
     vaultId: String,
     method: TwoFactorMethod,
     provisioningUri: String?,
+    secret: String? = null,
     onVerified: () -> Unit,
     onDismiss: () -> Unit,
     vm: TwoFactorViewModel
@@ -1368,6 +1372,11 @@ private fun TwoFactorVerifyScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // #228: Show copyable secret with auto-clear and one-time warning.
+                secret?.let { s ->
+                    Spacer(Modifier.height(8.dp))
+                    TotpSecretCopyRow(secret = s)
+                }
             }
             method == TwoFactorMethod.totp -> {
                 // Re-verification: no provisioning data — the user must open their
@@ -1393,7 +1402,12 @@ private fun TwoFactorVerifyScreen(
         OutlinedTextField(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
-            modifier = Modifier.width(200.dp),
+            modifier = Modifier
+                .width(200.dp)
+                .semantics {
+                    contentDescription = if (otp.isEmpty) "OTP code field, empty"
+                                         else "OTP code field, ${otp.length} of 6 digits entered"
+                },
             textStyle = MaterialTheme.typography.headlineSmall,
             enabled = !state.isOtpBlocked
         )
@@ -1549,6 +1563,131 @@ fun VaultDetailScreen(
                 else -> {
                     Text("Loading 2FA status…", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+// #228: Copyable TOTP secret with 30-second clipboard auto-clear and one-time warning.
+@Composable
+private fun TotpSecretCopyRow(secret: String) {
+    val context = LocalContext.current
+    var showCopied by remember { mutableStateOf(false) }
+    var showWarning by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val prefs = remember {
+        context.getSharedPreferences("totp_copy_prefs", android.content.Context.MODE_PRIVATE)
+    }
+    val warnedKey = "totp_copy_warned"
+
+    fun performCopy() {
+        val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+        val clip = android.content.ClipData.newPlainText("TOTP Secret", secret)
+        clipboard.setPrimaryClip(clip)
+        showCopied = true
+        // #228: Auto-clear clipboard after 30 seconds.
+        scope.launch {
+            kotlinx.coroutines.delay(30_000L)
+            val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+            if (current == secret) {
+                val empty = android.content.ClipData.newPlainText("", "")
+                clipboard.setPrimaryClip(empty)
+            }
+            showCopied = false
+        }
+    }
+
+    if (showWarning) {
+        AlertDialog(
+            onDismissRequest = { showWarning = false },
+            title = { Text("Security Notice") },
+            text = {
+                Text(
+                    "Your 2FA secret will be copied to the clipboard and automatically " +
+                    "cleared after 30 seconds. Clipboard managers and other apps may " +
+                    "capture it before it is cleared. Treat this secret like a password."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.edit().putBoolean(warnedKey, true).apply()
+                    showWarning = false
+                    performCopy()
+                }) { Text("I Understand") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showWarning = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            secret,
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        IconButton(
+            onClick = {
+                if (prefs.getBoolean(warnedKey, false)) performCopy()
+                else showWarning = true
+            },
+            modifier = Modifier.semantics {
+                contentDescription = if (showCopied) "Copied" else "Copy TOTP secret"
+            }
+        ) {
+            Icon(
+                if (showCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                contentDescription = null,
+                tint = if (showCopied) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// MARK: - Settings Screen
+
+@Composable
+fun SettingsScreen(
+    onNotificationPreferences: () -> Unit,
+    onBack: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Settings") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Notifications", style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary)
+            OutlinedButton(
+                onClick = onNotificationPreferences,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Notifications, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Notification Preferences")
             }
         }
     }

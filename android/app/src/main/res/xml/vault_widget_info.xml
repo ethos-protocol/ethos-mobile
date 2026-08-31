@@ -3,6 +3,7 @@
     android:minWidth="180dp"
     android:minHeight="110dp"
     android:updatePeriodMillis="0"
-    android:initialLayout="@layout/vault_widget"
+    android:initialLayout="@layout/vault_widget_small"
     android:resizeMode="horizontal|vertical"
-    android:widgetCategory="home_screen" />
+    android:widgetCategory="home_screen"
+    android:configure="com.ethosprotocol.widget.VaultWidgetConfigActivity" />

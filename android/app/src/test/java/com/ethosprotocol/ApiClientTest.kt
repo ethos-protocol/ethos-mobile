@@ -15,6 +15,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -101,5 +102,49 @@ class ApiClientTest {
 
         assertTrue(result is ApiResult.Error)
         verify { tokenProvider.clear() }
+    }
+
+    @Test
+    fun `401 with no body falls back to a generic Unauthorized message`() = runTest {
+        every { tokenProvider.token } returns null
+        every { tokenProvider.isNearExpiry() } returns false
+
+        val engine = MockEngine { respond(content = "", status = HttpStatusCode.Unauthorized) }
+        val apiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, "https://test", engine)
+
+        val result = apiClient.listVaults()
+
+        assertEquals("Unauthorized", (result as ApiResult.Error).message)
+    }
+
+    // #211: an expired recovery token/proof on completeRecovery must surface a clear,
+    // actionable message — not the generic "Unauthorized" shown for a rejected session.
+    @Test
+    fun `401 with an error body on completeRecovery surfaces the server message`() = runTest {
+        every { tokenProvider.token } returns null
+        every { tokenProvider.isNearExpiry() } returns false
+
+        val engine = MockEngine {
+            respond(
+                content = """{"error":"Your recovery code has expired. Please request a new one."}""",
+                status = HttpStatusCode.Unauthorized,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+        val apiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, "https://test", engine)
+
+        val result = apiClient.completeRecovery(
+            com.ethosprotocol.models.RecoveryCompleteRequest(
+                recoveryToken = "expired-token",
+                credentialId = "cred",
+                publicKey = "pk",
+                clientDataJson = "cdj"
+            )
+        )
+
+        assertEquals(
+            "Your recovery code has expired. Please request a new one.",
+            (result as ApiResult.Error).message
+        )
     }
 }
