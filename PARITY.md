@@ -33,10 +33,11 @@ Last audited: 2026-07-27
 | Vault detail view | ✅ | ✅ | |
 | Check-in | ✅ | ✅ | |
 | Biometric confirmation for check-in | ✅ | ✅ | iOS: LocalAuthentication; Android: BiometricPrompt |
+| Typed-confirmation dialog for destructive actions | ✅ | ✅ | Guardrail added ahead of any delete/archive endpoint (#220); iOS: `DestructiveConfirmationView`; Android: `DestructiveConfirmationDialog` — neither is wired to a real action yet |
 | **Funds** | | | |
 | Deposit | ✅ | ❌ | Android has no DepositScreen (#87) |
 | Withdraw | ✅ | ❌ | Android has no WithdrawScreen (#87) |
-| Balance display (formatted XLM) | ✅ | ✅ | |
+| Balance display (formatted XLM) | ✅ | ✅ | `Vault.formattedBalance` now renders `assetCode` rather than a hardcoded "XLM" label (#222); Deposit/Withdraw screens on both platforms still hardcode "XLM" in their labels and validation copy — out of scope for #222, tracked below |
 | **Beneficiary management** | | | |
 | View beneficiary | ✅ | ✅ | |
 | Update beneficiary | ✅ | ❌ | Android has no ManageBeneficiaryScreen (#87) |
@@ -53,7 +54,7 @@ Last audited: 2026-07-27
 | Correct copy: TOTP re-verify (no provisioning data) | ✅ | 🚧 | Fixed in #115; Android was showing "Scan URI" with no URI |
 | Correct copy: SMS — "code sent to phone" | ✅ | ✅ | |
 | Correct copy: Email — "code sent to email" | ✅ | ✅ | |
-| OTP cooldown survives process death | ✅ | ✅ | iOS `OTPRateLimiter` now persists the failure count and an absolute cooldown deadline via `UserDefaults` (#201), mirroring Android's `SavedStateHandle` approach (#172) |
+| OTP cooldown survives process death | ❌ | ✅ | Android persists the failure count and an absolute cooldown deadline in `SavedStateHandle` (#172); iOS `OTPRateLimiter` is still in-memory only |
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
 | TTL expiry warning notification | ✅ | ✅ | |
@@ -78,7 +79,7 @@ Last audited: 2026-07-27
 | Vault action links (check-in, withdraw, …) | ✅ | ✅ | |
 | Deep-link input validation (path traversal, length) | ✅ | ✅ | |
 | **iCloud / cross-device sync** | | | |
-| iCloud KV / cross-device vault ↔ credential sync | ✅ | ✅ | iOS uses `NSUbiquitousKeyValueStore` (`ICloudSyncService`); Android uses `VaultAssociationStore`, a SharedPreferences file included in Auto Backup for Apps (#200). Neither syncs private keys or tokens — only the vault-ID-to-credential-ID mapping |
+| iCloud KV vault ↔ credential sync | ✅ | ❌ | Android has no equivalent cloud sync |
 
 ---
 
@@ -99,6 +100,8 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
+| iCloud / cross-device sync | Android | TBD |
+| Deposit/Withdraw amount labels and validation messages hardcode "XLM" instead of the vault's `assetCode` (iOS: DepositView/WithdrawView; Android: DepositScreen/WithdrawScreen, VaultViewModel.deposit/withdraw) | Both | #222 (audit only — every vault is XLM today, so this is a documented follow-up, not a current bug) |
 
 ---
 

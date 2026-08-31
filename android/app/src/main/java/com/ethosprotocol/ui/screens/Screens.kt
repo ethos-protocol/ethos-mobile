@@ -22,6 +22,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.DestructiveConfirmation
 import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
 import com.ethosprotocol.models.Enable2FARequest
@@ -346,6 +347,63 @@ private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDis
             TextButton(onClick = onConfirm) { Text("Confirm") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+// MARK: - Destructive Confirmation (#220)
+
+/**
+ * Shared confirmation UI for any irreversible, destructive vault action
+ * (delete, archive, …) on either platform. The confirm button stays disabled
+ * until the user types [requiredText] (typically the vault's own name/ID)
+ * exactly — a plain Yes/No tap is not enough given the financial and
+ * beneficiary implications of getting this wrong. [onConfirm] is only ever
+ * invoked once [DestructiveConfirmation.isConfirmed] is true.
+ */
+@Composable
+fun DestructiveConfirmationDialog(
+    title: String,
+    message: String,
+    requiredText: String,
+    confirmLabel: String = "Delete",
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var enteredText by remember { mutableStateOf("") }
+    val confirmation = DestructiveConfirmation(requiredText, enteredText)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                Text(message, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Type \"$requiredText\" to confirm.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = enteredText,
+                    onValueChange = { enteredText = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                // Guarded via confirmIfMatched, not just `enabled` below — `enabled`
+                // only stops a tap from reaching this closure through the button's own
+                // click handler; it is not what makes this safe.
+                onClick = { confirmation.confirmIfMatched(onConfirm) },
+                enabled = confirmation.isConfirmed,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 

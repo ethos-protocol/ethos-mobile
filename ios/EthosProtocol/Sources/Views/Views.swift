@@ -273,8 +273,7 @@ struct RecoverAccessView: View {
     @State private var username = ""
 
     private var canSubmit: Bool {
-        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty
-            && !authStore.isLoading && !authStore.isRecoveryBlocked
+        !email.isEmpty && !backupCode.isEmpty && !username.isEmpty && !authStore.isLoading
     }
 
     var body: some View {
@@ -285,11 +284,9 @@ struct RecoverAccessView: View {
                         .textInputAutocapitalization(.never)
                         .keyboardType(.emailAddress)
                         .autocorrectionDisabled()
-                        .disabled(authStore.isRecoveryBlocked)
                     TextField("Backup code", text: $backupCode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .disabled(authStore.isRecoveryBlocked)
                 } header: {
                     Text("Verify your identity")
                 } footer: {
@@ -299,22 +296,6 @@ struct RecoverAccessView: View {
                     TextField("Username", text: $username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .disabled(authStore.isRecoveryBlocked)
-                }
-                // #212: Escalating cooldown after repeated recovery-code failures.
-                if authStore.isRecoveryBlocked {
-                    Section {
-                        Label("Too many attempts — wait \(authStore.recoveryCooldownSecondsRemaining)s",
-                              systemImage: "timer")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } else if authStore.recoveryFailureCount > 0 {
-                    Section {
-                        Text("\(authStore.recoveryFailureCount) failed attempt\(authStore.recoveryFailureCount == 1 ? "" : "s")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 if let error = authStore.error {
                     Section { Text(error.message).foregroundStyle(.red).font(.caption) }
@@ -347,22 +328,9 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
-    // #219: search/filter over the vaults already fetched into vaultStore.vaults.
-    @State private var searchText = ""
-    @State private var statusFilter: VaultListFilter = .all
     // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
     // block access to the app, consistent with the "secure digital inheritance" posture.
     @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
-    // #214: Blocking confirmation before sign-out when this is the account's last
-    // remaining passkey — unlike #118, this one gates the action itself.
-    @State private var showLastPasskeySignOutWarning = false
-
-    /// #219: filtered view over every vault page already fetched — search and
-    /// status filter both apply client-side, so they work across paginated
-    /// results without an extra fetch.
-    private var filteredVaults: [Vault] {
-        VaultListFiltering.filter(vaultStore.vaults, searchText: searchText, statusFilter: statusFilter)
-    }
 
     var body: some View {
         NavigationStack {
@@ -376,29 +344,21 @@ struct VaultListView: View {
                 } else if vaultStore.vaults.isEmpty {
                     ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
                 } else {
-                    VaultStatusFilterRow(selection: $statusFilter)
-                    if filteredVaults.isEmpty {
-                        ContentUnavailableView("No Matching Vaults", systemImage: "magnifyingglass", description: Text("Try a different search or filter."))
-                    } else {
-                        List {
-                            ForEach(filteredVaults) { vault in
-                                NavigationLink(destination: VaultDetailView(vault: vault)) {
-                                    VaultRowView(vault: vault)
-                                }
-                            }
-                            // Load More only makes sense against the unfiltered list — a
-                            // filtered view already searched everything fetched so far.
-                            if vaultStore.hasMorePages && searchText.isEmpty && statusFilter == .all {
-                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
-                                    Task { await vaultStore.loadMore() }
-                                }
+                    List {
+                        ForEach(vaultStore.vaults) { vault in
+                            NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                VaultRowView(vault: vault)
                             }
                         }
-                        .refreshable { await vaultStore.load() }
+                        if vaultStore.hasMorePages {
+                            LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                Task { await vaultStore.loadMore() }
+                            }
+                        }
                     }
+                    .refreshable { await vaultStore.load() }
                 }
             }
-            .searchable(text: $searchText, prompt: "Search by label or ID")
             .navigationTitle("My Vaults")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -410,28 +370,11 @@ struct VaultListView: View {
                         NavigationLink(destination: SettingsView()) {
                             Label("Settings", systemImage: "gear")
                         }
-                        Button("Sign Out") {
-                            Task {
-                                if await authStore.isLastRemainingPasskey() {
-                                    showLastPasskeySignOutWarning = true
-                                } else {
-                                    await authStore.signOut()
-                                }
-                            }
-                        }
+                        Button("Sign Out") { Task { await authStore.signOut() } }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
                 }
-            }
-            // #214: This is the account's only registered passkey — signing out here
-            // with no recovery already in hand could permanently lock the user out of
-            // a vault holding real funds, so this confirmation blocks the sign-out.
-            .alert("This Is Your Only Passkey", isPresented: $showLastPasskeySignOutWarning) {
-                Button("Cancel", role: .cancel) {}
-                Button("Sign Out Anyway", role: .destructive) { Task { await authStore.signOut() } }
-            } message: {
-                Text("No other device has a passkey for this account. If you sign out without a way to recover access (your account's recovery email and backup code), you could be permanently locked out of any vaults you own.")
             }
             .task { await vaultStore.load() }
             .sheet(isPresented: $showCreate) { CreateVaultView() }
@@ -442,16 +385,6 @@ struct VaultListView: View {
             }
             .onChange(of: vaultStore.pendingDeepLink) { _, link in
                 if link != nil { showDeepLinkSheet = true }
-            }
-            // #a11y-live-region: the offline banner being labeled isn't enough — VoiceOver only
-            // announces a view on first appearance or on an explicit accessibility notification.
-            // vaultsCacheAge flipping between nil (online) and non-nil (offline) needs an
-            // explicit UIAccessibility.post(notification: .announcement) so the transition
-            // itself — not just the banner's static label — reaches a VoiceOver user, matching
-            // the Android-side announceForAccessibility fix in Screens.kt.
-            .onChange(of: vaultStore.vaultsCacheAge == nil) { wasOnlineBefore, isOnlineNow in
-                let message = isOnlineNow ? "Back online" : "Offline — showing cached data"
-                UIAccessibility.post(notification: .announcement, argument: message)
             }
             // #118: Non-blocking jailbreak warning — dismissible by the user.
             .alert("Security Warning", isPresented: $showIntegrityWarning) {
@@ -486,31 +419,6 @@ struct VaultListView: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return formatter.localizedString(fromTimeInterval: -interval)
-    }
-}
-
-/// Status filter chip row for the vault list (#219).
-struct VaultStatusFilterRow: View {
-    @Binding var selection: VaultListFilter
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(VaultListFilter.allCases) { filter in
-                    Button(action: { selection = filter }) {
-                        Text(filter.label)
-                            .font(.subheadline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(selection == filter ? Color.accentColor : Color.secondary.opacity(0.15))
-                            .foregroundStyle(selection == filter ? Color.white : Color.primary)
-                            .clipShape(Capsule())
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-        }
     }
 }
 
@@ -557,16 +465,7 @@ struct VaultRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                // #218: prefer the user-set label; fall back to the truncated
-                // (but still copyable) ID when none is set.
-                if let label = vault.label {
-                    Text(label)
-                        .font(.headline)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                } else {
-                    CopyableIDView(fullID: vault.id, displayLength: 12)
-                }
+                CopyableIDView(fullID: vault.id, displayLength: 12)
                 Spacer()
                 StatusBadge(status: vault.status)
             }
@@ -609,50 +508,6 @@ struct StatusBadge: View {
     }
 }
 
-// MARK: - Connection Status Badge (#255)
-
-/// Small "Live" / "Reconnecting" / "Polling" indicator driven by the WebSocket state.
-struct ConnectionStatusBadge: View {
-    let state: VaultEventSocket.ConnectionState
-
-    var body: some View {
-        Label(label, systemImage: icon)
-            .font(.caption2.bold())
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.1))
-            .clipShape(Capsule())
-    }
-
-    private var label: String {
-        switch state {
-        case .connected:         return "Live"
-        case .connecting:        return "Connecting…"
-        case .disconnected:      return "Reconnecting…"
-        case .fallbackToPolling: return "Polling"
-        }
-    }
-
-    private var icon: String {
-        switch state {
-        case .connected:         return "dot.radiowaves.left.and.right"
-        case .connecting:        return "dot.radiowaves.left.and.right"
-        case .disconnected:      return "arrow.clockwise"
-        case .fallbackToPolling: return "arrow.clockwise"
-        }
-    }
-
-    private var color: Color {
-        switch state {
-        case .connected:         return .green
-        case .connecting:        return .blue
-        case .disconnected:      return .orange
-        case .fallbackToPolling: return .gray
-        }
-    }
-}
-
 // MARK: - Vault Detail
 
 struct VaultDetailView: View {
@@ -670,16 +525,16 @@ struct VaultDetailView: View {
     @State private var showDeposit = false
     @State private var showWithdraw = false
     @State private var showManageBeneficiary = false
-    @State private var showRenameVault = false
-    /// Local TTL snapshot that updates every 60 s via `refreshTTLPeriodically`.
+    /// Server-anchored TTL baseline, reconciled on every poll and `vault_updated`
+    /// push (#221, #223); the server value always wins on conflict.
+    @State private var ttlCountdown: TTLCountdown? = nil
+    /// Locally ticked display value, updated every second by `tickTTLLocally`
+    /// between the (up to 60 s apart) reconciliations above.
     @State private var ttlRemaining: UInt64? = nil
 
     var body: some View {
         List {
             Section("Overview") {
-                if let label = vault.label {
-                    LabeledContent("Label", value: label)
-                }
                 LabeledContent("Balance", value: vault.formattedBalance)
                 LabeledContent("Status", value: vault.status.rawValue.capitalized)
                 HStack {
@@ -689,9 +544,6 @@ struct VaultDetailView: View {
                 }
                 if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
-                }
-                LabeledContent("Connection") {
-                    ConnectionStatusBadge(state: vaultStore.socketConnectionState)
                 }
             }
 
@@ -755,15 +607,9 @@ struct VaultDetailView: View {
                 Button(action: { showManageBeneficiary = true }) {
                     Label("Manage Beneficiary", systemImage: "person.2.fill")
                 }
-                Button(action: { showRenameVault = true }) {
-                    Label(vault.label == nil ? "Add Label" : "Rename Vault", systemImage: "pencil")
-                }
-                NavigationLink(destination: VaultHistoryView(vaultID: vault.id)) {
-                    Label("Activity History", systemImage: "clock.arrow.circlepath")
-                }
             }
         }
-        .navigationTitle(vault.displayName)
+        .navigationTitle("Vault")
         .navigationBarTitleDisplayMode(.inline)
         // `.task` auto-cancels when the view disappears, so this polling loop
         // (and the in-flight `getTTL` request it may be awaiting) stops cleanly
@@ -773,7 +619,18 @@ struct VaultDetailView: View {
         .task {
             vaultStore.subscribeToEvents(vaultID: vault.id, socket: VaultEventSocket(baseURL: APIClient.shared.baseURL))
             defer { vaultStore.unsubscribeFromEvents() }
-            await refreshTTLPeriodically()
+            async let polling: () = refreshTTLPeriodically()
+            async let ticking: () = tickTTLLocally()
+            _ = await (polling, ticking)
+        }
+        // The socket delivers `vault_updated` into `vaultStore.vaults` (see
+        // subscribeToEvents), not directly to this view's local TTL state — pick
+        // it up here so a push reconciles the countdown exactly like a poll does,
+        // per the shared rule in shared/api-contract.md (#223).
+        .onChange(of: vaultStore.vaults) { _, updated in
+            if let ttl = updated.first(where: { $0.id == vault.id })?.ttlRemaining {
+                reconcileTTL(ttl)
+            }
         }
         .sheet(isPresented: $show2FASetup) {
             TwoFactorSetupView(vaultID: vault.id)
@@ -796,9 +653,6 @@ struct VaultDetailView: View {
         .sheet(isPresented: $showManageBeneficiary) {
             NavigationStack { ManageBeneficiaryView(vault: vault) }
         }
-        .sheet(isPresented: $showRenameVault) {
-            NavigationStack { RenameVaultView(vault: vault) }
-        }
     }
 
     private func load2FAStatus() async {
@@ -816,17 +670,41 @@ struct VaultDetailView: View {
 
     private func refreshTTL() async {
         guard let ttl = try? await APIClient.shared.getTTL(vaultID: vault.id) else { return }
-        ifNotCancelled { ttlRemaining = ttl }
+        ifNotCancelled { reconcileTTL(ttl) }
     }
 
     /// Polls the server TTL every 60 s for as long as the view is on screen.
     /// The `.task` modifier that calls this cancels it automatically on disappear.
     private func refreshTTLPeriodically() async {
-        ttlRemaining = vault.ttlRemaining   // seed with value from vault list
+        if let seed = vault.ttlRemaining { reconcileTTL(seed) }   // seed with value from vault list
         while !Task.isCancelled {
             await refreshTTL()
             try? await Task.sleep(nanoseconds: Self.ttlRefreshInterval)
         }
+    }
+
+    /// Ticks the displayed TTL down once a second between server reconciliations,
+    /// so the countdown never visibly freezes while waiting on the next 60 s poll
+    /// or `vault_updated` push (#221).
+    private func tickTTLLocally() async {
+        while !Task.isCancelled {
+            if let countdown = ttlCountdown {
+                ifNotCancelled { ttlRemaining = countdown.remaining() }
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+    }
+
+    /// Applies a fresh server TTL value — from either a poll or a `vault_updated`
+    /// push — as the new countdown baseline. The server value always wins over
+    /// whatever the local tick had drifted to (#221, #223).
+    private func reconcileTTL(_ serverValue: UInt64) {
+        if ttlCountdown == nil {
+            ttlCountdown = TTLCountdown(serverValue: serverValue)
+        } else {
+            ttlCountdown?.reconcile(serverValue: serverValue)
+        }
+        ttlRemaining = serverValue
     }
 
     // Not cancelled from `.onDisappear`: unlike the read-only TTL/2FA-status
@@ -866,8 +744,15 @@ struct VaultDetailView: View {
     private func formatDuration(_ seconds: UInt64) -> String {
         let days = seconds / 86_400
         let hours = (seconds % 86_400) / 3_600
+        let minutes = (seconds % 3_600) / 60
+        let secs = seconds % 60
         if days > 0 { return "\(days)d \(hours)h" }
-        return "\(hours)h"
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        // Below an hour, show seconds so the per-second local tick (#221) is
+        // actually visible rather than appearing frozen at "0h". Cast to Int:
+        // %d expects a 32-bit-sized argument, and these UInt64 values are
+        // always small (< 3600) so the cast is lossless.
+        return String(format: "%d:%02d", Int(minutes), Int(secs))
     }
 }
 
@@ -880,91 +765,50 @@ struct CreateVaultView: View {
     @State private var intervalDays = 30.0
     @State private var isCreating = false
     @State private var error: String?
-    // #215: Vault creation commits real funds to a TTL-gated structure — require an
-    // explicit review step showing exactly what's about to be submitted before the
-    // POST /vaults call fires, rather than submitting straight from the input form.
-    @State private var isConfirming = false
 
     var body: some View {
         NavigationStack {
-            if isConfirming {
-                confirmationForm
-            } else {
-                inputForm
+            Form {
+                Section("Beneficiary") {
+                    TextField("Stellar address", text: $beneficiary)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(.body, design: .monospaced))
+                    if !beneficiary.isEmpty && !isBeneficiaryValid {
+                        Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                Section("Check-in Interval") {
+                    Slider(value: $intervalDays, in: 1...365, step: 1)
+                    Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
             }
-        }
-    }
-
-    private var inputForm: some View {
-        Form {
-            Section("Beneficiary") {
-                TextField("Stellar address", text: $beneficiary)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.system(.body, design: .monospaced))
-                if !beneficiary.isEmpty && !isBeneficiaryValid {
-                    Text("Enter a valid Stellar address (56 characters, starting with G).")
-                        .font(.caption)
-                        .foregroundStyle(.red)
+            .navigationTitle("New Vault")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { create() }.disabled(!isBeneficiaryValid || isCreating)
+                }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
             }
-            Section("Check-in Interval") {
-                Slider(value: $intervalDays, in: 1...365, step: 1)
-                Text("\(Int(intervalDays)) days").foregroundStyle(.secondary)
-            }
         }
-        .navigationTitle("New Vault")
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Next") { isConfirming = true }.disabled(!isBeneficiaryValid)
-            }
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
-            }
-        }
-    }
-
-    private var confirmationForm: some View {
-        Form {
-            Section {
-                LabeledContent("Beneficiary") {
-                    Text(beneficiary)
-                        .font(.system(.footnote, design: .monospaced))
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Check-in Interval", value: "\(Int(intervalDays)) days")
-            } header: {
-                Text("Review Vault")
-            } footer: {
-                Text("If you don't check in within the interval above, the vault's funds release to the beneficiary address shown. Double-check the address — this cannot be undone once created.")
-            }
-            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
-        }
-        .navigationTitle("Confirm Vault")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button(isCreating ? "Creating…" : "Confirm & Create") { create() }.disabled(isCreating)
-            }
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Back") { isConfirming = false }.disabled(isCreating)
-            }
-        }
-        .overlay { if isCreating { ProgressView() } }
     }
 
     private var isBeneficiaryValid: Bool {
-        StellarAddress.isValidPublicKey(StellarAddress.sanitize(beneficiary))
+        StellarAddress.isValidPublicKey(beneficiary)
     }
 
     private func create() {
-        let sanitized = StellarAddress.sanitize(beneficiary)
-        guard StellarAddress.isValidPublicKey(sanitized) else { return }
+        guard isBeneficiaryValid else { return }
         isCreating = true
         Task {
             do {
                 let interval = UInt64(intervalDays * 86_400)
-                let vault = try await APIClient.shared.createVault(beneficiary: sanitized, checkInInterval: interval)
+                let vault = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
                 if let credentialID = KeychainService.shared.loadCredentialID() {
                     ICloudSyncService.shared.save(vaultID: vault.id, credentialID: credentialID)
                 }
@@ -1038,22 +882,12 @@ struct WithdrawView: View {
     @State private var amountText = ""
     @State private var isWithdrawing = false
     @State private var error: String?
-    // #216: extra confirmation gate for a large withdrawal — shown instead of
-    // withdrawing immediately when isLargeWithdrawal is true.
-    @State private var showLargeWithdrawalConfirmation = false
 
     private var amountStroops: Int64? { VaultAmount.parseStroops(amountText) }
 
     private var isAmountValid: Bool {
         guard let amount = amountStroops else { return false }
         return VaultAmount.hasSufficientBalance(amount: amount, vaultBalance: vault.balance)
-    }
-
-    private var isLargeWithdrawal: Bool {
-        guard let amount = amountStroops else { return false }
-        return VaultAmount.isLargeWithdrawal(
-            amount: amount, vaultBalance: vault.balance,
-            thresholdBps: WithdrawalThreshold.largeWithdrawalBps)
     }
 
     var body: some View {
@@ -1066,10 +900,6 @@ struct WithdrawView: View {
                     .keyboardType(.decimalPad)
                 if let amount = amountStroops, amount > vault.balance {
                     Text("Amount exceeds available balance.").foregroundStyle(.red).font(.caption)
-                } else if isLargeWithdrawal {
-                    Label("This is a large withdrawal relative to the vault's balance.", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
                 }
             }
             if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
@@ -1078,7 +908,7 @@ struct WithdrawView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button(isWithdrawing ? "Withdrawing…" : "Withdraw") { attemptWithdraw() }
+                Button(isWithdrawing ? "Withdrawing…" : "Withdraw") { withdraw() }
                     .disabled(!isAmountValid || isWithdrawing)
             }
             ToolbarItem(placement: .cancellationAction) {
@@ -1086,26 +916,6 @@ struct WithdrawView: View {
             }
         }
         .overlay { if isWithdrawing { ProgressView() } }
-        // #216: a large withdrawal needs an explicit extra tap before it proceeds,
-        // on top of the biometric gate every withdrawal already requires.
-        .confirmationDialog(
-            "Withdraw \(amountText.isEmpty ? "" : amountText) XLM?",
-            isPresented: $showLargeWithdrawalConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Withdraw", role: .destructive) { withdraw() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This withdraws a large share of the vault's balance. This cannot be undone.")
-        }
-    }
-
-    private func attemptWithdraw() {
-        if isLargeWithdrawal {
-            showLargeWithdrawalConfirmation = true
-        } else {
-            withdraw()
-        }
     }
 
     private func withdraw() {
@@ -1124,154 +934,6 @@ struct WithdrawView: View {
                 self.error = error.localizedDescription
             }
             isWithdrawing = false
-        }
-    }
-}
-
-// MARK: - Vault History (#217)
-
-struct VaultHistoryView: View {
-    let vaultID: String
-    @State private var events: [VaultHistoryEvent] = []
-    @State private var nextCursor: String?
-    @State private var isLoading = false
-    @State private var isLoadingMore = false
-    @State private var error: String?
-
-    private var hasMorePages: Bool { nextCursor != nil }
-
-    var body: some View {
-        Group {
-            if isLoading && events.isEmpty {
-                ProgressView("Loading history…")
-            } else if let error, events.isEmpty {
-                ErrorActionView(error: ErrorPresentation(message: error, showsRetry: true),
-                                retry: { Task { await load() } })
-            } else if events.isEmpty {
-                ContentUnavailableView("No Activity Yet", systemImage: "clock",
-                                        description: Text("Check-ins, deposits, and withdrawals will show up here."))
-            } else {
-                List {
-                    ForEach(events) { event in
-                        VaultHistoryRowView(event: event)
-                    }
-                    if hasMorePages {
-                        LoadMoreRow(isLoading: isLoadingMore) {
-                            Task { await loadMore() }
-                        }
-                    }
-                }
-                .refreshable { await load() }
-            }
-        }
-        .navigationTitle("Activity")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
-    }
-
-    private func load() async {
-        isLoading = true; error = nil
-        do {
-            let page = try await APIClient.shared.getVaultHistory(vaultID: vaultID)
-            events = page.events
-            nextCursor = page.nextCursor
-        } catch {
-            self.error = error.localizedDescription
-        }
-        isLoading = false
-    }
-
-    private func loadMore() async {
-        guard !isLoadingMore, let cursor = nextCursor else { return }
-        isLoadingMore = true
-        do {
-            let page = try await APIClient.shared.getVaultHistory(vaultID: vaultID, cursor: cursor)
-            events += page.events
-            nextCursor = page.nextCursor
-        } catch {
-            self.error = error.localizedDescription
-        }
-        isLoadingMore = false
-    }
-}
-
-struct VaultHistoryRowView: View {
-    let event: VaultHistoryEvent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(event.displayTitle).font(.headline).foregroundStyle(.primary)
-            if let amount = event.amount {
-                Text(String(format: "%.7f XLM", Double(amount) / 10_000_000))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            if let beneficiary = event.beneficiary {
-                Text("New beneficiary: \(beneficiary)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text(event.timestamp, style: .date) + Text(" ") + Text(event.timestamp, style: .time)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.vertical, 2)
-    }
-}
-
-// MARK: - Rename Vault (#218)
-
-struct RenameVaultView: View {
-    let vault: Vault
-    @EnvironmentObject var vaultStore: VaultStore
-    @Environment(\.dismiss) var dismiss
-    @State private var labelText: String
-    @State private var isUpdating = false
-    @State private var error: String?
-
-    init(vault: Vault) {
-        self.vault = vault
-        _labelText = State(initialValue: vault.label ?? "")
-    }
-
-    private var trimmedLabel: String {
-        labelText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var body: some View {
-        Form {
-            Section("Label") {
-                TextField("e.g. Emergency Fund", text: $labelText)
-                Text("Shown instead of the vault ID in your vault list. Leave blank to clear it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let error { Section { Text(error).foregroundStyle(.red).font(.caption) } }
-        }
-        .navigationTitle(vault.label == nil ? "Add Label" : "Rename Vault")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button(isUpdating ? "Saving…" : "Save") { save() }
-                    .disabled(isUpdating)
-            }
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
-            }
-        }
-    }
-
-    private func save() {
-        isUpdating = true; error = nil
-        let newLabel = trimmedLabel.isEmpty ? nil : trimmedLabel
-        Task {
-            await vaultStore.updateLabel(vault: vault, label: newLabel)
-            if let storeError = vaultStore.error {
-                error = storeError.message
-            } else {
-                dismiss()
-            }
-            isUpdating = false
         }
     }
 }
@@ -1356,12 +1018,11 @@ struct ManageBeneficiaryView: View {
     }
 
     private func confirm() {
-        let sanitized = StellarAddress.sanitize(newBeneficiary)
         isUpdating = true; error = nil
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Confirm beneficiary change")
-                await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: sanitized)
+                await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: newBeneficiary)
                 if let storeError = vaultStore.error {
                     error = storeError.message
                 } else {
@@ -1375,60 +1036,61 @@ struct ManageBeneficiaryView: View {
     }
 }
 
-// MARK: - 2FA Views
+// MARK: - Destructive Confirmation (#220)
 
-// #228: Copyable TOTP secret with auto-clear clipboard and one-time security warning.
-private struct TOTPSecretCopyView: View {
-    let secret: String
-    @State private var showCopied = false
-    @State private var showWarning = false
-    private static let warnedKey = "com.ethosprotocol.totp_copy_warned"
-    private static let clearDelay: TimeInterval = 30
+/// Shared confirmation UI for any irreversible, destructive vault action
+/// (delete, archive, …) on either platform. The confirm button stays disabled
+/// until the user types `requiredText` (typically the vault's own name/ID)
+/// exactly — a plain Yes/No tap is not enough given the financial and
+/// beneficiary implications of getting this wrong. `onConfirm` is only ever
+/// invoked once `DestructiveConfirmation.isConfirmed` is true.
+struct DestructiveConfirmationView: View {
+    let title: String
+    let message: String
+    let requiredText: String
+    var confirmTitle: String = "Delete"
+    let onConfirm: () -> Void
+
+    @State private var confirmation: DestructiveConfirmation
+
+    init(title: String, message: String, requiredText: String,
+         confirmTitle: String = "Delete", onConfirm: @escaping () -> Void) {
+        self.title = title
+        self.message = message
+        self.requiredText = requiredText
+        self.confirmTitle = confirmTitle
+        self.onConfirm = onConfirm
+        _confirmation = State(initialValue: DestructiveConfirmation(requiredText: requiredText))
+    }
 
     var body: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                Label(secret, systemImage: "key.fill")
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("Type \"\(requiredText)\" to confirm.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(requiredText, text: $confirmation.enteredText)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button(confirmTitle, role: .destructive) {
+                // Guarded via confirmIfMatched, not just `.disabled` below — `.disabled`
+                // only stops a tap from reaching this closure through the button's own
+                // gesture recognizer; it is not what makes this safe.
+                confirmation.confirmIfMatched(onConfirm)
             }
-            Button(action: copySecret) {
-                Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                    .font(.caption)
-                    .foregroundStyle(showCopied ? .green : .blue)
-            }
-            .accessibilityLabel(showCopied ? "Copied" : "Copy TOTP secret")
+            .disabled(!confirmation.isConfirmed)
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
         }
-        .alert("Security Notice", isPresented: $showWarning) {
-            Button("I Understand", role: .cancel) {
-                UserDefaults.standard.set(true, forKey: Self.warnedKey)
-                performCopy()
-            }
-        } message: {
-            Text("Your 2FA secret will be copied to the clipboard and automatically cleared after 30 seconds. Clipboard managers and other apps may capture it before it is cleared. Treat this secret like a password.")
-        }
-    }
-
-    private func copySecret() {
-        if UserDefaults.standard.bool(forKey: Self.warnedKey) {
-            performCopy()
-        } else {
-            showWarning = true
-        }
-    }
-
-    private func performCopy() {
-        UIPasteboard.general.string = secret
-        showCopied = true
-        // #228: Auto-clear the clipboard after 30 seconds.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearDelay) {
-            if UIPasteboard.general.string == self.secret {
-                UIPasteboard.general.string = ""
-            }
-            showCopied = false
-        }
+        .padding()
     }
 }
+
+// MARK: - 2FA Views
 
 struct TwoFactorSetupView: View {
     let vaultID: String
@@ -1442,11 +1104,6 @@ struct TwoFactorSetupView: View {
     @State private var error: String?
     @State private var setupComplete = false
 
-    // #202: A method + "code sent" flag restored from a prior, interrupted setup —
-    // used only when process death happened after the code was sent but before the
-    // response object (and its non-persisted secret/provisioningUri) was recreated.
-    @State private var restoredSession: PendingTwoFactorSession?
-
     var body: some View {
         NavigationStack {
             if let response = setupResponse {
@@ -1455,15 +1112,7 @@ struct TwoFactorSetupView: View {
                     method: response.method,
                     provisioningUri: response.provisioningUri,
                     secret: response.secret,
-                    onVerified: { setupComplete = true; PendingTwoFactorSessionStore.shared.clear(for: vaultID) }
-                )
-            } else if let restoredSession {
-                TwoFactorVerifyView(
-                    vaultID: vaultID,
-                    method: restoredSession.method,
-                    provisioningUri: nil,
-                    secret: nil,
-                    onVerified: { setupComplete = true; PendingTwoFactorSessionStore.shared.clear(for: vaultID) }
+                    onVerified: { setupComplete = true }
                 )
             } else {
                 Form {
@@ -1506,11 +1155,6 @@ struct TwoFactorSetupView: View {
             }
         }
         .interactiveDismissDisabled(setupComplete == false)
-        .onAppear {
-            // #202: Restore a still-valid in-progress session on relaunch instead of
-            // forcing the user back through method selection and a fresh code send.
-            restoredSession = PendingTwoFactorSessionStore.shared.session(for: vaultID)
-        }
     }
 
     private var canContinue: Bool {
@@ -1540,69 +1184,10 @@ struct TwoFactorSetupView: View {
                     email: selectedMethod == .email ? email : nil
                 )
                 setupResponse = response
-                // #202: Persist just enough to resume at the verify step if the process
-                // dies before setupComplete — never the secret/provisioningUri or the OTP.
-                PendingTwoFactorSessionStore.shared.save(
-                    PendingTwoFactorSession(method: selectedMethod, codeSent: true, createdAt: Date()),
-                    for: vaultID
-                )
             } catch {
                 self.error = error.localizedDescription
             }
             isSettingUp = false
-        }
-    }
-}
-
-// #228: Copyable TOTP secret with auto-clear clipboard and one-time security warning.
-private struct TOTPSecretCopyView: View {
-    let secret: String
-    @State private var showCopied = false
-    @State private var showWarning = false
-    private static let warnedKey = "com.ethosprotocol.totp_copy_warned"
-    private static let clearDelay: TimeInterval = 30
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                Label(secret, systemImage: "key.fill")
-                    .font(.system(.caption, design: .monospaced))
-                    .lineLimit(1)
-            }
-            Button(action: copySecret) {
-                Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                    .font(.caption)
-                    .foregroundStyle(showCopied ? .green : .blue)
-            }
-            .accessibilityLabel(showCopied ? "Copied" : "Copy TOTP secret")
-        }
-        .alert("Security Notice", isPresented: $showWarning) {
-            Button("I Understand", role: .cancel) {
-                UserDefaults.standard.set(true, forKey: Self.warnedKey)
-                performCopy()
-            }
-        } message: {
-            Text("Your 2FA secret will be copied to the clipboard and automatically cleared after 30 seconds. Clipboard managers and other apps may capture it before it is cleared. Treat this secret like a password.")
-        }
-    }
-
-    private func copySecret() {
-        if UserDefaults.standard.bool(forKey: Self.warnedKey) {
-            performCopy()
-        } else {
-            showWarning = true
-        }
-    }
-
-    private func performCopy() {
-        UIPasteboard.general.string = secret
-        showCopied = true
-        // #228: Auto-clear the clipboard after 30 seconds.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearDelay) {
-            if UIPasteboard.general.string == self.secret {
-                UIPasteboard.general.string = ""
-            }
-            showCopied = false
         }
     }
 }
@@ -1640,7 +1225,11 @@ struct TwoFactorVerifyView: View {
                     Text("Scan this URI in your authenticator app:").foregroundStyle(.secondary)
                     Text(uri).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                     if let secret {
-                        TOTPSecretCopyView(secret: secret)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Label(secret, systemImage: "key.fill")
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                        }
                     }
                 } else if method == .totp {
                     Text("Enter the 6-digit code from your authenticator app.").foregroundStyle(.secondary)
@@ -1656,14 +1245,6 @@ struct TwoFactorVerifyView: View {
                 .multilineTextAlignment(.center)
                 .font(.title2)
                 .disabled(rateLimiter.isBlocked)
-                // #230: Positional accessibility label so VoiceOver announces entry progress
-                // (e.g. "3 of 6 digits entered") rather than just the placeholder text.
-                .accessibilityLabel("OTP code field")
-                .accessibilityValue(otp.isEmpty ? "empty" : "\(otp.count) of 6 digits entered")
-                .accessibilityHint("Enter the 6-digit verification code")
-                .accessibilityLabel("OTP code field")
-                .accessibilityValue(otp.isEmpty ? "empty" : "\(otp.count) of 6 digits entered")
-                .accessibilityHint("Enter the 6-digit verification code")
 
             // #119: Show remaining cooldown when the user is locked out.
             if rateLimiter.isBlocked {
