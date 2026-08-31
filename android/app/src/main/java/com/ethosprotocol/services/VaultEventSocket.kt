@@ -12,6 +12,7 @@ import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.readText
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -24,14 +25,23 @@ import kotlinx.serialization.json.Json
 // attempts for a single request), a dropped socket should keep retrying
 // indefinitely with the delay capped so a long outage doesn't leave the client
 // waiting minutes between attempts once it reconnects.
+//
+// delayForAttempt applies full jitter — the returned delay is chosen uniformly from
+// [0, cappedDelay) rather than being the deterministic capped value itself — so that
+// many sockets dropped by the same outage don't all reconnect in lockstep and hit the
+// recovering server at the same instants.
 data class ReconnectBackoff(
     val baseDelayMillis: Long,
     val maxDelayMillis: Long,
-    val sleep: suspend (Long) -> Unit = { delay(it) }
+    val sleep: suspend (Long) -> Unit = { delay(it) },
+    // Source of randomness for jitter. Injectable so tests can supply a
+    // seeded/deterministic Random instead of the real one.
+    val random: Random = Random.Default
 ) {
     fun delayForAttempt(attempt: Int): Long {
         val shift = attempt.coerceIn(0, 20)
-        return (baseDelayMillis * (1L shl shift)).coerceAtMost(maxDelayMillis)
+        val cappedDelay = (baseDelayMillis * (1L shl shift)).coerceAtMost(maxDelayMillis)
+        return if (cappedDelay > 0) random.nextLong(0, cappedDelay) else 0L
     }
 
     companion object {
