@@ -56,8 +56,15 @@ class PasskeyService @Inject constructor(
         val requestJson = PasskeyRequestBuilder.registrationRequestJson(challenge, normalizedUsername)
 
         val credManager = credentialManagerFactory.create(activity)
-        val resp = credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
-                as CreatePublicKeyCredentialResponse
+        // #210: devices with no biometric enrolled (or biometrics disabled by policy) throw
+        // here — map to tailored copy instead of letting a generic CredentialManager error
+        // reach the user with no indication of what to actually do about it.
+        val resp = try {
+            credManager.createCredential(activity, CreatePublicKeyCredentialRequest(requestJson))
+                    as CreatePublicKeyCredentialResponse
+        } catch (e: CreateCredentialException) {
+            throw PasskeyException(mapCreateCredentialError(e))
+        }
         val json = JSONObject(resp.registrationResponseJson)
         val regReq = PasskeyRegisterRequest(
             credentialId = json.getString("id"),
@@ -124,8 +131,12 @@ class PasskeyService @Inject constructor(
     // subtypes that carry actionable meaning; anything else falls back to a generic retry prompt.
     private fun mapCreateCredentialError(e: CreateCredentialException): String = when (e) {
         is CreateCredentialCancellationException -> "Sign-up canceled."
+        // #210: this fires on devices with no biometric enrolled (or an unlockable screen
+        // lock at all) — e.g. older/budget hardware below this app's usual assumptions, or
+        // biometrics disabled by MDM policy. Direct the user to a fix instead of a dead end.
         is CreateCredentialNoCreateOptionException ->
-            "This device can't create a passkey. Add a screen lock in Settings and try again."
+            "This device has no biometric or screen lock set up, so it can't create a passkey. " +
+            "Enroll a fingerprint or face unlock, or set a device PIN/passcode, in Settings and try again."
         is CreateCredentialProviderConfigurationException ->
             "No passkey provider is set up on this device."
         is CreateCredentialInterruptedException -> "Setup was interrupted — please try again."
@@ -145,7 +156,7 @@ class PasskeyService @Inject constructor(
     internal fun <T> requireSuccess(result: ApiResult<T>): T {
         return when (result) {
             is ApiResult.Success -> result.data
-            is ApiResult.Error -> throw ApiCallFailedException(result.message)
+            is ApiResult.Error -> throw ApiCallFailedException(result.message, result.code)
             ApiResult.NetworkUnavailable -> throw ApiCallFailedException("No network connection")
         }
     }

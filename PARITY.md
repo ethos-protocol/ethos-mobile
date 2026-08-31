@@ -53,7 +53,7 @@ Last audited: 2026-07-27
 | Correct copy: TOTP re-verify (no provisioning data) | ✅ | 🚧 | Fixed in #115; Android was showing "Scan URI" with no URI |
 | Correct copy: SMS — "code sent to phone" | ✅ | ✅ | |
 | Correct copy: Email — "code sent to email" | ✅ | ✅ | |
-| OTP cooldown survives process death | ❌ | ✅ | Android persists the failure count and an absolute cooldown deadline in `SavedStateHandle` (#172); iOS `OTPRateLimiter` is still in-memory only |
+| OTP cooldown survives process death | ✅ | ✅ | iOS `OTPRateLimiter` now persists the failure count and an absolute cooldown deadline via `UserDefaults` (#201), mirroring Android's `SavedStateHandle` approach (#172) |
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
 | TTL expiry warning notification | ✅ | ✅ | Bodies now include a truncated vault ID + TTL remaining instead of generic copy (#233); Android's server-pushed reminder includes the ID but not TTL — the FCM payload doesn't carry `ttl_remaining` today, unlike iOS's locally-scheduled reminders which already have it in hand |
@@ -81,7 +81,7 @@ Last audited: 2026-07-27
 | Vault action links (check-in, withdraw, …) | ✅ | ✅ | |
 | Deep-link input validation (path traversal, length) | ✅ | ✅ | |
 | **iCloud / cross-device sync** | | | |
-| iCloud KV vault ↔ credential sync | ✅ | ❌ | Android has no equivalent cloud sync |
+| iCloud KV / cross-device vault ↔ credential sync | ✅ | ✅ | iOS uses `NSUbiquitousKeyValueStore` (`ICloudSyncService`); Android uses `VaultAssociationStore`, a SharedPreferences file included in Auto Backup for Apps (#200). Neither syncs private keys or tokens — only the vault-ID-to-credential-ID mapping |
 
 ---
 
@@ -102,7 +102,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
-| iCloud / cross-device sync | Android | TBD |
 
 ---
 

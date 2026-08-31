@@ -57,6 +57,52 @@ class NotificationHelperTest {
         assertNotEquals(nullId, realId)
     }
 
+    // ---------------------------------------------------------------------------
+    // #197 — reminder lead time scales with the vault's check-in interval
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `short ttl window uses one tenth of the check-in interval as lead time`() {
+        // 6h interval -> 36m lead time, so the reminder fires 36m before expiry.
+        assertEquals(2_160L, NotificationHelper.primaryLeadTimeSeconds(21_600L))
+        assertEquals(19_440L, NotificationHelper.primaryReminderDelaySeconds(21_600L, 21_600L))
+    }
+
+    @Test
+    fun `medium ttl window scales lead time with the interval`() {
+        // 3d interval -> 7.2h lead time, still under the 24h cap.
+        assertEquals(25_920L, NotificationHelper.primaryLeadTimeSeconds(259_200L))
+        assertEquals(233_280L, NotificationHelper.primaryReminderDelaySeconds(259_200L, 259_200L))
+    }
+
+    @Test
+    fun `long ttl window caps the lead time at 24 hours`() {
+        // 30d interval -> 3d uncapped, capped to 24h.
+        assertEquals(86_400L, NotificationHelper.primaryLeadTimeSeconds(2_592_000L))
+        assertEquals(2_505_600L, NotificationHelper.primaryReminderDelaySeconds(2_592_000L, 2_592_000L))
+    }
+
+    @Test
+    fun `reminder delay never falls below the one minute floor`() {
+        assertEquals(60L, NotificationHelper.primaryReminderDelaySeconds(30L, 21_600L))
+        assertEquals(60L, NotificationHelper.secondaryReminderDelaySeconds(30L))
+    }
+
+    @Test
+    fun `short check-in intervals get a second urgent reminder only when it lands last`() {
+        // 22h interval -> 2h12m lead time, so the 2h-before-expiry reminder still lands after
+        // the primary one and adds a genuinely more urgent nudge.
+        assertTrue(NotificationHelper.hasSecondaryReminder(100_000L, 79_200L))
+        // 6h interval -> 36m lead time: the primary reminder is already the later of the two,
+        // so a "2 hours left" reminder would only fire earlier and is skipped.
+        assertFalse(NotificationHelper.hasSecondaryReminder(21_600L, 21_600L))
+    }
+
+    @Test
+    fun `long check-in intervals get no secondary reminder`() {
+        assertFalse(NotificationHelper.hasSecondaryReminder(2_592_000L, 2_592_000L))
+    }
+
     private fun fakeSharedPreferences(): SharedPreferences {
         val backing = mutableMapOf<String, Int>()
         val editor: SharedPreferences.Editor = mockk(relaxed = true)

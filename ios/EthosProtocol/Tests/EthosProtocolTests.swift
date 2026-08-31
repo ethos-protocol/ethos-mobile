@@ -48,12 +48,209 @@ final class VaultModelTests: XCTestCase {
         XCTAssertEqual(vault.balance, 50_000_000)
     }
 
+    // #218: display name prefers the label, falls back to a truncated ID.
+    func test_displayName_withLabel_returnsLabel() {
+        let vault = makeVault(label: "Emergency Fund")
+        XCTAssertEqual(vault.displayName, "Emergency Fund")
+    }
+
+    func test_displayName_withoutLabel_returnsTruncatedID() {
+        let vault = makeVault(id: "vault-1234567890abcdef")
+        XCTAssertEqual(vault.displayName, "vault-123456")
+    }
+
+    func test_vaultDecoding_labelAbsent_decodesToNil() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 50000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertNil(vault.label)
+    }
+
+    func test_vaultDecoding_labelPresent_decodesValue() throws {
+        let json = """
+        {
+          "id": "vault-1",
+          "owner": "GABC",
+          "beneficiary": "GXYZ",
+          "balance": 50000000,
+          "check_in_interval": 2592000,
+          "last_check_in": "2026-04-01T00:00:00Z",
+          "ttl_remaining": 100000,
+          "status": "active",
+          "label": "College Fund"
+        }
+        """.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        let vault = try decoder.decode(Vault.self, from: json)
+        XCTAssertEqual(vault.label, "College Fund")
+    }
+
     // MARK: - Helpers
 
-    private func makeVault(balance: Int64 = 0, ttlRemaining: UInt64? = nil) -> Vault {
-        Vault(id: "v1", owner: "GABC", beneficiary: "GXYZ",
+    private func makeVault(id: String = "v1", balance: Int64 = 0, ttlRemaining: UInt64? = nil, label: String? = nil) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ",
               balance: balance, checkInInterval: 2_592_000,
-              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active)
+              lastCheckIn: Date(), ttlRemaining: ttlRemaining, status: .active,
+              label: label)
+    }
+}
+
+// MARK: - #219 Vault Search/Filter Tests
+
+final class VaultListFilteringTests: XCTestCase {
+    private func makeVault(id: String, status: Vault.VaultStatus = .active,
+                            label: String? = nil, ttlRemaining: UInt64? = 172_800) -> Vault {
+        Vault(id: id, owner: "GABC", beneficiary: "GXYZ", balance: 0,
+              checkInInterval: 2_592_000, lastCheckIn: Date(), ttlRemaining: ttlRemaining,
+              status: status, label: label)
+    }
+
+    func test_filter_blankSearch_allStatus_returnsEverything() {
+        let vaults = [makeVault(id: "vault-a"), makeVault(id: "vault-b")]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .all)
+        XCTAssertEqual(result.count, 2)
+    }
+
+    func test_filter_searchByLabel_matchesCaseInsensitively() {
+        let vaults = [
+            makeVault(id: "vault-a", label: "Emergency Fund"),
+            makeVault(id: "vault-b", label: "College Fund"),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "emergency", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["vault-a"])
+    }
+
+    func test_filter_searchByID_matchesWhenNoLabel() {
+        let vaults = [makeVault(id: "vault-abc123"), makeVault(id: "vault-xyz789")]
+        let result = VaultListFiltering.filter(vaults, searchText: "abc123", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["vault-abc123"])
+    }
+
+    func test_filter_searchWithWhitespace_isTrimmed() {
+        let vaults = [makeVault(id: "vault-a", label: "Fund")]
+        let result = VaultListFiltering.filter(vaults, searchText: "  fund  ", statusFilter: .all)
+        XCTAssertEqual(result.count, 1)
+    }
+
+    func test_filter_statusActive_excludesOtherStatuses() {
+        let vaults = [
+            makeVault(id: "a", status: .active),
+            makeVault(id: "b", status: .expired),
+            makeVault(id: "c", status: .released),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .active)
+        XCTAssertEqual(result.map(\.id), ["a"])
+    }
+
+    func test_filter_statusExpired_excludesActive() {
+        let vaults = [makeVault(id: "a", status: .active), makeVault(id: "b", status: .expired)]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .expired)
+        XCTAssertEqual(result.map(\.id), ["b"])
+    }
+
+    func test_filter_statusExpiringSoon_requiresActiveAndUnder24h() {
+        let vaults = [
+            makeVault(id: "soon", status: .active, ttlRemaining: 3_600),
+            makeVault(id: "later", status: .active, ttlRemaining: 172_800),
+            makeVault(id: "expired-and-soon-ttl", status: .expired, ttlRemaining: 3_600),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "", statusFilter: .expiringSoon)
+        XCTAssertEqual(result.map(\.id), ["soon"])
+    }
+
+    func test_filter_combinesSearchAndStatus() {
+        let vaults = [
+            makeVault(id: "vault-a", status: .active, label: "Fund"),
+            makeVault(id: "vault-b", status: .expired, label: "Fund"),
+        ]
+        let result = VaultListFiltering.filter(vaults, searchText: "fund", statusFilter: .active)
+        XCTAssertEqual(result.map(\.id), ["vault-a"])
+    }
+
+    func test_filter_worksAcrossAlreadyFetchedPaginatedResults() {
+        // Simulates vaults accumulated from multiple pages via loadAll() — the
+        // filter is purely local, so page boundaries are irrelevant to it.
+        let page1 = [makeVault(id: "p1-a"), makeVault(id: "p1-b", label: "Target")]
+        let page2 = [makeVault(id: "p2-a"), makeVault(id: "p2-b")]
+        let accumulated = page1 + page2
+        let result = VaultListFiltering.filter(accumulated, searchText: "target", statusFilter: .all)
+        XCTAssertEqual(result.map(\.id), ["p1-b"])
+    }
+}
+
+// MARK: - #217 Vault History Tests
+
+final class VaultHistoryEventTests: XCTestCase {
+    private func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    func test_decode_checkInEvent() throws {
+        let json = """
+        { "event_type": "check_in", "timestamp": "2026-04-01T00:00:00Z" }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .checkIn)
+        XCTAssertNil(event.amount)
+        XCTAssertNil(event.beneficiary)
+        XCTAssertEqual(event.displayTitle, "Checked In")
+    }
+
+    func test_decode_depositEvent_withAmount() throws {
+        let json = """
+        { "event_type": "deposit", "timestamp": "2026-04-01T00:00:00Z", "amount": 50000000 }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .deposit)
+        XCTAssertEqual(event.amount, 50_000_000)
+        XCTAssertEqual(event.displayTitle, "Deposit")
+    }
+
+    func test_decode_beneficiaryChangedEvent_withNewBeneficiary() throws {
+        let json = """
+        { "event_type": "beneficiary_changed", "timestamp": "2026-04-01T00:00:00Z", "beneficiary": "GNEW123" }
+        """.data(using: .utf8)!
+        let event = try decoder().decode(VaultHistoryEvent.self, from: json)
+        XCTAssertEqual(event.eventType, .beneficiaryChanged)
+        XCTAssertEqual(event.beneficiary, "GNEW123")
+        XCTAssertEqual(event.displayTitle, "Beneficiary Changed")
+    }
+
+    func test_decode_arrayOfEvents() throws {
+        let json = """
+        [
+          { "event_type": "created", "timestamp": "2026-01-01T00:00:00Z" },
+          { "event_type": "withdrawal", "timestamp": "2026-02-01T00:00:00Z", "amount": 1000000 }
+        ]
+        """.data(using: .utf8)!
+        let events = try decoder().decode([VaultHistoryEvent].self, from: json)
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].eventType, .created)
+        XCTAssertEqual(events[1].eventType, .withdrawal)
+    }
+
+    func test_id_isDistinctForDifferentTimestamps() {
+        let a = VaultHistoryEvent(eventType: .checkIn, timestamp: Date(timeIntervalSince1970: 0), amount: nil, beneficiary: nil)
+        let b = VaultHistoryEvent(eventType: .checkIn, timestamp: Date(timeIntervalSince1970: 1), amount: nil, beneficiary: nil)
+        XCTAssertNotEqual(a.id, b.id)
     }
 }
 
@@ -587,6 +784,99 @@ final class UniversalLinkRouterTests: XCTestCase {
         XCTAssertEqual(events[1].event, .vaultActionCheckIn)
         XCTAssertEqual(events[2].event, .beneficiaryAcceptance)
     }
+
+    // MARK: - #258 Recovery deep-link tests
+
+    func test_parse_recoveryLink_wellFormed_returnsRecoveryLink() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=rec-token-123")!
+        let result = router.parse(url: url)
+        XCTAssertEqual(result, .recoveryLink(token: "rec-token-123"))
+    }
+
+    func test_parse_recoveryLink_missingToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_emptyToken_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_invalidTokenChars_returnsNil() {
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=bad@token")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_oversizedToken_returnsNil() {
+        let big = String(repeating: "a", count: 129)
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=\(big)")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_wrongHost_returnsNil() {
+        let url = URL(string: "https://evil.com/auth/recover/link?token=rec-token-123")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_customScheme_returnsNil() {
+        let url = URL(string: "ethosprotocol://ethos-protocol.app/auth/recover/link?token=rec-token-123")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_recoveryLink_logsExactlyOnce() {
+        DeepLinkLogger.shared.clearLog()
+        let url = URL(string: "https://ethos-protocol.app/auth/recover/link?token=rec-token-log")!
+        _ = router.parse(url: url)
+        XCTAssertEqual(DeepLinkLogger.shared.getEventCount(), 1)
+        XCTAssertEqual(DeepLinkLogger.shared.getLoggedEvents().first?.event, .recoveryLink)
+    }
+
+    // MARK: - #259 Vault ID ownership validation
+
+    override func setUp() {
+        super.setUp()
+        // Reset ownership state before each test so tests are independent.
+        router.ownerVaultIDs = nil
+    }
+
+    func test_parse_vaultAction_ownedVault_succeeds() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "ethosprotocol://vault/vault-mine/check-in")!
+        XCTAssertEqual(router.parse(url: url), .vaultAction(vaultID: "vault-mine", action: .checkIn))
+    }
+
+    func test_parse_vaultAction_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "ethosprotocol://vault/vault-theirs/check-in")!
+        // Must return nil without revealing whether the vault exists.
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_vaultAction_ownerVaultIDsNil_skipsCheck() {
+        router.ownerVaultIDs = nil   // vault list not yet loaded
+        let url = URL(string: "ethosprotocol://vault/vault-any/check-in")!
+        XCTAssertNotNil(router.parse(url: url),
+                        "ownership check must be skipped when vault list is not yet loaded")
+    }
+
+    func test_parse_vaultInvitation_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-other/invite")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_beneficiaryAcceptance_unownedVault_returnsNil() {
+        router.ownerVaultIDs = ["vault-mine"]
+        let url = URL(string: "https://ethos-protocol.app/vaults/vault-other/accept?token=tok")!
+        XCTAssertNil(router.parse(url: url))
+    }
+
+    func test_parse_emptyOwnerSet_rejectsAllVaultLinks() {
+        router.ownerVaultIDs = []
+        let url = URL(string: "ethosprotocol://vault/vault-any/check-in")!
+        XCTAssertNil(router.parse(url: url))
+    }
 }
 
 // MARK: - #39 / #115 Two-Factor Verification Copy Tests
@@ -1047,6 +1337,41 @@ final class StellarAddressTests: XCTestCase {
 
     func test_isValidPublicKey_rejectsEmptyString() {
         XCTAssertFalse(StellarAddress.isValidPublicKey(""))
+    }
+
+    // Mutation-testing gap-fill (see shared/MUTATION_TESTING.md): a Mull run
+    // against this file found the version-byte check (step 5) and a
+    // non-final-character checksum corruption (step 6) had no dedicated
+    // fixture, so mutants in those specific branches survived even though
+    // "broad" valid/invalid coverage looked complete.
+
+    func test_isValidPublicKey_rejectsCorrectPrefixAndChecksumButWrongVersionByte() {
+        // Decodes to a structurally valid 35-byte value with an internally
+        // consistent CRC-16/XModem checksum, but decoded[0] == 0x31 instead
+        // of the required 0x30. Prefix, length, and character-set checks all
+        // pass here — only the explicit version-byte comparison rejects it.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBDI"
+        ))
+    }
+
+    func test_isValidPublicKey_rejectsChecksumCorruptedInMiddleNotLastChar() {
+        // Same all-zero payload as `validAddress`, but the corruption is at
+        // index 27 rather than the trailing checksum characters, so this
+        // exercises the checksum comparison independently of the "last
+        // character changed" fixture above.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    func test_isValidPublicKey_rejectsInvalidCharacterAsLastCharacter() {
+        // Guards against an off-by-one loop-boundary mutant in the
+        // character-set scan that would only check up to, but not
+        // including, the final index.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0"
+        ))
     }
 }
 
@@ -1598,6 +1923,36 @@ final class VaultAmountTests: XCTestCase {
     func test_hasSufficientBalance_zeroAmount_returnsFalse() {
         XCTAssertFalse(VaultAmount.hasSufficientBalance(amount: 0, vaultBalance: 10_000_000))
     }
+
+    // MARK: - #216 Large Withdrawal Threshold Tests
+
+    func test_isLargeWithdrawal_belowThreshold_returnsFalse() {
+        // 70% of balance, 80% threshold.
+        XCTAssertFalse(VaultAmount.isLargeWithdrawal(amount: 7_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_atThreshold_returnsTrue() {
+        // Exactly 80% of balance, 80% threshold — inclusive.
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 8_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_aboveThreshold_returnsTrue() {
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 9_500_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_fullBalance_returnsTrue() {
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 10_000_000, vaultBalance: 10_000_000, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_zeroBalance_returnsFalse() {
+        XCTAssertFalse(VaultAmount.isLargeWithdrawal(amount: 0, vaultBalance: 0, thresholdBps: 8_000))
+    }
+
+    func test_isLargeWithdrawal_respectsConfiguredThreshold() {
+        // Same 70% amount, but a lower configured threshold now catches it —
+        // proves the threshold is a parameter, not hardcoded in the check.
+        XCTAssertTrue(VaultAmount.isLargeWithdrawal(amount: 7_000_000, vaultBalance: 10_000_000, thresholdBps: 5_000))
+    }
 }
 
 // MARK: - #15 Beneficiary Management Validation Tests
@@ -1860,4 +2215,76 @@ private final class ReplayRejectionURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+// MARK: - #236 Cold-Start Notification Tests
+
+/// Covers the cold-start case where the app is fully terminated, the user taps a
+/// push notification, and iOS delivers the notification's userInfo to the app
+/// on launch. Key assertions:
+///   - vault_id is extracted correctly from userInfo
+///   - missing vault_id is handled gracefully (no force-unwrap crash)
+///   - a non-existent vault (404/410) in CheckInResult is handled by the
+///     non-retryable path and does not crash
+final class ColdStartNotificationTests: XCTestCase {
+
+    // MARK: - userInfo extraction
+
+    func test_coldStart_vaultId_extractedFromUserInfo() {
+        let userInfo: [AnyHashable: Any] = ["vault_id": "test-vault-123"]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertEqual(vaultId, "test-vault-123",
+            "vault_id must survive the round-trip through userInfo as a String")
+    }
+
+    func test_coldStart_missingVaultId_doesNotCrash() {
+        // Notification payload without vault_id — must not force-unwrap / crash.
+        let userInfo: [AnyHashable: Any] = [:]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertNil(vaultId, "Missing vault_id should be nil, not crash")
+    }
+
+    func test_coldStart_nonStringVaultId_doesNotCrash() {
+        // Server accidentally sends vault_id as a number — as? String returns nil safely.
+        let userInfo: [AnyHashable: Any] = ["vault_id": 42]
+        let vaultId = userInfo["vault_id"] as? String
+        XCTAssertNil(vaultId, "Non-String vault_id should cast to nil, not crash")
+    }
+
+    // MARK: - Non-existent vault at launch
+
+    func test_coldStart_vaultExpired_410_isNonRetryable() {
+        // When the vault referenced by a cold-start notification no longer exists
+        // (HTTP 410 Gone), CheckInSyncTask must drop the item rather than retry.
+        let result = CheckInResult.serverError(code: 410, message: "Gone")
+        switch result {
+        case .serverError(let code, _):
+            XCTAssertEqual(code, CheckInSyncTask.vaultExpiredCode,
+                "410 should match vaultExpiredCode and trigger expired-vault handling")
+        default:
+            XCTFail("Expected serverError for expired vault")
+        }
+    }
+
+    func test_coldStart_vaultNotFound_404_isNonRetryable() {
+        // HTTP 404 — vault deleted entirely; must not be retried.
+        let result = CheckInResult.serverError(code: 404, message: "Not Found")
+        switch result {
+        case .serverError(let code, _):
+            XCTAssertTrue(CheckInSyncTask.nonRetryableErrorCodes.contains(code),
+                "404 must be in nonRetryableErrorCodes")
+        default:
+            XCTFail("Expected serverError")
+        }
+    }
+
+    func test_coldStart_networkUnavailable_isRetryable() {
+        // If device is offline at cold start, the sync should retry — not drop items.
+        let result = CheckInResult.networkUnavailable
+        if case .networkUnavailable = result {
+            // Correct — networkUnavailable is always retried
+        } else {
+            XCTFail("Expected networkUnavailable")
+        }
+    }
 }

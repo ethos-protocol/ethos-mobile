@@ -20,9 +20,13 @@ final class DecodingFailureLogger {
 
     /// Logs a decode failure for `path` where a `expectedType` was expected but
     /// couldn't be decoded from `responseBody`.
+    ///
+    /// The `path` is passed through `LogRedactor.redactString` (#279) before
+    /// being stored, ensuring that any token or nonce embedded in a query string
+    /// is stripped even when the URL is used as the log key.
     func log(path: String, expectedType: String, responseBody: Data) {
         let entry = DecodingFailureEntry(
-            path: path,
+            path: LogRedactor.redactString(path),
             expectedType: expectedType,
             redactedBody: Self.redact(responseBody),
             timestamp: Date()

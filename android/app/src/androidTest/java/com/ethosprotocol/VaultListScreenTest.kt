@@ -30,4 +30,86 @@ class VaultListScreenTest {
         composeRule.setContent { VaultListScreen(onVaultClick = {}) }
         composeRule.onNodeWithContentDescription("Create vault").assertIsDisplayed()
     }
+
+    // ── #214 Last-remaining-passkey sign-out warning ─────────────────────────
+
+    @Test
+    fun signOut_whenLastRemainingPasskey_showsBlockingWarning_insteadOfSigningOutImmediately() {
+        var signedOut = false
+        composeRule.setContent {
+            VaultListScreen(
+                onVaultClick = {},
+                onSignOut = { signedOut = true },
+                checkLastRemainingPasskey = { true }
+            )
+        }
+
+        composeRule.onNodeWithContentDescription("Sign out").performClick()
+
+        composeRule.onNodeWithText("This Is Your Only Passkey").assertIsDisplayed()
+        assert(!signedOut) { "Sign-out must be blocked behind the confirmation, not fired immediately" }
+    }
+
+    @Test
+    fun signOut_whenLastRemainingPasskey_confirmingWarning_signsOut() {
+        var signedOut = false
+        composeRule.setContent {
+            VaultListScreen(
+                onVaultClick = {},
+                onSignOut = { signedOut = true },
+                checkLastRemainingPasskey = { true }
+            )
+        }
+
+        composeRule.onNodeWithContentDescription("Sign out").performClick()
+        composeRule.onNodeWithText("Sign Out Anyway").performClick()
+
+        assert(signedOut) { "Confirming the warning must proceed with sign-out" }
+    }
+
+    // ── #215 Create-vault confirmation step ─────────────────────────────────
+
+    private val validBeneficiary = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+
+    @Test
+    fun createVault_next_showsConfirmationBeforeCreating() {
+        composeRule.setContent { VaultListScreen(onVaultClick = {}) }
+
+        composeRule.onNodeWithContentDescription("Create vault").performClick()
+        composeRule.onNodeWithText("Beneficiary Stellar address").performTextInput(validBeneficiary)
+        composeRule.onNodeWithText("Next").performClick()
+
+        composeRule.onNodeWithText("Confirm Vault").assertIsDisplayed()
+        composeRule.onNodeWithText("Confirm & Create").assertIsDisplayed()
+    }
+
+    @Test
+    fun createVault_back_returnsToInputFormWithoutCreating() {
+        composeRule.setContent { VaultListScreen(onVaultClick = {}) }
+
+        composeRule.onNodeWithContentDescription("Create vault").performClick()
+        composeRule.onNodeWithText("Beneficiary Stellar address").performTextInput(validBeneficiary)
+        composeRule.onNodeWithText("Next").performClick()
+        composeRule.onNodeWithText("Back").performClick()
+
+        composeRule.onNodeWithText("New Vault").assertIsDisplayed()
+        composeRule.onNodeWithText("Confirm & Create").assertDoesNotExist()
+    }
+
+    @Test
+    fun signOut_whenNotLastRemainingPasskey_signsOutImmediately_withNoWarning() {
+        var signedOut = false
+        composeRule.setContent {
+            VaultListScreen(
+                onVaultClick = {},
+                onSignOut = { signedOut = true },
+                checkLastRemainingPasskey = { false }
+            )
+        }
+
+        composeRule.onNodeWithContentDescription("Sign out").performClick()
+
+        assert(signedOut) { "Sign-out should proceed immediately when it isn't the last passkey" }
+        composeRule.onNodeWithText("This Is Your Only Passkey").assertDoesNotExist()
+    }
 }

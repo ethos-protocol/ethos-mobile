@@ -165,6 +165,25 @@ class PasskeyServiceTest {
         assertEquals("Forbidden", result.exceptionOrNull()?.message)
     }
 
+    // ── register: no biometric hardware available (#210) ───────────────────────
+
+    @Test
+    fun register_noCreateOptionAvailable_returnsFailureWithBiometricFallbackCopy() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } throws
+            androidx.credentials.exceptions.CreateCredentialNoCreateOptionException()
+
+        val result = service.register(mockActivity, "alice")
+
+        assertTrue("Expected failure", result.isFailure)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue("Expected guidance to enroll a biometric: $message",
+            message.contains("biometric", ignoreCase = true))
+        assertTrue("Expected guidance about a device PIN/passcode fallback: $message",
+            message.contains("PIN", ignoreCase = true) || message.contains("passcode", ignoreCase = true))
+        coVerify(exactly = 0) { mockApiClient.registerPasskey(any()) }
+    }
+
     // ── authenticate ─────────────────────────────────────────────────────────
 
     @Test
@@ -255,6 +274,56 @@ class PasskeyServiceTest {
 
         assertTrue("Expected failure", result.isFailure)
         assertEquals("old-token", tokenProvider.token)
+    }
+
+    // ── recoverAccount (#211 — expired recovery token) ──────────────────────────
+
+    @Test
+    fun recoverAccount_success_callsCompleteRecoveryWithCorrectFields() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.completeRecovery(any()) } returns ApiResult.Success(Unit)
+
+        val result = service.recoverAccount(mockActivity, "alice", "recovery-token-123")
+
+        assertTrue("Expected success", result.isSuccess)
+        val slot = slot<com.ethosprotocol.models.RecoveryCompleteRequest>()
+        coVerify { mockApiClient.completeRecovery(capture(slot)) }
+        assertEquals("recovery-token-123", slot.captured.recoveryToken)
+        assertEquals("credential-id-reg", slot.captured.credentialId)
+    }
+
+    @Test
+    fun recoverAccount_expiredRecoveryToken_returnsFailureWithServerMessage_notGenericFailure() = runTest {
+        val fakeRegResponse = mockk<CreatePublicKeyCredentialResponse> {
+            every { registrationResponseJson } returns fakeRegistrationJson
+        }
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.Success(fakeChallenge)
+        coEvery { mockCredentialManager.createCredential(mockActivity, any()) } returns fakeRegResponse
+        coEvery { mockApiClient.completeRecovery(any()) } returns
+            ApiResult.Error("Your recovery code has expired. Please request a new one.", 401)
+
+        val result = service.recoverAccount(mockActivity, "alice", "expired-token")
+
+        assertTrue("Expected failure", result.isFailure)
+        assertEquals(
+            "Your recovery code has expired. Please request a new one.",
+            result.exceptionOrNull()?.message
+        )
+        assertEquals(401, (result.exceptionOrNull() as? ApiCallFailedException)?.code)
+    }
+
+    @Test
+    fun recoverAccount_getChallengeNetworkError_returnsFailure_completeRecoveryNotCalled() = runTest {
+        coEvery { mockApiClient.getChallenge() } returns ApiResult.NetworkUnavailable
+
+        val result = service.recoverAccount(mockActivity, "alice", "recovery-token-123")
+
+        assertTrue("Expected failure", result.isFailure)
+        coVerify(exactly = 0) { mockApiClient.completeRecovery(any()) }
     }
 
     // ── requireSuccess error mapping ──────────────────────────────────────────
