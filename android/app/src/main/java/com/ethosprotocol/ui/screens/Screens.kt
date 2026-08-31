@@ -14,13 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.launch
 import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.DestructiveConfirmation
 import com.ethosprotocol.models.TwoFactorMethod
@@ -34,8 +32,10 @@ import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
+import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
+import com.ethosprotocol.services.NotificationDeliveryLog
 
 // MARK: - Auth Screen
 
@@ -202,6 +202,7 @@ private fun RecoverySheet(
 @Composable
 fun VaultListScreen(
     onVaultClick: (String) -> Unit,
+    onDebugLogClick: (() -> Unit)? = null,
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -264,6 +265,12 @@ fun VaultListScreen(
     Scaffold(
         topBar = {
             TopAppBar(title = { Text("My Vaults") }, actions = {
+                // #235: debug/QA-only entry to the notification delivery log — never
+                // shown in a release build (onDebugLogClick is only non-null when
+                // MainActivity's nav graph wires it in under BuildConfig.DEBUG).
+                onDebugLogClick?.let { onClick ->
+                    IconButton(onClick = onClick) { Icon(Icons.Default.BugReport, "Notification log") }
+                }
                 IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
             })
         }
@@ -1245,7 +1252,6 @@ fun TwoFactorSetupScreen(
             vaultId = vaultId,
             method = selectedMethod,
             provisioningUri = state.setupResponse?.provisioningUri,
-            secret = state.setupResponse?.secret,
             onVerified = { onComplete() },
             onDismiss = onDismiss,
             vm = vm
@@ -1319,7 +1325,6 @@ private fun TwoFactorVerifyScreen(
     vaultId: String,
     method: TwoFactorMethod,
     provisioningUri: String?,
-    secret: String? = null,
     onVerified: () -> Unit,
     onDismiss: () -> Unit,
     vm: TwoFactorViewModel
@@ -1372,11 +1377,6 @@ private fun TwoFactorVerifyScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // #228: Show copyable secret with auto-clear and one-time warning.
-                secret?.let { s ->
-                    Spacer(Modifier.height(8.dp))
-                    TotpSecretCopyRow(secret = s)
-                }
             }
             method == TwoFactorMethod.totp -> {
                 // Re-verification: no provisioning data — the user must open their
@@ -1402,12 +1402,7 @@ private fun TwoFactorVerifyScreen(
         OutlinedTextField(
             value = otp, onValueChange = { otp = it },
             label = { Text("6-digit code") }, singleLine = true,
-            modifier = Modifier
-                .width(200.dp)
-                .semantics {
-                    contentDescription = if (otp.isEmpty) "OTP code field, empty"
-                                         else "OTP code field, ${otp.length} of 6 digits entered"
-                },
+            modifier = Modifier.width(200.dp),
             textStyle = MaterialTheme.typography.headlineSmall,
             enabled = !state.isOtpBlocked
         )
@@ -1568,126 +1563,70 @@ fun VaultDetailScreen(
     }
 }
 
-// #228: Copyable TOTP secret with 30-second clipboard auto-clear and one-time warning.
+// MARK: - Notification Debug Log (#235)
+
+/**
+ * Debug-only screen listing the local notification delivery log, for
+ * QA/support to answer "did this notification actually get scheduled,
+ * delivered, or suppressed?" without backend log correlation. Never shows
+ * anything beyond vault ID / event type / timestamp — see
+ * [NotificationDeliveryLog]'s doc comment for what
+ * is deliberately excluded. Only reachable when [com.ethosprotocol.BuildConfig.DEBUG].
+ */
 @Composable
-private fun TotpSecretCopyRow(secret: String) {
-    val context = LocalContext.current
-    var showCopied by remember { mutableStateOf(false) }
-    var showWarning by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val prefs = remember {
-        context.getSharedPreferences("totp_copy_prefs", android.content.Context.MODE_PRIVATE)
-    }
-    val warnedKey = "totp_copy_warned"
-
-    fun performCopy() {
-        val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
-        val clip = android.content.ClipData.newPlainText("TOTP Secret", secret)
-        clipboard.setPrimaryClip(clip)
-        showCopied = true
-        // #228: Auto-clear clipboard after 30 seconds.
-        scope.launch {
-            kotlinx.coroutines.delay(30_000L)
-            val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
-            if (current == secret) {
-                val empty = android.content.ClipData.newPlainText("", "")
-                clipboard.setPrimaryClip(empty)
-            }
-            showCopied = false
-        }
-    }
-
-    if (showWarning) {
-        AlertDialog(
-            onDismissRequest = { showWarning = false },
-            title = { Text("Security Notice") },
-            text = {
-                Text(
-                    "Your 2FA secret will be copied to the clipboard and automatically " +
-                    "cleared after 30 seconds. Clipboard managers and other apps may " +
-                    "capture it before it is cleared. Treat this secret like a password."
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    prefs.edit().putBoolean(warnedKey, true).apply()
-                    showWarning = false
-                    performCopy()
-                }) { Text("I Understand") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showWarning = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            secret,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        IconButton(
-            onClick = {
-                if (prefs.getBoolean(warnedKey, false)) performCopy()
-                else showWarning = true
-            },
-            modifier = Modifier.semantics {
-                contentDescription = if (showCopied) "Copied" else "Copy TOTP secret"
-            }
-        ) {
-            Icon(
-                if (showCopied) Icons.Default.Check else Icons.Default.ContentCopy,
-                contentDescription = null,
-                tint = if (showCopied) MaterialTheme.colorScheme.primary
-                       else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-// MARK: - Settings Screen
-
-@Composable
-fun SettingsScreen(
-    onNotificationPreferences: () -> Unit,
-    onBack: () -> Unit
+fun NotificationDebugScreen(
+    onBack: () -> Unit,
+    vm: NotificationDebugViewModel = hiltViewModel()
 ) {
+    val deliveryLog = vm.deliveryLog
+    var events by remember {
+        mutableStateOf(deliveryLog.recentEvents())
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text("Notification Log") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        deliveryLog.clear()
+                        events = deliveryLog.recentEvents()
+                    }) { Icon(Icons.Default.Delete, "Clear") }
                 }
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Notifications", style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary)
-            OutlinedButton(
-                onClick = onNotificationPreferences,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Notifications, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Notification Preferences")
+        if (events.isEmpty()) {
+            Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No notification events logged yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(Modifier.padding(padding)) {
+                items(events) { event ->
+                    Column(Modifier.fillMaxWidth().padding(16.dp, 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(
+                                event.kind.name.lowercase().replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(event.source.name.lowercase(), style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(event.eventType, style = MaterialTheme.typography.bodyMedium)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(event.vaultId.take(12) + "…", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                java.text.DateFormat.getTimeInstance().format(java.util.Date(event.timestampMillis)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    HorizontalDivider()
+                }
             }
         }
     }

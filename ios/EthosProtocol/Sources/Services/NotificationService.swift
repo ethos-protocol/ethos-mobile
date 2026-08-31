@@ -9,6 +9,14 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().delegate = self
     }
 
+    // Injectable for testing (mirrors AuthStore's unregisterPushToken pattern) —
+    // lets #234's retry/backoff/pending-persistence logic be exercised against a
+    // mock that fails a controlled number of times, instead of a real network call.
+    var registerPushTokenCall: (String) async throws -> Void = { token in
+        try await APIClient.shared.registerPushToken(token)
+    }
+    var retryPolicy: RetryPolicy = .networkDefault
+
     func requestPermission() async {
         let granted = (try? await UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .badge, .sound])) ?? false
@@ -22,16 +30,38 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     func handleDeviceToken(_ tokenData: Data) {
         let token = tokenData.map { String(format: "%02x", $0) }.joined()
-        Task {
-            do {
-                try await APIClient.shared.registerPushToken(token)
-                // Persisted only on success so AuthStore.signOut() unregisters a token
-                // the server actually has on file for this device.
-                KeychainService.shared.savePushToken(token)
-            } catch {
-                // Best-effort: the OS redelivers the device token on next launch/refresh.
+        Task { await registerPushToken(token) }
+    }
+
+    /// Registers `token` with retry/backoff (#234). Registration is idempotent
+    /// server-side (re-registering the same token is a no-op), which is why —
+    /// unlike APIClient's general POST/DELETE policy of never auto-retrying a
+    /// mutation — retrying this one specifically is safe.
+    ///
+    /// If every attempt fails, the token is persisted as "pending" rather than
+    /// dropped, so `retryPendingPushTokenRegistrationIfNeeded()` can pick it
+    /// back up the next time the app foregrounds instead of silently waiting
+    /// on the OS to redeliver the token (which may not happen for a long time).
+    func registerPushToken(_ token: String) async {
+        do {
+            try await withRetry(retryPolicy, isRetryable: { _ in true }) {
+                try await self.registerPushTokenCall(token)
             }
+            // Persisted only on success so AuthStore.signOut() unregisters a token
+            // the server actually has on file for this device.
+            KeychainService.shared.savePushToken(token)
+            KeychainService.shared.deletePendingPushToken()
+        } catch {
+            KeychainService.shared.savePendingPushToken(token)
         }
+    }
+
+    /// Call when the app foregrounds (RootView's `.onChange(of: scenePhase)`)
+    /// to retry a push-token registration that failed even after the initial
+    /// retries in `registerPushToken` (#234).
+    func retryPendingPushTokenRegistrationIfNeeded() {
+        guard let pending = KeychainService.shared.loadPendingPushToken() else { return }
+        Task { await registerPushToken(pending) }
     }
 
     // Schedule a local check-in reminder scaled to the vault's check-in interval.
@@ -53,9 +83,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         let secondaryFireIn = max(Int(ttlRemaining) - 7_200, 60) // 2 hours before
 
         // Primary reminder
+        // #233: identify which vault and how long is left, so the user doesn't have
+        // to open the app to find out — but never anything beyond ID/TTL (no
+        // balance or beneficiary; those aren't even available to this function).
+        let primaryRemaining = max(Int(ttlRemaining) - primaryFireIn, 0)
         let primaryContent = UNMutableNotificationContent()
         primaryContent.title = "Check-in Reminder"
-        primaryContent.body = "Your vault expires soon. Tap to check in and keep it active."
+        primaryContent.body = "Vault \(truncatedVaultID(vaultID)) expires in \(formatTTLRemaining(primaryRemaining)). Tap to check in and keep it active."
         primaryContent.sound = .default
         primaryContent.userInfo = ["vault_id": vaultID]
         primaryContent.categoryIdentifier = "CHECK_IN"
@@ -63,12 +97,14 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         let primaryTrigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(primaryFireIn), repeats: false)
         let primaryRequest = UNNotificationRequest(identifier: "checkin-primary-\(vaultID)", content: primaryContent, trigger: primaryTrigger)
         center.add(primaryRequest)
+        NotificationDeliveryLog.shared.record(kind: .scheduled, source: .local, eventType: "check_in_reminder", vaultID: vaultID)
 
         // Secondary reminder for short intervals
         if hasSecondaryReminder && secondaryFireIn > primaryFireIn {
+            let secondaryRemaining = max(Int(ttlRemaining) - secondaryFireIn, 0)
             let secondaryContent = UNMutableNotificationContent()
             secondaryContent.title = "Check-in Urgent"
-            secondaryContent.body = "Your vault expires in about 2 hours. Check in now to prevent loss of access."
+            secondaryContent.body = "Vault \(truncatedVaultID(vaultID)) expires in \(formatTTLRemaining(secondaryRemaining)). Check in now to prevent loss of access."
             secondaryContent.sound = .default
             secondaryContent.userInfo = ["vault_id": vaultID]
             secondaryContent.categoryIdentifier = "CHECK_IN"
@@ -76,7 +112,28 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
             let secondaryTrigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(secondaryFireIn), repeats: false)
             let secondaryRequest = UNNotificationRequest(identifier: "checkin-secondary-\(vaultID)", content: secondaryContent, trigger: secondaryTrigger)
             center.add(secondaryRequest)
+            NotificationDeliveryLog.shared.record(kind: .scheduled, source: .local, eventType: "check_in_reminder_urgent", vaultID: vaultID)
         }
+    }
+
+    /// Truncated vault ID for notification display — enough to distinguish
+    /// vaults without printing the full identifier (#233).
+    private func truncatedVaultID(_ vaultID: String) -> String {
+        String(vaultID.prefix(12))
+    }
+
+    /// Formats a TTL countdown for notification bodies. Never shown at
+    /// second-level precision here — these are scheduled ahead of time
+    /// (unlike the in-app live countdown, #221), so a coarser unit avoids
+    /// implying more precision than a fire-time estimate actually has.
+    private func formatTTLRemaining(_ seconds: Int) -> String {
+        let clamped = max(seconds, 0)
+        let days = clamped / 86_400
+        let hours = (clamped % 86_400) / 3_600
+        if days > 0 { return "\(days)d \(hours)h" }
+        let minutes = (clamped % 3_600) / 60
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
     }
 
     // MARK: - Offline Check-In Queue Indicator
@@ -129,6 +186,38 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: - UNUserNotificationCenterDelegate
 
+    /// Called whenever a notification (local or remote/push) arrives while the
+    /// app is running, foreground or background. Two responsibilities (#232,
+    /// #235):
+    ///
+    /// - Suppress a push-delivered `vault_expired`/`vault_released` banner if
+    ///   the WebSocket already delivered and applied the same event recently
+    ///   — otherwise the user could see a duplicate for one state change.
+    /// - Log every non-suppressed arrival as `delivered` for support triage.
+    ///
+    /// Local reminders (check-in, TTL warning, queued) carry no `"type"` key
+    /// in `userInfo`, so the dedup check never matches them — they are
+    /// always shown, unchanged from before this method existed.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                 willPresent notification: UNNotification,
+                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        let userInfo = notification.request.content.userInfo
+        let vaultID = userInfo["vault_id"] as? String ?? "unknown"
+        let type = userInfo["type"] as? String
+
+        if let type, type == "vault_expired" || type == "vault_released",
+           NotificationDeliveryLog.shared.wasRecentlyDeliveredViaWebSocket(vaultID: vaultID, eventType: type) {
+            NotificationDeliveryLog.shared.record(kind: .suppressed, source: .push, eventType: type, vaultID: vaultID)
+            completionHandler([])
+            return
+        }
+
+        let source: NotificationDeliveryEvent.Source = type != nil ? .push : .local
+        let eventType = type ?? notification.request.content.categoryIdentifier
+        NotificationDeliveryLog.shared.record(kind: .delivered, source: source, eventType: eventType, vaultID: vaultID)
+        completionHandler([.banner, .sound, .badge])
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                  didReceive response: UNNotificationResponse,
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
@@ -150,7 +239,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
         let content = UNMutableNotificationContent()
         content.title = "Vault Expiring Soon"
-        content.body = "Your vault expires in less than 24 hours. Open the app to check in and keep it active."
+        // #233: fires ~immediately, so ttlRemaining is still accurate at display time.
+        content.body = "Vault \(truncatedVaultID(vaultID)) expires in \(formatTTLRemaining(Int(ttlRemaining))). Open the app to check in and keep it active."
         content.sound = .default
         content.userInfo = ["vault_id": vaultID]
         content.categoryIdentifier = "CHECK_IN"
@@ -158,6 +248,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
         let request = UNNotificationRequest(identifier: "ttl-warning-\(vaultID)", content: content, trigger: trigger)
         center.add(request)
+        NotificationDeliveryLog.shared.record(kind: .scheduled, source: .local, eventType: "ttl_warning", vaultID: vaultID)
     }
 
     func registerNotificationCategories() {

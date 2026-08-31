@@ -1452,6 +1452,186 @@ final class AuthStoreSignOutTests: XCTestCase {
     }
 }
 
+// MARK: - #234 Push Token Registration Retry Tests
+
+final class PushTokenRegistrationRetryTests: XCTestCase {
+    private struct DummyError: Error {}
+
+    private func fastPolicy(maxAttempts: Int) -> RetryPolicy {
+        RetryPolicy(maxAttempts: maxAttempts, baseDelay: 0.001,
+                    randomSource: SystemRandomSource(), sleep: { _ in })
+    }
+
+    func test_registerPushToken_succeedsAfterTransientFailures_savesTokenAndClearsPending() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 3)
+        var attempts = 0
+        service.registerPushTokenCall = { _ in
+            attempts += 1
+            if attempts < 3 { throw DummyError() }
+        }
+        KeychainService.shared.savePendingPushToken("stale-token")
+
+        await service.registerPushToken("token-abc")
+
+        XCTAssertEqual(attempts, 3)
+        XCTAssertEqual(KeychainService.shared.loadPushToken(), "token-abc")
+        XCTAssertNil(KeychainService.shared.loadPendingPushToken(), "pending token should be cleared on success")
+    }
+
+    func test_registerPushToken_exhaustsRetries_persistsPendingToken() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 3)
+        service.registerPushTokenCall = { _ in throw DummyError() }
+        KeychainService.shared.deletePendingPushToken()
+        KeychainService.shared.deletePushToken()
+
+        await service.registerPushToken("token-xyz")
+
+        XCTAssertNil(KeychainService.shared.loadPushToken(), "should not be marked registered on failure")
+        XCTAssertEqual(KeychainService.shared.loadPendingPushToken(), "token-xyz",
+                       "a failed registration must be persisted for a later foreground retry")
+    }
+
+    func test_retryPendingPushTokenRegistrationIfNeeded_retriesAndClearsOnSuccess() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        service.retryPolicy = fastPolicy(maxAttempts: 1)
+        KeychainService.shared.savePendingPushToken("pending-token")
+        var registered: String?
+        service.registerPushTokenCall = { token in registered = token }
+
+        service.retryPendingPushTokenRegistrationIfNeeded()
+        // registerPushToken runs in a detached Task; give it a moment to complete.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(registered, "pending-token")
+        XCTAssertEqual(KeychainService.shared.loadPushToken(), "pending-token")
+        XCTAssertNil(KeychainService.shared.loadPendingPushToken())
+    }
+
+    func test_retryPendingPushTokenRegistrationIfNeeded_withNoPendingToken_doesNotCallRegister() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                       "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
+
+        let service = NotificationService.shared
+        KeychainService.shared.deletePendingPushToken()
+        var wasCalled = false
+        service.registerPushTokenCall = { _ in wasCalled = true }
+
+        service.retryPendingPushTokenRegistrationIfNeeded()
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertFalse(wasCalled)
+    }
+}
+
+// MARK: - #235/#232 Notification Delivery Log Tests
+
+final class NotificationDeliveryLogTests: XCTestCase {
+
+    private func makeLog() -> NotificationDeliveryLog {
+        // A distinct UserDefaults suite per test so entries never leak between
+        // tests or collide with the app's real on-device log.
+        let suiteName = "notification-delivery-log-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        return NotificationDeliveryLog(defaults: defaults)
+    }
+
+    func test_record_and_recentEvents_mostRecentFirst() {
+        let log = makeLog()
+        log.record(kind: .scheduled, source: .local, eventType: "ttl_warning", vaultID: "vault-a")
+        log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-b")
+
+        let events = log.recentEvents()
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].eventType, "vault_expired")
+        XCTAssertEqual(events[1].eventType, "ttl_warning")
+    }
+
+    func test_recentEvents_neverExceedsMaxEntries() {
+        let log = makeLog()
+        for i in 0..<250 {
+            log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-\(i)")
+        }
+        XCTAssertEqual(log.recentEvents().count, 200)
+        // Oldest entries are dropped, not newest.
+        XCTAssertEqual(log.recentEvents().last?.vaultID, "vault-50")
+    }
+
+    func test_clear_removesAllEvents() {
+        let log = makeLog()
+        log.record(kind: .scheduled, source: .local, eventType: "ttl_warning", vaultID: "vault-a")
+        log.clear()
+        XCTAssertTrue(log.recentEvents().isEmpty)
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_trueWithinWindow() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertTrue(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now.addingTimeInterval(10)))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseOutsideWindow() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now.addingTimeInterval(31)))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForDifferentVault() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-b", eventType: "vault_expired", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForDifferentEventType() {
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_released", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForPushSource() {
+        // Only a WebSocket delivery should suppress a later push — a prior push
+        // delivery is not grounds to suppress another push.
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .delivered, source: .push, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now))
+    }
+
+    func test_wasRecentlyDeliveredViaWebSocket_falseForSuppressedKind() {
+        // A suppressed entry is not itself a "delivered" event to dedup against.
+        let log = makeLog()
+        let now = Date()
+        log.record(kind: .suppressed, source: .websocket, eventType: "vault_expired", vaultID: "vault-a", at: now)
+
+        XCTAssertFalse(log.wasRecentlyDeliveredViaWebSocket(
+            vaultID: "vault-a", eventType: "vault_expired", within: 30, now: now))
+    }
+}
+
 // MARK: - #13/#14 Deposit & Withdraw Amount Validation Tests
 
 final class VaultAmountTests: XCTestCase {

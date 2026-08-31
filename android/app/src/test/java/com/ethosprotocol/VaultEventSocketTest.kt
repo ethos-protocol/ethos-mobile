@@ -101,6 +101,25 @@ class VaultEventSocketTest {
         assertEquals(listOf(999L), delays)
     }
 
+    // #232: a real vault_expired/vault_released payload carries fields VaultEvent
+    // doesn't model (expired_at/released_at/amount) — decoding must tolerate them
+    // rather than silently dropping the frame, or the dedup logic in
+    // VaultViewModel.subscribeToEvents never even sees these event types.
+    @Test
+    fun `events decodes a vault_expired frame with fields VaultEvent does not model`() = runTest {
+        val backoff = ReconnectBackoff(baseDelayMillis = 1_000, maxDelayMillis = 30_000, sleep = { })
+        val socket = VaultEventSocket(apiClient, tokenProvider, backoff)
+
+        val rawFrame = """{"type":"vault_expired","vault_id":"vault-1","expired_at":"2026-01-01T00:00:00Z"}"""
+        val channel = Channel<Frame>(capacity = 1)
+        channel.trySend(Frame.Text(rawFrame))
+        socket.openSession = { mockk<WebSocketSession> { every { incoming } returns channel } }
+
+        val received = socket.events("vault-1").take(1).toList()
+
+        assertEquals(listOf(VaultEvent(type = "vault_expired", vault = null, vaultId = "vault-1")), received)
+    }
+
     @Test
     fun `events resets the backoff attempt counter after a successful connection`() = runTest {
         val delays = mutableListOf<Long>()

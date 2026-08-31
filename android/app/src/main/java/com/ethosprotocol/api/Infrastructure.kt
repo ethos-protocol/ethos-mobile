@@ -134,6 +134,12 @@ interface TokenProvider {
     var pushToken: String?
         get() = null
         set(_) {}
+    // #234: a push token seen (via onNewToken) but not yet confirmed registered
+    // with the server — set when registration fails after retrying, cleared
+    // once it succeeds. See PushService's retry-on-foreground.
+    var pendingPushToken: String?
+        get() = null
+        set(_) {}
     fun setSession(authToken: AuthToken) { token = authToken.token }
     fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean = false
     fun clear()
@@ -199,6 +205,12 @@ class EncryptedTokenProvider @Inject constructor(
         get() = prefs.getString("push_token", null)
         set(value) = prefs.edit().apply {
             if (value != null) putString("push_token", value) else remove("push_token")
+        }.apply()
+
+    override var pendingPushToken: String?
+        get() = prefs.getString("pending_push_token", null)
+        set(value) = prefs.edit().apply {
+            if (value != null) putString("pending_push_token", value) else remove("pending_push_token")
         }.apply()
 
     private var expiresAtEpochMillis: Long?

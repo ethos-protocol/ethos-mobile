@@ -57,8 +57,11 @@ Last audited: 2026-07-27
 | OTP cooldown survives process death | ❌ | ✅ | Android persists the failure count and an absolute cooldown deadline in `SavedStateHandle` (#172); iOS `OTPRateLimiter` is still in-memory only |
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
-| TTL expiry warning notification | ✅ | ✅ | |
+| TTL expiry warning notification | ✅ | ✅ | Bodies now include a truncated vault ID + TTL remaining instead of generic copy (#233); Android's server-pushed reminder includes the ID but not TTL — the FCM payload doesn't carry `ttl_remaining` today, unlike iOS's locally-scheduled reminders which already have it in hand |
 | Check-in reminder (scaled lead time) | ✅ | ❌ | Android NotificationHelper sends a generic reminder, no lead-time scaling (#TBD) |
+| Notification delivery analytics (scheduled/delivered/suppressed log) | ✅ | ✅ | Debug-only screen for support/QA triage (#235); iOS: `NotificationDebugView`; Android: `NotificationDebugScreen` |
+| Push token registration retry/backoff on failure | ✅ | ✅ | Previously fire-and-forget on both platforms; now retries with backoff and persists a pending token to retry on next foreground (#234) |
+| WebSocket/push duplicate notification dedup | ✅ | ✅ | A `vault_expired`/`vault_released` event applied via WebSocket suppresses a same-event push banner delivered shortly after (#232) |
 | Actionable "Check In" notification action | ✅ | ❌ | Android does not set up a CHECK_IN notification action (#TBD) |
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |

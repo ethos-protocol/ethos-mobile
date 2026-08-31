@@ -27,6 +27,12 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             authStore.handleScenePhaseChange(newPhase)
+            // #234: retry a push-token registration that failed even after
+            // NotificationService's initial retries, rather than waiting
+            // indefinitely for the OS to redeliver the device token.
+            if newPhase == .active {
+                NotificationService.shared.retryPendingPushTokenRegistrationIfNeeded()
+            }
         }
     }
 }

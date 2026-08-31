@@ -471,9 +471,16 @@ final class VaultStore: ObservableObject {
             switch event {
             case .vaultUpdated(let updated):
                 self.applyUpdate(updated)
-            case .vaultExpired, .vaultReleased:
+            case .vaultExpired(let expiredVaultID, _):
                 // Neither payload carries the full vault, and both change status (and, for
                 // a release, the balance) — refetch rather than patching fields locally.
+                // Recorded before the refetch so a same-instant push (#232) sees it.
+                NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
+                                                       eventType: "vault_expired", vaultID: expiredVaultID)
+                Task { await self.load() }
+            case .vaultReleased(let releasedVaultID, _, _):
+                NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
+                                                       eventType: "vault_released", vaultID: releasedVaultID)
                 Task { await self.load() }
             case .ping:
                 // Server keepalive — no state change.
