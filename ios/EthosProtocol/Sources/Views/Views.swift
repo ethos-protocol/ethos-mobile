@@ -897,16 +897,17 @@ struct CreateVaultView: View {
     }
 
     private var isBeneficiaryValid: Bool {
-        StellarAddress.isValidPublicKey(beneficiary)
+        StellarAddress.isValidPublicKey(StellarAddress.sanitize(beneficiary))
     }
 
     private func create() {
-        guard isBeneficiaryValid else { return }
+        let sanitized = StellarAddress.sanitize(beneficiary)
+        guard StellarAddress.isValidPublicKey(sanitized) else { return }
         isCreating = true
         Task {
             do {
                 let interval = UInt64(intervalDays * 86_400)
-                let vault = try await APIClient.shared.createVault(beneficiary: beneficiary, checkInInterval: interval)
+                let vault = try await APIClient.shared.createVault(beneficiary: sanitized, checkInInterval: interval)
                 if let credentialID = KeychainService.shared.loadCredentialID() {
                     ICloudSyncService.shared.save(vaultID: vault.id, credentialID: credentialID)
                 }
@@ -1298,11 +1299,12 @@ struct ManageBeneficiaryView: View {
     }
 
     private func confirm() {
+        let sanitized = StellarAddress.sanitize(newBeneficiary)
         isUpdating = true; error = nil
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Confirm beneficiary change")
-                await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: newBeneficiary)
+                await vaultStore.updateBeneficiary(vault: vault, newBeneficiary: sanitized)
                 if let storeError = vaultStore.error {
                     error = storeError.message
                 } else {

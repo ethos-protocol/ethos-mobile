@@ -1016,7 +1016,9 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
     var days by remember { mutableStateOf(30f) }
 
     // Live validation using the shared StrKey spec (shared/stellar-validation-spec.md).
-    val isBeneficiaryValid = StellarAddress.isValidPublicKey(beneficiary)
+    // Sanitize input (trim whitespace, remove invisible characters) before validation.
+    val sanitizedBeneficiary = StellarAddress.sanitize(beneficiary)
+    val isBeneficiaryValid = StellarAddress.isValidPublicKey(sanitizedBeneficiary)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1032,7 +1034,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
                     isError = beneficiary.isNotEmpty() && !isBeneficiaryValid,
                     supportingText = {
                         if (beneficiary.isNotEmpty() && !isBeneficiaryValid) {
-                            Text("Enter a valid Stellar address (56 characters, starting with G).")
+                            Text("Enter a valid Stellar address.")
                         }
                     }
                 )
@@ -1043,7 +1045,7 @@ private fun CreateVaultDialog(onCreate: (String, Int) -> Unit, onDismiss: () -> 
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(beneficiary, days.toInt()) },
+            TextButton(onClick = { onCreate(sanitizedBeneficiary, days.toInt()) },
                 enabled = isBeneficiaryValid) { Text("Create") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }

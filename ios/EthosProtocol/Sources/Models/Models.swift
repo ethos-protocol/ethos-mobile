@@ -201,11 +201,58 @@ enum UsernameValidation {
 }
 
 enum BeneficiaryUpdate {
-    /// A new beneficiary address is only valid if it's non-empty (after trimming)
-    /// and actually differs from the vault's current beneficiary.
+    /// A new beneficiary address is valid if it's a syntactically valid Stellar address
+    /// (after sanitization) and differs from the vault's current beneficiary.
     static func isValidNewBeneficiary(_ input: String, currentBeneficiary: String) -> Bool {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && trimmed != currentBeneficiary
+        let sanitized = StellarAddress.sanitize(input)
+        return !sanitized.isEmpty && 
+               sanitized != currentBeneficiary &&
+               StellarAddress.isValidPublicKey(sanitized)
+    }
+}
+
+// MARK: - Memo Field Support
+
+/// Represents an optional Stellar memo attached to a beneficiary account.
+///
+/// Per SEP-0023 and Stellar documentation, memos enable proper fund routing for
+/// exchanges and custodial wallets. Four types are supported:
+/// - none: No memo (default)
+/// - text: Human-readable text, up to 28 UTF-8 bytes
+/// - id: Numeric memo ID, 0 to 2^64-1
+/// - hash: SHA-256 hash, exactly 32 bytes (64 hex chars)
+enum StellarMemo {
+    case none
+    case text(String)
+    case id(UInt64)
+    case hash(String) // 64-char hex string
+    
+    func displayString() -> String {
+        switch self {
+        case .none: return "(no memo)"
+        case .text(let value): return "Text: \(value)"
+        case .id(let value): return "ID: \(value)"
+        case .hash(let value): return "Hash: \(String(value.prefix(16)))..."
+        }
+    }
+}
+
+enum MemoValidator {
+    /// Validates a text memo (max 28 UTF-8 bytes).
+    static func isValidTextMemo(_ text: String) -> Bool {
+        return text.utf8.count <= 28
+    }
+    
+    /// Validates an ID memo (0 to 2^64-1).
+    static func isValidIDMemo(_ idStr: String) -> Bool {
+        guard let value = UInt64(idStr) else { return false }
+        return true // UInt64 already guarantees 0..2^64-1
+    }
+    
+    /// Validates a hash memo (must be exactly 64 hex characters).
+    static func isValidHashMemo(_ hashHex: String) -> Bool {
+        guard hashHex.count == 64 else { return false }
+        return hashHex.allSatisfy { "0123456789abcdefABCDEF".contains($0) }
     }
 }
 
