@@ -12,7 +12,6 @@ import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.readText
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -21,27 +20,26 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 
+// Mirrors ApiClient's ktor Json config (ignoreUnknownKeys = true). A `vault_expired`/
+// `vault_released` payload carries fields VaultEvent doesn't model (`expired_at`,
+// `released_at`, `amount`) — without this, the plain `Json` default throws on those
+// unrecognized keys, silently dropping the frame (caught by the `runCatching` below with
+// no `.onFailure`), which defeated #232's dedup before it could even see these event types.
+// api-contract.md explicitly requires tolerating unrecognized fields/types.
+private val eventJson = Json { ignoreUnknownKeys = true }
+
 // Reconnect/backoff schedule for VaultEventSocket. Unlike RetryPolicy (bounded
 // attempts for a single request), a dropped socket should keep retrying
 // indefinitely with the delay capped so a long outage doesn't leave the client
 // waiting minutes between attempts once it reconnects.
-//
-// delayForAttempt applies full jitter — the returned delay is chosen uniformly from
-// [0, cappedDelay) rather than being the deterministic capped value itself — so that
-// many sockets dropped by the same outage don't all reconnect in lockstep and hit the
-// recovering server at the same instants.
 data class ReconnectBackoff(
     val baseDelayMillis: Long,
     val maxDelayMillis: Long,
-    val sleep: suspend (Long) -> Unit = { delay(it) },
-    // Source of randomness for jitter. Injectable so tests can supply a
-    // seeded/deterministic Random instead of the real one.
-    val random: Random = Random.Default
+    val sleep: suspend (Long) -> Unit = { delay(it) }
 ) {
     fun delayForAttempt(attempt: Int): Long {
         val shift = attempt.coerceIn(0, 20)
-        val cappedDelay = (baseDelayMillis * (1L shl shift)).coerceAtMost(maxDelayMillis)
-        return if (cappedDelay > 0) random.nextLong(0, cappedDelay) else 0L
+        return (baseDelayMillis * (1L shl shift)).coerceAtMost(maxDelayMillis)
     }
 
     companion object {
@@ -83,7 +81,7 @@ class VaultEventSocket(
                 attempt = 0
                 for (frame in session.incoming) {
                     if (frame is Frame.Text) {
-                        runCatching { Json.decodeFromString<VaultEvent>(frame.readText()) }
+                        runCatching { eventJson.decodeFromString<VaultEvent>(frame.readText()) }
                             .onSuccess { emit(it) }
                     }
                 }

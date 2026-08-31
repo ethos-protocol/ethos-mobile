@@ -7,6 +7,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ethosprotocol.BuildConfig
+import com.ethosprotocol.api.ApiCallFailedException
 import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiErrorMapper
 import com.ethosprotocol.api.ApiResult
@@ -21,11 +22,13 @@ import com.ethosprotocol.models.Enable2FARequest
 import com.ethosprotocol.models.Enable2FAResponse
 import com.ethosprotocol.models.Verify2FARequest
 import com.ethosprotocol.services.NotificationHelper
+import com.ethosprotocol.services.PasskeyException
 import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionSyncWorker
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultAssociationStore
 import com.ethosprotocol.services.VaultEventSocket
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -57,7 +60,9 @@ class AuthViewModel @Inject constructor(
     private val passkeyService: PasskeyService,
     private val tokenProvider: TokenProvider,
     private val notificationHelper: NotificationHelper,
-    private val pendingActionDao: PendingActionDao
+    private val pendingActionDao: PendingActionDao,
+    // #200: cross-device sync of non-secret vault-to-passkey-credential associations.
+    private val vaultAssociationStore: VaultAssociationStore
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AuthUiState(isAuthenticated = tokenProvider.token != null))
@@ -71,6 +76,38 @@ class AuthViewModel @Inject constructor(
 
     private var consecutiveFailures = 0
     private var cooldownJob: Job? = null
+
+    // #209: proactive token refresh, scheduled independently of request activity — ApiClient's
+    // ensureFreshToken() already covers "refresh before the next API call", but a foregrounded,
+    // idle app makes no calls and would otherwise sit on a token until it's rejected. Polling
+    // (rather than a one-shot timer at the exact expiry, as AuthStore.swift does) is used because
+    // TokenProvider only exposes isNearExpiry(), not the raw expiry instant.
+    private var refreshJob: Job? = null
+
+    init {
+        if (tokenProvider.token != null) startScheduledRefresh()
+    }
+
+    private fun startScheduledRefresh() {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            while (true) {
+                delay(REFRESH_POLL_INTERVAL_MILLIS)
+                if (tokenProvider.token == null) return@launch
+                if (!tokenProvider.isNearExpiry()) continue
+                when (val result = apiClient.refreshToken()) {
+                    is ApiResult.Success -> tokenProvider.setSession(result.data)
+                    is ApiResult.Error -> if (result.code == 401) {
+                        // ApiClient already cleared the stored token on the 401; reflect that
+                        // here so the UI falls back to full re-authentication.
+                        _state.update { it.copy(isAuthenticated = false) }
+                        return@launch
+                    }
+                    ApiResult.NetworkUnavailable -> Unit // transient — retry on the next tick
+                }
+            }
+        }
+    }
 
     /** Called from MainActivity.onStop — records when the app left the foreground. */
     fun onAppBackgrounded(now: Long = System.currentTimeMillis()) {
@@ -98,6 +135,7 @@ class AuthViewModel @Inject constructor(
                 consecutiveFailures = 0
                 cooldownJob?.cancel()
                 _state.update { it.copy(isAuthenticated = true, isLoading = false, cooldownRemainingSeconds = 0) }
+                startScheduledRefresh()
             }
             .onFailure { e -> handleAuthFailure(e) }
     }
@@ -123,11 +161,55 @@ class AuthViewModel @Inject constructor(
         // PasskeyService.register already stores the session token returned by the
         // backend, so there's no need to run a second sign-in ceremony here.
         passkeyService.register(activity, username)
-            .onSuccess { _state.update { it.copy(isAuthenticated = true, isLoading = false) } }
+            .onSuccess {
+                _state.update { it.copy(isAuthenticated = true, isLoading = false) }
+                startScheduledRefresh()
+            }
             .onFailure { e -> handleAuthFailure(e) }
     }
 
+    // ── Account recovery ("lost your device?") — mirrors iOS AuthStore.recoverAccess (#211) ──
+
+    fun sendRecoveryCode(username: String) = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.initiateRecovery(RecoveryInitiateRequest(username))) {
+            is ApiResult.Success -> _state.update { it.copy(isLoading = false, recoveryToken = result.data.recoveryToken) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    fun finishRecovery(activity: Activity, username: String) = viewModelScope.launch {
+        val recoveryToken = _state.value.recoveryToken ?: return@launch
+        _state.update { it.copy(isLoading = true, error = null) }
+        passkeyService.recoverAccount(activity, username, recoveryToken)
+            .onSuccess {
+                _state.update { it.copy(isAuthenticated = true, isLoading = false, recoveryToken = null) }
+                startScheduledRefresh()
+            }
+            .onFailure { e ->
+                // A rejected recovery token/proof (401) can't be retried as-is — drop back to
+                // the "send code" step instead of leaving the user stuck on a dead-end error.
+                val recoveryRejected = (e as? ApiCallFailedException)?.code == 401
+                val message = if (e is PasskeyException) e.message ?: "Recovery failed. Please try again."
+                              else ApiErrorMapper.friendlyMessage(e)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = message,
+                        recoveryToken = if (recoveryRejected) null else it.recoveryToken
+                    )
+                }
+            }
+    }
+
+    fun clearRecovery() {
+        _state.update { it.copy(recoveryToken = null, error = null) }
+    }
+
     fun signOut() = viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = null
         // Unregister before clearing the auth token — ApiClient.bearerAuth() reads
         // tokenProvider.token when building the request, so clearing first would send
         // the delete unauthenticated. Best-effort: sign-out proceeds locally either way.
@@ -138,6 +220,9 @@ class AuthViewModel @Inject constructor(
         // should not persist or sync after sign-out (they belong to the previous user's vaults).
         pendingActionDao.deleteAll()
         notificationHelper.cancelQueuedActions()
+        // #200: local vault-to-credential associations belong to the previous session;
+        // the synced copy is left alone so another signed-in device isn't affected.
+        vaultAssociationStore.clearAll()
         backgroundedAtMillis = null
         consecutiveFailures = 0
         cooldownJob?.cancel()
@@ -157,6 +242,53 @@ class AuthViewModel @Inject constructor(
         private const val COOLDOWN_FAILURE_THRESHOLD = 3
         private const val COOLDOWN_BASE_SECONDS = 2
         private const val COOLDOWN_MAX_SECONDS = 60
+        // #209: matches TokenProvider.isNearExpiry's default 60s threshold — checking every
+        // 30s guarantees at least one check lands inside that window before expiry.
+        private const val REFRESH_POLL_INTERVAL_MILLIS = 30_000L
+    }
+}
+
+// --- Sessions ViewModel (#208) ---
+
+data class SessionsUiState(
+    val sessions: List<Session> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
+@HiltViewModel
+class SessionsViewModel @Inject constructor(
+    private val apiClient: ApiClient
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(SessionsUiState())
+    val state = _state.asStateFlow()
+
+    fun load() = viewModelScope.launch {
+        _state.update { it.copy(isLoading = true, error = null) }
+        when (val result = apiClient.listSessions()) {
+            is ApiResult.Success -> _state.update { it.copy(sessions = result.data, isLoading = false) }
+            is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
+        }
+    }
+
+    // Caller (SessionsScreen) is responsible for the biometric prompt before invoking this —
+    // mirrors VaultListScreen's check-in confirmation pattern.
+    fun revoke(session: Session) = viewModelScope.launch {
+        when (val result = apiClient.revokeSession(session.id)) {
+            is ApiResult.Success -> _state.update { it.copy(sessions = it.sessions.filter { s -> s.id != session.id }) }
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
+    }
+
+    fun revokeAllOthers() = viewModelScope.launch {
+        when (val result = apiClient.revokeOtherSessions()) {
+            is ApiResult.Success -> load()
+            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
+            ApiResult.NetworkUnavailable -> _state.update { it.copy(error = "No network") }
+        }
     }
 }
 
@@ -352,7 +484,13 @@ data class VaultUiState(
     val hasMore: Boolean = false,
     val error: String? = null,
     val isOffline: Boolean = false,
-    val beneficiaryUpdated: Boolean = false
+    val beneficiaryUpdated: Boolean = false,
+    // True for the duration of an in-flight createVault() call, so the UI can disable the
+    // submit control and a second tap can't reach the network/queue while the first is
+    // still pending — without this, two rapid taps while offline queue two structurally
+    // identical CREATE_VAULT actions (CREATE_VAULT has no natural dedupeKey) and both get
+    // submitted once connectivity returns, creating two real vaults for one user action.
+    val isCreatingVault: Boolean = false
 )
 
 private const val PAGE_SIZE = 20
@@ -385,7 +523,6 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
-                result.data.vaults.forEach(::scheduleCheckInReminder)
                 subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
@@ -469,7 +606,10 @@ class VaultViewModel @Inject constructor(
             eventJobs[id] = viewModelScope.launch {
                 vaultEventSocket.events(id).collect { event ->
                     val updated = event.vault ?: return@collect
-                    _state.update { s -> s.copy(vaults = s.vaults.map { if (it.id == updated.id) updated else it }) }
+                    // Same merge path as a poll response (updateVaultInPlace) — see the
+                    // "Reconciling a poll/push disagreement" rule in api-contract.md (#223):
+                    // whichever one is received last simply overwrites in place.
+                    updateVaultInPlace(updated)
                 }
             }
         }
@@ -481,7 +621,11 @@ class VaultViewModel @Inject constructor(
     }
 
     fun checkIn(vaultId: String) = viewModelScope.launch {
-        when (val result = apiClient.checkIn(vaultId)) {
+        // Generated once and reused for both this attempt and any subsequent queued retry, so
+        // a resubmission after a process death is identifiable to the server as a duplicate of
+        // this specific attempt rather than a brand-new check-in.
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
+        when (val result = apiClient.checkIn(vaultId, idempotencyKey)) {
             is ApiResult.Success -> refreshSingle(vaultId)
             is ApiResult.Error -> _state.update { it.copy(error = result.message) }
             ApiResult.NetworkUnavailable -> queueAction(
@@ -489,7 +633,8 @@ class VaultViewModel @Inject constructor(
                     type = PendingActionType.CHECK_IN,
                     vaultId = vaultId,
                     queuedAt = System.currentTimeMillis(),
-                    dedupeKey = "check_in:$vaultId"
+                    dedupeKey = "check_in:$vaultId",
+                    idempotencyKey = idempotencyKey
                 )
             )
         }
@@ -504,25 +649,11 @@ class VaultViewModel @Inject constructor(
         }
     }
 
+    // Shared merge point for both a poll response (refreshSingle) and a `vault_updated`
+    // push (subscribeToEvents) — see the "Reconciling a poll/push disagreement" rule in
+    // api-contract.md (#223): whichever is received last always overwrites in place.
     private fun updateVaultInPlace(vault: Vault) {
         _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
-        scheduleCheckInReminder(vault)
-    }
-
-    /**
-     * Re-times the vault's check-in reminders whenever its TTL changes (#197). Reminders are
-     * only meaningful while the vault is active; any other status cancels them.
-     */
-    private fun scheduleCheckInReminder(vault: Vault) {
-        if (vault.status == VaultStatus.active) {
-            notificationHelper.scheduleCheckInReminder(
-                vaultId = vault.id,
-                ttlRemaining = vault.ttlRemaining,
-                checkInInterval = vault.checkInInterval
-            )
-        } else {
-            notificationHelper.cancelCheckInReminders(vault.id)
-        }
     }
 
     /// Update the beneficiary for a vault (owner-only). On success the vault list is
@@ -545,17 +676,31 @@ class VaultViewModel @Inject constructor(
     }
 
     fun createVault(beneficiary: String, intervalDays: Int) = viewModelScope.launch {
+        // Guards against a second tap reaching the network/queue while the first createVault()
+        // call is still in flight (see VaultUiState.isCreatingVault).
+        if (_state.value.isCreatingVault) return@launch
+        _state.update { it.copy(isCreatingVault = true) }
+
         val req = CreateVaultRequest(beneficiary, intervalDays * 86_400L)
-        when (val result = apiClient.createVault(req)) {
-            is ApiResult.Success -> load()
-            is ApiResult.Error -> _state.update { it.copy(error = result.message) }
-            ApiResult.NetworkUnavailable -> queueAction(
-                PendingAction(
-                    type = PendingActionType.CREATE_VAULT,
-                    payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
-                    queuedAt = System.currentTimeMillis()
+        // Reused for any queued retry, same rationale as checkIn()'s idempotencyKey.
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
+        when (val result = apiClient.createVault(req, idempotencyKey)) {
+            is ApiResult.Success -> {
+                _state.update { it.copy(isCreatingVault = false) }
+                load()
+            }
+            is ApiResult.Error -> _state.update { it.copy(isCreatingVault = false, error = result.message) }
+            ApiResult.NetworkUnavailable -> {
+                queueAction(
+                    PendingAction(
+                        type = PendingActionType.CREATE_VAULT,
+                        payloadJson = Json.encodeToString(kotlinx.serialization.serializer(), req),
+                        queuedAt = System.currentTimeMillis(),
+                        idempotencyKey = idempotencyKey
+                    )
                 )
-            )
+                _state.update { it.copy(isCreatingVault = false) }
+            }
         }
     }
 

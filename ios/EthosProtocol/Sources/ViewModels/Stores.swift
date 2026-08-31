@@ -234,6 +234,56 @@ enum ReLockTimeoutOption: Int, CaseIterable, Identifiable {
     }
 }
 
+/// Backs SessionsView (#208): the list of devices currently holding a valid JWT for this
+/// account, plus the "Sign out this device" / "Sign out all other devices" actions. Both
+/// mutating actions are expected to be gated behind a biometric prompt by the caller (the
+/// view), same as VaultStore.withdraw — this store just performs the already-authorized action.
+@MainActor
+final class SessionsStore: ObservableObject {
+    @Published var sessions: [Session] = []
+    @Published var isLoading = false
+    @Published var error: ErrorPresentation?
+
+    // Injected for testing; defaults to the real APIClient calls.
+    var listSessions: () async throws -> [Session] = { try await APIClient.shared.listSessions() }
+    var revokeSession: (String) async throws -> Void = { try await APIClient.shared.revokeSession(id: $0) }
+    var revokeOtherSessions: () async throws -> Void = { try await APIClient.shared.revokeOtherSessions() }
+
+    func load() async {
+        isLoading = true; error = nil
+        do {
+            sessions = try await listSessions()
+        } catch {
+            self.error = ErrorPresentation(error)
+        }
+        isLoading = false
+    }
+
+    /// Signs out the device behind `session`. Removes it from the local list immediately on
+    /// success rather than requiring a full reload.
+    func revoke(_ session: Session) async {
+        error = nil
+        do {
+            try await revokeSession(session.id)
+            sessions.removeAll { $0.id == session.id }
+        } catch {
+            self.error = ErrorPresentation(error)
+        }
+    }
+
+    /// Signs out every device except the current one, then reloads so the list reflects the
+    /// server's view (rather than assuming every non-current session was in `sessions`).
+    func revokeAllOthers() async {
+        error = nil
+        do {
+            try await revokeOtherSessions()
+            await load()
+        } catch {
+            self.error = ErrorPresentation(error)
+        }
+    }
+}
+
 @MainActor
 final class VaultStore: ObservableObject {
     @Published var vaults: [Vault] = []
@@ -248,6 +298,8 @@ final class VaultStore: ObservableObject {
     /// Mirrors PendingCheckInStore's count for while the app is foregrounded — drives the
     /// in-app "N check-ins queued" banner alongside NotificationService's queued indicator.
     @Published private(set) var queuedCheckInCount = 0
+    /// Current WebSocket connection state for the real-time event stream (#255).
+    @Published private(set) var socketConnectionState: VaultEventSocket.ConnectionState = .disconnected
 
     private var eventSocket: VaultEventSocket?
 
@@ -323,18 +375,22 @@ final class VaultStore: ObservableObject {
     }
 
     func checkIn(vault: Vault) async {
+        // Generated once and reused for both this attempt and any subsequent queued retry, so
+        // a resubmission after a process death is identifiable to the server as a duplicate of
+        // this specific attempt rather than a brand-new check-in.
+        let idempotencyKey = UUID().uuidString
         do {
-            // `checkIn(vaultID:)` is ambiguous between APIClient's original throwing/Void
-            // signature and the CheckInSyncTask.APIClientProtocol conformance's overload —
-            // pin the reference to the original before calling it.
-            let performCheckIn: (String) async throws -> Void = APIClient.shared.checkIn(vaultID:)
-            try await performCheckIn(vault.id)
+            // `checkIn(vaultID:idempotencyKey:)` is ambiguous between APIClient's original
+            // throwing/Void signature and the CheckInSyncTask.APIClientProtocol conformance's
+            // overload — pin the reference to the original before calling it.
+            let performCheckIn: (String, String?) async throws -> Void = APIClient.shared.checkIn(vaultID:idempotencyKey:)
+            try await performCheckIn(vault.id, idempotencyKey)
             if !Task.isCancelled { await load() }
         } catch APIError.networkUnavailable {
             // Offline: queue the check-in durably so it is retried when connectivity
             // returns, mirroring Android's VaultViewModel.checkIn → PendingCheckInDao
             // + CheckInSyncWorker pattern.
-            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date())
+            let item = PendingCheckIn(vaultId: vault.id, queuedAt: Date(), idempotencyKey: idempotencyKey)
             PendingCheckInStore.shared.insert(item)
             let count = PendingCheckInStore.shared.count
             NotificationService.shared.showQueuedCheckIn(count: count)
@@ -386,6 +442,12 @@ final class VaultStore: ObservableObject {
     /// Replaces the vault matching `updated.id` in place (preserving list order), or
     /// appends it if it isn't currently in `vaults` — e.g. a vault created from another
     /// device that this session hasn't loaded yet.
+    ///
+    /// Called for a `vault_updated` push (`subscribeToEvents`). `load`/`loadAll` achieve
+    /// the same outcome for a poll by replacing `vaults` wholesale — either way, whichever
+    /// of a poll or a push is *received* last simply overwrites what was there, with no
+    /// comparison against it. See the "Reconciling a poll/push disagreement" rule in
+    /// api-contract.md (#223).
     func applyUpdate(_ updated: Vault) {
         if let index = vaults.firstIndex(where: { $0.id == updated.id }) {
             vaults[index] = updated
@@ -399,18 +461,32 @@ final class VaultStore: ObservableObject {
     /// without waiting for the next poll.
     func subscribeToEvents(vaultID: String, socket: VaultEventSocket) {
         eventSocket = socket
+        socket.onStateChange = { [weak self] state in
+            self?.socketConnectionState = state
+        }
+        // Sync the current state immediately in case socket was already connected
+        socketConnectionState = socket.state
         socket.onEvent = { [weak self] event in
             guard let self else { return }
             switch event {
             case .vaultUpdated(let updated):
                 self.applyUpdate(updated)
-            case .vaultExpired, .vaultReleased:
+            case .vaultExpired(let expiredVaultID, _):
                 // Neither payload carries the full vault, and both change status (and, for
                 // a release, the balance) — refetch rather than patching fields locally.
+                // Recorded before the refetch so a same-instant push (#232) sees it.
+                NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
+                                                       eventType: "vault_expired", vaultID: expiredVaultID)
+                Task { await self.load() }
+            case .vaultReleased(let releasedVaultID, _, _):
+                NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
+                                                       eventType: "vault_released", vaultID: releasedVaultID)
                 Task { await self.load() }
             case .ping:
                 // Server keepalive — no state change.
                 break
+            case .subscribed:
+                break // acknowledgement only — no state change
             case .error(let code, let message):
                 self.error = ErrorPresentation(message: "Vault event stream error (\(code)): \(message)")
             case .unknown:
@@ -423,6 +499,7 @@ final class VaultStore: ObservableObject {
     func unsubscribeFromEvents() {
         eventSocket?.stop()
         eventSocket = nil
+        socketConnectionState = .disconnected
     }
 
     private func scheduleReminders() {

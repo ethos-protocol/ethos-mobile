@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  #200: Cross-device backup/restore for vault-to-passkey-credential associations.
+  Only the non-secret VaultAssociationStore preferences file is eligible for backup or
+  device-to-device transfer. Everything else (auth tokens, offline queue) is explicitly
+  excluded so no secret ever leaves the device via this mechanism.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="vault_associations_sync.xml" />
+        <exclude domain="sharedpref" path="ttl_auth_secure.xml" />
+        <exclude domain="database" path="pending_actions.db" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="vault_associations_sync.xml" />
+        <exclude domain="sharedpref" path="ttl_auth_secure.xml" />
+        <exclude domain="database" path="pending_actions.db" />
+    </device-transfer>
+</data-extraction-rules>

@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import com.ethosprotocol.services.VaultDeepLink
 import com.ethosprotocol.services.VaultDeepLinkAction
+import com.ethosprotocol.services.DeepLinkSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
@@ -41,6 +42,7 @@ class DeepLinkViewModel @Inject constructor(
         internal const val KEY_BENEFICIARY_TOKEN    = "pending_beneficiary_token"
         internal const val KEY_DEEP_LINK_VAULT_ID   = "pending_deep_link_vault_id"
         internal const val KEY_DEEP_LINK_ACTION     = "pending_deep_link_action"
+        internal const val KEY_DEEP_LINK_SOURCE     = "pending_deep_link_source"
     }
 
     // -------------------------------------------------------------------------
@@ -80,17 +82,19 @@ class DeepLinkViewModel @Inject constructor(
     /** Deep link parsed from an ethosprotocol:// URI, or null when none is pending. */
     val pendingVaultDeepLink: StateFlow<VaultDeepLink?> =
         // SavedStateHandle does not know how to serialise VaultDeepLink directly, so we
-        // store the two string components separately and derive the composite value here.
+        // store the components separately and derive the composite value here.
         object : StateFlow<VaultDeepLink?> {
-            // Delegate to a derived flow that combines the two handle entries.
+            // Delegate to a derived flow that combines the components.
             private val delegate = run {
                 val vaultIdFlow: StateFlow<String?> =
                     savedStateHandle.getStateFlow(KEY_DEEP_LINK_VAULT_ID, null)
                 val actionFlow: StateFlow<String?> =
                     savedStateHandle.getStateFlow(KEY_DEEP_LINK_ACTION, null)
+                val sourceFlow: StateFlow<String?> =
+                    savedStateHandle.getStateFlow(KEY_DEEP_LINK_SOURCE, null)
                 // Derive a simple StateFlow by implementing it ourselves.  A coroutine-based
                 // combine() would require a scope, so we implement a lightweight wrapper that
-                // reads the two underlying flows on every access — acceptable here because
+                // reads the three underlying flows on every access — acceptable here because
                 // these values change rarely (only on new intent / process start).
                 object : StateFlow<VaultDeepLink?> {
                     override val replayCache get() = listOf(value)
@@ -100,7 +104,10 @@ class DeepLinkViewModel @Inject constructor(
                             val action = actionFlow.value?.let {
                                 VaultDeepLinkAction.fromPathSegment(it)
                             } ?: return null
-                            return VaultDeepLink(vaultId = id, action = action)
+                            val source = sourceFlow.value?.let {
+                                DeepLinkSource.fromString(it)
+                            } ?: DeepLinkSource.UNKNOWN
+                            return VaultDeepLink(vaultId = id, action = action, source = source)
                         }
 
                     override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<VaultDeepLink?>) =
@@ -127,6 +134,7 @@ class DeepLinkViewModel @Inject constructor(
     fun setPendingVaultDeepLink(deepLink: VaultDeepLink?) {
         savedStateHandle[KEY_DEEP_LINK_VAULT_ID] = deepLink?.vaultId
         savedStateHandle[KEY_DEEP_LINK_ACTION]   = deepLink?.action?.pathSegment
+        savedStateHandle[KEY_DEEP_LINK_SOURCE]   = deepLink?.source?.value
     }
 
     /** Clears the beneficiary-accept state once the navigation target has been consumed. */

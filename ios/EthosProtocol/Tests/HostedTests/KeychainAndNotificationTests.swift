@@ -111,6 +111,38 @@ final class NotificationServiceHostedTests: XCTestCase {
         }
     }
 
+    // #233: body content includes a truncated vault ID and TTL — but never
+    // anything that could be a balance or beneficiary address.
+    func test_scheduleTTLWarning_bodyIncludesTruncatedVaultIdAndTTL() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Notification authorization cannot be granted in this CI environment")
+        let vaultID = "vault-body-content-\(UUID().uuidString)"
+        NotificationService.shared.scheduleTTLWarning(vaultID: vaultID, ttlRemaining: 3_600)
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        let request = pendingRequests.first { $0.identifier.contains(vaultID) }
+
+        XCTAssertNotNil(request)
+        let body = request?.content.body ?? ""
+        XCTAssertTrue(body.contains(String(vaultID.prefix(12))), "body should identify the vault")
+        XCTAssertTrue(body.contains("1h"), "3600s remaining should render as 1h")
+    }
+
+    func test_scheduleCheckInReminder_bodyIncludesTruncatedVaultIdAndTTL() async throws {
+        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
+                      "Notification authorization cannot be granted in this CI environment")
+        let vaultID = "vault-checkin-content-\(UUID().uuidString)"
+        NotificationService.shared.scheduleCheckInReminder(
+            vaultID: vaultID, vaultName: vaultID, ttlRemaining: 604_800, checkInInterval: 2_592_000)
+
+        let pendingRequests = await UNUserNotificationCenter.current().pendingNotificationRequests()
+        let request = pendingRequests.first { $0.identifier.contains("checkin-primary-\(vaultID)") }
+
+        XCTAssertNotNil(request)
+        let body = request?.content.body ?? ""
+        XCTAssertTrue(body.contains(String(vaultID.prefix(12))), "body should identify the vault")
+    }
+
     func test_removeAllPendingNotifications_clearsScheduledRequests() async {
         NotificationService.shared.scheduleTTLWarning(vaultID: "vault-to-clear-\(UUID().uuidString)", ttlRemaining: 3_600)
 

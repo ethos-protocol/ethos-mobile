@@ -92,7 +92,7 @@ class CheckInSyncWorkerTest {
         val items = listOf(item("v1"), item("v2"), item("v3"))
         // First call returns the full list; subsequent calls (after deletes) return empty
         coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
-        coEvery { apiClient.checkIn(any()) } returns ApiResult.Success(Unit)
+        coEvery { apiClient.checkIn(any(), any()) } returns ApiResult.Success(Unit)
 
         val result = buildWorker().doWork()
 
@@ -111,7 +111,7 @@ class CheckInSyncWorkerTest {
     fun `all network-unavailable leaves queue intact and returns retry`() = runBlocking {
         val items = listOf(item("v1"), item("v2"))
         coEvery { dao.getAll() } returnsMany listOf(items, items) // second call: still full
-        coEvery { apiClient.checkIn(any()) } returns ApiResult.NetworkUnavailable
+        coEvery { apiClient.checkIn(any(), any()) } returns ApiResult.NetworkUnavailable
 
         val result = buildWorker().doWork()
 
@@ -128,7 +128,7 @@ class CheckInSyncWorkerTest {
     fun `non-retryable error code 400 deletes item`() = runBlocking {
         val items = listOf(item("v1"))
         coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Bad Request", 400)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Error("Bad Request", 400)
 
         val result = buildWorker().doWork()
 
@@ -141,7 +141,7 @@ class CheckInSyncWorkerTest {
     fun `non-retryable error code 404 deletes item`() = runBlocking {
         val items = listOf(item("v1"))
         coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Not Found", 404)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Error("Not Found", 404)
 
         val result = buildWorker().doWork()
 
@@ -154,7 +154,7 @@ class CheckInSyncWorkerTest {
     fun `non-retryable error code 410 deletes item`() = runBlocking {
         val items = listOf(item("v1"))
         coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Gone", 410)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Error("Gone", 410)
 
         val result = buildWorker().doWork()
 
@@ -171,7 +171,7 @@ class CheckInSyncWorkerTest {
     fun `retryable error code 500 does not delete item and returns retry`() = runBlocking {
         val items = listOf(item("v1"))
         coEvery { dao.getAll() } returnsMany listOf(items, items)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Server Error", 500)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Error("Server Error", 500)
 
         val result = buildWorker().doWork()
 
@@ -184,7 +184,7 @@ class CheckInSyncWorkerTest {
     fun `retryable error code 401 does not delete item and returns retry`() = runBlocking {
         val items = listOf(item("v1"))
         coEvery { dao.getAll() } returnsMany listOf(items, items)
-        coEvery { apiClient.checkIn("v1") } returns ApiResult.Error("Unauthorized", 401)
+        coEvery { apiClient.checkIn("v1", any()) } returns ApiResult.Error("Unauthorized", 401)
 
         val result = buildWorker().doWork()
 
@@ -207,9 +207,9 @@ class CheckInSyncWorkerTest {
 
             // After deleting vGone and vOk, one item remains
             coEvery { dao.getAll() } returnsMany listOf(allItems, listOf(vOffline))
-            coEvery { apiClient.checkIn("gone") } returns ApiResult.Error("Gone", 410)
-            coEvery { apiClient.checkIn("offline") } returns ApiResult.NetworkUnavailable
-            coEvery { apiClient.checkIn("ok") } returns ApiResult.Success(Unit)
+            coEvery { apiClient.checkIn("gone", any()) } returns ApiResult.Error("Gone", 410)
+            coEvery { apiClient.checkIn("offline", any()) } returns ApiResult.NetworkUnavailable
+            coEvery { apiClient.checkIn("ok", any()) } returns ApiResult.Success(Unit)
 
             val result = buildWorker().doWork()
 
@@ -230,8 +230,8 @@ class CheckInSyncWorkerTest {
         runBlocking {
             val items = listOf(item("a"), item("b"))
             coEvery { dao.getAll() } returnsMany listOf(items, emptyList())
-            coEvery { apiClient.checkIn("a") } returns ApiResult.Error("Not Found", 404)
-            coEvery { apiClient.checkIn("b") } returns ApiResult.Error("Gone", 410)
+            coEvery { apiClient.checkIn("a", any()) } returns ApiResult.Error("Not Found", 404)
+            coEvery { apiClient.checkIn("b", any()) } returns ApiResult.Error("Gone", 410)
 
             val result = buildWorker().doWork()
 

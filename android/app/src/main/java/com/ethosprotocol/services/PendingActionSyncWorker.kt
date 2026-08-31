@@ -52,13 +52,27 @@ class PendingActionSyncWorker @AssistedInject constructor(
         var permanentlyFailed = 0
 
         for (item in pending) {
+            if (item.synced) {
+                // The server already confirmed this action on a previous run, but the
+                // process died before the row could be deleted. Finish the cleanup without
+                // resubmitting the request or counting it toward this run's `succeeded`
+                // (it was already counted when it first succeeded).
+                dao.delete(item)
+                Log.i(TAG, "already-synced action cleaned up type=${item.type} vaultId=${item.vaultId}")
+                continue
+            }
+
             val result = when (item.type) {
-                PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!)
+                PendingActionType.CHECK_IN -> apiClient.checkIn(item.vaultId!!, item.idempotencyKey)
                 PendingActionType.CREATE_VAULT ->
-                    apiClient.createVault(Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!))
+                    apiClient.createVault(
+                        Json.decodeFromString<CreateVaultRequest>(item.payloadJson!!),
+                        item.idempotencyKey
+                    )
             }
             when (result) {
                 is ApiResult.Success -> {
+                    dao.markSynced(item.id)
                     dao.delete(item)
                     succeeded++
                     Log.i(TAG, "action synced type=${item.type} vaultId=${item.vaultId}")
@@ -73,7 +87,12 @@ class PendingActionSyncWorker @AssistedInject constructor(
                     // (server error, timeout, expired auth) would lose that intent. Only drop
                     // the item when the server has definitively rejected it as invalid (e.g.
                     // the vault no longer exists) — everything else is retried.
-                    if (result.code in NON_RETRYABLE_ERROR_CODES) {
+                    if (result.code == VAULT_EXPIRED_CODE) {
+                        dao.delete(item)
+                        permanentlyFailed++
+                        notificationHelper.showVaultExpiredNotification(item.vaultId ?: "", item.type)
+                        Log.e(TAG, "action dropped (vault expired) type=${item.type} vaultId=${item.vaultId}")
+                    } else if (result.code in NON_RETRYABLE_ERROR_CODES) {
                         dao.delete(item)
                         permanentlyFailed++
                         Log.e(TAG, "action dropped (non-retryable) type=${item.type} vaultId=${item.vaultId} code=${result.code} msg=${result.message}")
@@ -128,7 +147,8 @@ class PendingActionSyncWorker @AssistedInject constructor(
         // Error codes where the server has told us unambiguously that this action can
         // never succeed (bad request / vault no longer exists), so retrying is pointless.
         // Everything else (5xx, 401, 0/exception) is treated as transient and retried.
-        private val NON_RETRYABLE_ERROR_CODES = setOf(400, 404, 410)
+        private val NON_RETRYABLE_ERROR_CODES = setOf(400, 404)
+        private const val VAULT_EXPIRED_CODE = 410
 
         fun schedule(context: Context) {
             val request = OneTimeWorkRequestBuilder<PendingActionSyncWorker>()

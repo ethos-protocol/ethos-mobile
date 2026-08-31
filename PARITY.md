@@ -33,15 +33,16 @@ Last audited: 2026-08-31
 | Vault detail view | ✅ | ✅ | |
 | Check-in | ✅ | ✅ | |
 | Biometric confirmation for check-in | ✅ | ✅ | iOS: LocalAuthentication; Android: BiometricPrompt |
+| Typed-confirmation dialog for destructive actions | ✅ | ✅ | Guardrail added ahead of any delete/archive endpoint (#220); iOS: `DestructiveConfirmationView`; Android: `DestructiveConfirmationDialog` — neither is wired to a real action yet |
 | **Funds** | | | |
 | Deposit | ✅ | ❌ | Android has no DepositScreen (#87) |
 | Withdraw | ✅ | ❌ | Android has no WithdrawScreen (#87) |
-| Balance display (formatted XLM) | ✅ | ✅ | |
+| Balance display (formatted XLM) | ✅ | ✅ | `Vault.formattedBalance` now renders `assetCode` rather than a hardcoded "XLM" label (#222); Deposit/Withdraw screens on both platforms still hardcode "XLM" in their labels and validation copy — out of scope for #222, tracked below |
 | **Beneficiary management** | | | |
 | View beneficiary | ✅ | ✅ | |
 | Update beneficiary | ✅ | ❌ | Android has no ManageBeneficiaryScreen (#87) |
-| Beneficiary acceptance deep link | ✅ | ✅ | |
-| Beneficiary acceptance token forwarded | ✅ | ✅ | VaultDeepLinkParser.parseBeneficiaryAccept forwards the token into POST /accept (#196) |
+| Beneficiary acceptance deep link | ✅ | ⚠️ | Android parses the deep link but does not call acceptBeneficiary() (#87/#109) |
+| Beneficiary acceptance token forwarded | ✅ | ❌ | Android AcceptanceViewModel ignores the token param (#109) |
 | **Stellar address validation** | | | |
 | StrKey / CRC16-XModem checksum | ✅ | 🚧 | Android StellarAddress utility added in #113 |
 | Validated in create-vault flow | ✅ | 🚧 | Android CreateVaultDialog wired in #113 |
@@ -56,9 +57,12 @@ Last audited: 2026-08-31
 | OTP cooldown survives process death | ❌ | ✅ | Android persists the failure count and an absolute cooldown deadline in `SavedStateHandle` (#172); iOS `OTPRateLimiter` is still in-memory only |
 | **Push notifications** | | | |
 | APNs / FCM device token registration | ✅ | ✅ | |
-| TTL expiry warning notification | ✅ | ✅ | |
-| Check-in reminder (scaled lead time) | ✅ | ✅ | Lead time is 1/10 of the check-in interval, capped at 24h (#197) |
-| Actionable "Check In" notification action | ✅ | ✅ | Action opens the biometric-gated check-in screen (#198) |
+| TTL expiry warning notification | ✅ | ✅ | Bodies now include a truncated vault ID + TTL remaining instead of generic copy (#233); Android's server-pushed reminder includes the ID but not TTL — the FCM payload doesn't carry `ttl_remaining` today, unlike iOS's locally-scheduled reminders which already have it in hand |
+| Check-in reminder (scaled lead time) | ✅ | ❌ | Android NotificationHelper sends a generic reminder, no lead-time scaling (#TBD) |
+| Notification delivery analytics (scheduled/delivered/suppressed log) | ✅ | ✅ | Debug-only screen for support/QA triage (#235); iOS: `NotificationDebugView`; Android: `NotificationDebugScreen` |
+| Push token registration retry/backoff on failure | ✅ | ✅ | Previously fire-and-forget on both platforms; now retries with backoff and persists a pending token to retry on next foreground (#234) |
+| WebSocket/push duplicate notification dedup | ✅ | ✅ | A `vault_expired`/`vault_released` event applied via WebSocket suppresses a same-event push banner delivered shortly after (#232) |
+| Actionable "Check In" notification action | ✅ | ❌ | Android does not set up a CHECK_IN notification action (#TBD) |
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |
 | Offline read cache (SHA-256 keyed) | ✅ | ✅ | |
@@ -66,7 +70,7 @@ Last audited: 2026-08-31
 | Offline queue badge / notification | ✅ | ✅ | iOS: queuedCheckInCount in Stores; Android: BadgeService broadcasts queue updates | |
 | **Widget** | | | |
 | Home-screen vault TTL widget | ✅ | ✅ | iOS: WidgetKit TTLWidget; Android: VaultStatusWidget (Glance) |
-| TTL-aware refresh policy | ✅ | ✅ | Refresh interval scales from 60m down to 2m as TTL shrinks (#199) |
+| TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (#TBD) |
 | Widget urgency selection (which vault to surface) | ❌ | ❌ | Both platforms always show the first vault (#TBD) |
 | **WebSocket / real-time** | | | |
 | Live vault updates via WebSocket | ✅ | ✅ | iOS: VaultEventSocket.swift; Android: VaultEventSocket.kt, both wired into their vault store/ViewModel with reconnect backoff |
@@ -74,7 +78,7 @@ Last audited: 2026-08-31
 | Background app refresh (TTL polling) | ✅ | ✅ | iOS: BGAppRefreshTask; Android: WorkManager |
 | **Universal / deep links** | | | |
 | Vault invitation link | ✅ | ✅ | |
-| Beneficiary acceptance link | ✅ | ✅ | |
+| Beneficiary acceptance link | ✅ | ⚠️ | See beneficiary token gap above |
 | Vault action links (check-in, withdraw, …) | ✅ | ✅ | |
 | Deep-link input validation (path traversal, length) | ✅ | ✅ | |
 | **iCloud / cross-device sync** | | | |
@@ -91,11 +95,16 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 |-----|--------------------------|---------|
 | Deposit / Withdraw screens | Android | #87 |
 | Manage Beneficiary screen | Android | #87 |
+| Beneficiary acceptance token forwarded in deep link | Android | #87 / #109 |
 | TOTP re-verify copy ("Scan URI" shown without URI) | Android | #115 |
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
 | Check-in reminder lead-time scaling | Android | TBD |
+| Actionable push notification action (CHECK_IN) | Android | TBD |
+| Offline check-in queue | iOS | TBD |
+| TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
 | iCloud / cross-device sync | Android | TBD |
+| Deposit/Withdraw amount labels and validation messages hardcode "XLM" instead of the vault's `assetCode` (iOS: DepositView/WithdrawView; Android: DepositScreen/WithdrawScreen, VaultViewModel.deposit/withdraw) | Both | #222 (audit only — every vault is XLM today, so this is a documented follow-up, not a current bug) |
 
 ---
 

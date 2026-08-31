@@ -9,6 +9,10 @@ final class KeychainService {
     private let tokenExpiryKey = "com.ethosprotocol.auth_token_expiry"
     private let credentialKey = "com.ethosprotocol.passkey_credential"
     private let pushTokenKey = "com.ethosprotocol.push_token"
+    /// A device token seen (via APNs callback) but not yet confirmed registered
+    /// with the server — set when registration fails after retrying, cleared
+    /// once it succeeds. See NotificationService's retry-on-foreground (#234).
+    private let pendingPushTokenKey = "com.ethosprotocol.pending_push_token"
 
     /// `expiresAt`, when provided, is persisted alongside the token so AuthStore can
     /// schedule a proactive refresh (#3) against `AuthToken.expiresAt` even across an
@@ -65,6 +69,20 @@ final class KeychainService {
 
     func deletePushToken() {
         delete(forKey: pushTokenKey)
+    }
+
+    /// #234: a device token that failed registration after retrying, to be
+    /// retried again the next time the app comes to the foreground.
+    func savePendingPushToken(_ token: String) {
+        save(token, forKey: pendingPushTokenKey)
+    }
+
+    func loadPendingPushToken() -> String? {
+        load(forKey: pendingPushTokenKey)
+    }
+
+    func deletePendingPushToken() {
+        delete(forKey: pendingPushTokenKey)
     }
 
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {

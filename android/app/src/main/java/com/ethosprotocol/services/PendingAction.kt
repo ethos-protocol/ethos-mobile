@@ -3,7 +3,13 @@ package com.ethosprotocol.services
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
-enum class PendingActionType { CHECK_IN, CREATE_VAULT }
+enum class PendingActionType { CHECK_IN, CREATE_VAULT, DEPOSIT, WITHDRAW }
+
+@kotlinx.serialization.Serializable
+data class DepositPayload(val vaultId: String, val amount: Long)
+
+@kotlinx.serialization.Serializable
+data class WithdrawPayload(val vaultId: String, val amount: Long)
 
 @Entity(
     tableName = "pending_actions",
@@ -19,7 +25,17 @@ data class PendingAction(
     // replace the earlier queued item rather than pile up duplicates. SQLite treats
     // each NULL in a unique index as distinct, so action types with no natural key
     // (e.g. create-vault) can simply leave this null and queue freely.
-    val dedupeKey: String? = null
+    val dedupeKey: String? = null,
+    // Stable identifier set once when the action is first attempted (not re-generated on
+    // retry), sent as X-Idempotency-Key so a resubmission after the process dies between
+    // the server accepting the request and this row being deleted is identifiable by the
+    // server as a duplicate of a specific prior attempt, not a brand-new request.
+    val idempotencyKey: String = "",
+    // Set durably once the server has confirmed success, before the row is physically
+    // deleted. If the process dies in that window, the next run sees synced == true and
+    // knows this row already succeeded — it just finishes the delete without resubmitting
+    // the request or double-counting it in sync diagnostics.
+    val synced: Boolean = false
 )
 
 @Dao
@@ -35,6 +51,9 @@ interface PendingActionDao {
 
     @Delete
     suspend fun delete(item: PendingAction)
+
+    @Query("UPDATE pending_actions SET synced = 1 WHERE id = :id")
+    suspend fun markSynced(id: Long)
 
     @Query("DELETE FROM pending_actions")
     suspend fun deleteAll()

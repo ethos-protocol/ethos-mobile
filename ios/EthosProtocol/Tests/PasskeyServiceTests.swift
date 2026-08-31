@@ -57,6 +57,61 @@ final class COSEPublicKeyExtractionTests: XCTestCase {
     }
 }
 
+// MARK: - #213 Attestation Format Extraction Tests
+
+final class AttestationFormatExtractionTests: XCTestCase {
+
+    func test_attestationFormat_returnsFmtValue() {
+        let authData = cborAuthData(credentialID: Data([0x01]), coseKey: cborES256COSEKey(x: Data(repeating: 0, count: 32), y: Data(repeating: 0, count: 32)))
+        let attestationObject = cborAttestationObject(authData: authData)
+
+        XCTAssertEqual(PasskeyService.attestationFormat(fromAttestationObject: attestationObject), "none")
+    }
+
+    func test_attestationFormat_nilAttestationObject_returnsNil() {
+        XCTAssertNil(PasskeyService.attestationFormat(fromAttestationObject: nil))
+    }
+
+    func test_attestationFormat_malformedCBOR_returnsNil() {
+        let garbage = Data([0xFF, 0xFF, 0xFF])
+        XCTAssertNil(PasskeyService.attestationFormat(fromAttestationObject: garbage))
+    }
+}
+
+// MARK: - #213 Passkey Diagnostics Logger Tests
+
+final class PasskeyDiagnosticsLoggerTests: XCTestCase {
+
+    override func tearDown() {
+        PasskeyDiagnosticsLogger.shared.clearLog()
+        super.tearDown()
+    }
+
+    func test_logRegistrationFailure_recordsAttachmentAndFormat_neverCredentialMaterial() {
+        PasskeyDiagnosticsLogger.shared.clearLog()
+
+        PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+            authenticatorAttachment: "platform",
+            attestationFormat: "packed",
+            reason: "registrationFailed"
+        )
+
+        let events = PasskeyDiagnosticsLogger.shared.getLoggedEvents()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events[0].authenticatorAttachment, "platform")
+        XCTAssertEqual(events[0].attestationFormat, "packed")
+    }
+
+    func test_clearLog_removesAllEvents() {
+        PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+            authenticatorAttachment: "platform", attestationFormat: nil, reason: "ceremonyFailed"
+        )
+        PasskeyDiagnosticsLogger.shared.clearLog()
+
+        XCTAssertTrue(PasskeyDiagnosticsLogger.shared.getLoggedEvents().isEmpty)
+    }
+}
+
 // MARK: - #4 Registration/Persistence Atomicity Tests
 
 final class PasskeyServiceRegistrationAtomicityTests: XCTestCase {
@@ -175,6 +230,37 @@ final class PasskeyErrorMappingTests: XCTestCase {
         struct SomeOtherError: Error {}
         let mapped = PasskeyError.map(SomeOtherError(), fallback: .registrationFailed)
         XCTAssertEqual(mapped, .registrationFailed)
+    }
+
+    // MARK: - #210 No biometric hardware / not enrolled
+
+    private func makeUnderlyingLAError(_ code: LAError.Code) -> NSError {
+        let underlying = NSError(domain: LAErrorDomain, code: code.rawValue)
+        return NSError(domain: ASAuthorizationErrorDomain,
+                        code: ASAuthorizationError.failed.rawValue,
+                        userInfo: [NSUnderlyingErrorKey: underlying])
+    }
+
+    func test_biometryNotEnrolled_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.biometryNotEnrolled), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_biometryNotAvailable_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.biometryNotAvailable), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_passcodeNotSet_mapsToBiometricUnavailable() {
+        let mapped = PasskeyError.map(makeUnderlyingLAError(.passcodeNotSet), fallback: .registrationFailed)
+        XCTAssertEqual(mapped, .biometricUnavailable)
+    }
+
+    func test_biometricUnavailable_hasActionableCopy() {
+        let message = PasskeyError.biometricUnavailable.errorDescription ?? ""
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("passcode") ||
+                      message.localizedCaseInsensitiveContains("Face ID") ||
+                      message.localizedCaseInsensitiveContains("Touch ID"))
     }
 
     func test_allCases_haveDistinctNonEmptyDescriptions() {
