@@ -137,6 +137,7 @@ cd android
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
 
+<<<<<<< HEAD
 ### Dependency vulnerability scanning
 The repo runs a dependency scan for both platforms with the same trigger model:
 - `push` to `main` when dependency manifests change
@@ -177,3 +178,15 @@ gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
 ```
 
 This keeps parity-status messaging consistent with the cross-platform tracking table and helps release notes communicate platform catch-up progress accurately.
+=======
+### Staging Smoke Test
+
+`.github/workflows/staging-smoke-test.yml` runs `scripts/smoke_test_staging.sh`
+against a staging deployment (a separate `STAGING_API_BASE_URL` from the
+per-client `API_BASE_URL` set in `Info.plist` / `build.gradle.kts` — staging
+is a fixed CI-only target, not something either app build points at). It
+exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
+backend/client contract mismatch (see `shared/api-contract.md`) before a
+release build is cut. The workflow is exposed via `workflow_call` so a release
+workflow can add `needs:` on it once one exists.
+>>>>>>> pr-365-merge
