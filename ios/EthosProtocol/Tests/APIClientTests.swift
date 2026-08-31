@@ -348,4 +348,82 @@ final class APIClientAuthTests: XCTestCase {
             XCTAssertEqual(message, "backup code did not match")
         }
     }
+
+    // #211: an expired recovery proof must surface its own clear message, not the generic
+    // "Authentication required" shown for a rejected session token.
+    func test_linkAdditionalPasskey_expiredRecoveryProof_surfacesServerMessage_notGenericUnauthorized() async throws {
+        let errorBody = """
+        {"error": "Your recovery code has expired. Please request a new one."}
+        """.data(using: .utf8)!
+        mockResponse(for: linkURL, status: 401, body: errorBody)
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw for an expired recovery proof")
+        } catch APIError.serverError(let message) {
+            XCTAssertEqual(message, "Your recovery code has expired. Please request a new one.")
+        }
+    }
+
+    // A 401 with no body (the normal rejected-session-token case) must keep the generic,
+    // "sign in again" message — this behavior must not regress from the fix above.
+    func test_plain401WithNoBody_stillThrowsGenericUnauthorized() async throws {
+        mockResponse(for: linkURL, status: 401, body: Data())
+
+        let proof = AccountRecoveryProof(email: "user@example.com", backupCode: "123456")
+
+        do {
+            try await client.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: "cred-1",
+                publicKey: "pubkey-1",
+                clientDataJSON: "client-data-1"
+            )
+            XCTFail("Expected linkAdditionalPasskey to throw")
+        } catch APIError.unauthorized {
+            // expected
+        }
+    }
+
+    // MARK: Sessions (#208)
+
+    func test_listSessions_decodesSessionList() async throws {
+        let sessionsURL = "https://api.ethos-protocol.app/v1/auth/sessions"
+        let json = """
+        [{"id": "s1", "device_name": "iPhone 15 Pro", "platform": "ios",
+          "created_at": "2026-01-01T00:00:00Z", "last_active_at": "2026-01-02T00:00:00Z", "is_current": true}]
+        """.data(using: .utf8)!
+        mockResponse(for: sessionsURL, body: json)
+
+        let sessions = try await client.listSessions()
+
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].id, "s1")
+        XCTAssertTrue(sessions[0].isCurrent)
+    }
+
+    func test_revokeSession_deletesToSessionEndpoint() async throws {
+        let revokeURL = "https://api.ethos-protocol.app/v1/auth/sessions/s2"
+        mockResponse(for: revokeURL, body: Data())
+
+        try await client.revokeSession(id: "s2")
+
+        XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == revokeURL })
+    }
+
+    func test_revokeOtherSessions_deletesToSessionsCollectionEndpoint() async throws {
+        let sessionsURL = "https://api.ethos-protocol.app/v1/auth/sessions"
+        mockResponse(for: sessionsURL, body: Data())
+
+        try await client.revokeOtherSessions()
+
+        XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == sessionsURL })
+    }
 }

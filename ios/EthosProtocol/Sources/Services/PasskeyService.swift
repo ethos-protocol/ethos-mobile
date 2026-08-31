@@ -1,5 +1,6 @@
 import AuthenticationServices
 import Foundation
+import LocalAuthentication
 
 final class PasskeyService: NSObject {
     static let shared = PasskeyService()
@@ -35,11 +36,20 @@ final class PasskeyService: NSObject {
     /// ASAuthorizationController round trip / biometric prompt is needed to sign in.
     func register(username: String) async throws -> AuthToken {
         let credential = try await createRegistrationCredential(username: username)
-        return try await completeRegistration(
-            credentialID: credential.credentialID,
-            publicKey: credential.publicKey,
-            clientDataJSON: credential.clientDataJSON
-        )
+        do {
+            return try await completeRegistration(
+                credentialID: credential.credentialID,
+                publicKey: credential.publicKey,
+                clientDataJSON: credential.clientDataJSON
+            )
+        } catch {
+            PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+                authenticatorAttachment: "platform",
+                attestationFormat: credential.attestationFormat,
+                reason: String(describing: error)
+            )
+            throw error
+        }
     }
 
     // Split out from `register(username:)` so the credential-ID persistence invariant (#4)
@@ -80,19 +90,47 @@ final class PasskeyService: NSObject {
     /// (e.g. via a "lost your device?" recovery flow) before this is invoked.
     func linkAdditionalPasskey(username: String, existingAccountProof proof: AccountRecoveryProof) async throws -> String {
         let credential = try await createRegistrationCredential(username: username)
-        try await APIClient.shared.linkAdditionalPasskey(
-            existingAccountProof: proof,
+        do {
+            try await APIClient.shared.linkAdditionalPasskey(
+                existingAccountProof: proof,
+                credentialID: credential.credentialID,
+                publicKey: credential.publicKey,
+                clientDataJSON: credential.clientDataJSON
+            )
+        } catch {
+            PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+                authenticatorAttachment: "platform",
+                attestationFormat: credential.attestationFormat,
+                reason: String(describing: error)
+            )
+            throw error
+        }
+        return credential.credentialID
+    }
+
+    /// Registers an additional passkey on this device for the *currently signed-in* account
+    /// (#207) — e.g. a user adding a tablet as a second device — without going through the
+    /// account-recovery flow `linkAdditionalPasskey` requires for a signed-out user. Relies
+    /// on the existing session's Bearer token for authorization instead of a recovery proof.
+    func addPasskey(username: String) async throws -> PasskeyCredential {
+        let credential = try await createRegistrationCredential(username: username)
+        let result = try await APIClient.shared.addPasskey(
             credentialID: credential.credentialID,
             publicKey: credential.publicKey,
             clientDataJSON: credential.clientDataJSON
         )
-        return credential.credentialID
+        persistCredentialID(credential.credentialID)
+        return result
     }
 
     private struct RegistrationCredential {
         let credentialID: String
         let publicKey: String
         let clientDataJSON: String
+        // #213: WebAuthn attestation statement format (e.g. "packed", "none"), kept
+        // around so a later failure to link/register with the backend can still log it
+        // for support diagnostics without re-parsing the attestation object.
+        let attestationFormat: String?
     }
 
     private func createRegistrationCredential(username: String) async throws -> RegistrationCredential {
@@ -118,18 +156,40 @@ final class PasskeyService: NSObject {
         do {
             credential = try await performRequest(request)
         } catch {
-            throw PasskeyError.map(error, fallback: .registrationFailed)
+            let mapped = PasskeyError.map(error, fallback: .registrationFailed)
+            // #213: A user-initiated cancellation isn't a device/authenticator quirk
+            // worth triaging — only log ceremony failures that need support diagnosis.
+            if mapped != .userCancelled {
+                PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+                    authenticatorAttachment: "platform",
+                    attestationFormat: nil,
+                    reason: String(describing: mapped)
+                )
+            }
+            throw mapped
         }
         guard let reg = credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
             throw PasskeyError.registrationFailed
         }
+        let attestationFormat = Self.attestationFormat(fromAttestationObject: reg.rawAttestationObject)
         // The backend parses the WebAuthn COSE_Key (RFC 9052), not the raw CBOR
         // attestation object it's embedded in (#1) — see docs/mobile-passkey-flow.md.
-        let publicKey = try Self.extractCOSEPublicKey(fromAttestationObject: reg.rawAttestationObject)
+        let publicKey: String
+        do {
+            publicKey = try Self.extractCOSEPublicKey(fromAttestationObject: reg.rawAttestationObject)
+        } catch {
+            PasskeyDiagnosticsLogger.shared.logRegistrationFailure(
+                authenticatorAttachment: "platform",
+                attestationFormat: attestationFormat,
+                reason: String(describing: error)
+            )
+            throw error
+        }
         return RegistrationCredential(
             credentialID: reg.credentialID.base64URLEncodedString(),
             publicKey: publicKey,
-            clientDataJSON: reg.rawClientDataJSON.base64URLEncodedString()
+            clientDataJSON: reg.rawClientDataJSON.base64URLEncodedString(),
+            attestationFormat: attestationFormat
         )
     }
 
@@ -195,6 +255,7 @@ enum PasskeyError: LocalizedError, Equatable {
     case userCancelled
     case notInteractive
     case credentialAlreadyExists
+    case biometricUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -203,6 +264,9 @@ enum PasskeyError: LocalizedError, Equatable {
         case .userCancelled:           return "Passkey request was cancelled."
         case .notInteractive:          return "Bring the app to the foreground to use your passkey."
         case .credentialAlreadyExists: return "A passkey for this account already exists on this device."
+        case .biometricUnavailable:
+            return "This device has no biometric or passcode set up, so it can't create a passkey. " +
+                   "Enroll Face ID/Touch ID, or set a device passcode, in Settings and try again."
         }
     }
 
@@ -210,6 +274,16 @@ enum PasskeyError: LocalizedError, Equatable {
     /// best describes it, so the UI can show distinct guidance instead of one generic
     /// failure message for cancellation, backgrounding, and duplicate-credential cases.
     static func map(_ error: Error, fallback: PasskeyError) -> PasskeyError {
+        // #210: a device with no biometric enrolled (or an MDM policy disabling it, or no
+        // passcode set) surfaces as an ASAuthorizationError wrapping the real LAError in
+        // NSUnderlyingErrorKey — check that before falling through to the ASAuthorizationError
+        // code switch below, which has no case that distinguishes this from any other failure.
+        if let underlying = (error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError,
+           underlying.domain == LAErrorDomain,
+           let laCode = LAError.Code(rawValue: underlying.code),
+           [.biometryNotEnrolled, .biometryNotAvailable, .passcodeNotSet].contains(laCode) {
+            return .biometricUnavailable
+        }
         guard let authError = error as? ASAuthorizationError else { return fallback }
         switch authError.code {
         case .canceled:
@@ -255,6 +329,18 @@ extension PasskeyService {
             throw PasskeyError.registrationFailed
         }
         return try coseKeyBytes(fromAuthData: authData).base64URLEncodedString()
+    }
+
+    /// Extracts the WebAuthn attestation statement format (`fmt`, e.g. "packed", "none",
+    /// "android-safetynet") from an attestationObject, for support diagnostics (#213).
+    /// Never touches the public key, signature, or challenge bytes embedded alongside it.
+    static func attestationFormat(fromAttestationObject attestationObject: Data?) -> String? {
+        guard let attestationObject,
+              case let .map(attestationMap)? = try? CBORReader(attestationObject).readItem(),
+              case let .text(fmt)? = attestationMap["fmt"] else {
+            return nil
+        }
+        return fmt
     }
 
     // authData layout (WebAuthn §6.1): rpIdHash(32) | flags(1) | signCount(4) |

@@ -8,6 +8,7 @@ import com.ethosprotocol.services.PasskeyService
 import com.ethosprotocol.services.PendingAction
 import com.ethosprotocol.services.PendingActionDao
 import com.ethosprotocol.services.PendingActionType
+import com.ethosprotocol.services.VaultAssociationStore
 import com.ethosprotocol.ui.AuthViewModel
 import io.mockk.*
 import kotlinx.coroutines.CancellationException
@@ -38,6 +39,7 @@ class AuthViewModelTest {
     private val apiClient: ApiClient = mockk()
     private val notificationHelper: NotificationHelper = mockk(relaxed = true)
     private val pendingActionDao: PendingActionDao = mockk(relaxed = true)
+    private val vaultAssociationStore: VaultAssociationStore = mockk(relaxed = true)
     private val activity: android.app.Activity = mockk(relaxed = true)
     private lateinit var vm: AuthViewModel
 
@@ -51,7 +53,8 @@ class AuthViewModelTest {
             passkeyService = passkeyService,
             tokenProvider = tokenProvider,
             notificationHelper = notificationHelper,
-            pendingActionDao = pendingActionDao
+            pendingActionDao = pendingActionDao,
+            vaultAssociationStore = vaultAssociationStore
         )
     }
 
@@ -92,6 +95,15 @@ class AuthViewModelTest {
 
         verify { tokenProvider.clear() }
         assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `signOut clears local vault associations but leaves the synced copy alone`() = runTest {
+        // #200: only clearAll() (the local store) is called on sign-out — the associations
+        // synced to another still-signed-in device must not be wiped from here.
+        vm.signOut()
+
+        verify { vaultAssociationStore.clearAll() }
     }
 
     @Test
@@ -228,6 +240,145 @@ class AuthViewModelTest {
         repeat(2) { vm.signIn(activity) }
 
         assertEquals(0, vm.state.value.cooldownRemainingSeconds)
+    }
+
+    // MARK: - #211 Account recovery — expired recovery token
+
+    @Test
+    fun `sendRecoveryCode success stores the recovery token`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+
+        vm.sendRecoveryCode("alice")
+
+        assertEquals("recovery-token-123", vm.state.value.recoveryToken)
+        assertNull(vm.state.value.error)
+    }
+
+    @Test
+    fun `finishRecovery success authenticates and clears the recovery token`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns Result.success(Unit)
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertTrue(vm.state.value.isAuthenticated)
+        assertNull(vm.state.value.recoveryToken)
+    }
+
+    @Test
+    fun `finishRecovery with expired token surfaces a clear error and resets to the send-code step`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns
+            Result.failure(com.ethosprotocol.api.ApiCallFailedException(
+                "Your recovery code has expired. Please request a new one.", 401
+            ))
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertFalse(vm.state.value.isAuthenticated)
+        assertEquals("Your recovery code has expired. Please request a new one.", vm.state.value.error)
+        assertNull("An expired recovery token must not leave the user on the same dead-end step",
+            vm.state.value.recoveryToken)
+    }
+
+    @Test
+    fun `finishRecovery with a non-expiry failure keeps the recovery token so the user can retry`() = runTest {
+        val response = com.ethosprotocol.models.RecoveryInitiateResponse(
+            recoveryToken = "recovery-token-123", expiresAt = "2099-01-01T00:00:00Z"
+        )
+        coEvery { apiClient.initiateRecovery(any()) } returns ApiResult.Success(response)
+        coEvery { passkeyService.recoverAccount(activity, "alice", "recovery-token-123") } returns
+            Result.failure(RuntimeException("device error"))
+        vm.sendRecoveryCode("alice")
+
+        vm.finishRecovery(activity, "alice")
+
+        assertFalse(vm.state.value.isAuthenticated)
+        assertEquals("recovery-token-123", vm.state.value.recoveryToken)
+    }
+
+    // MARK: - #209 Scheduled proactive token refresh
+
+    @Test
+    fun `scheduled refresh fires while signed in and near expiry, keeping the user authenticated`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        val refreshedToken = com.ethosprotocol.models.AuthToken(token = "new-token", expiresAt = "2099-01-01T00:00:00Z")
+        coEvery { apiClient.refreshToken() } returns ApiResult.Success(refreshedToken)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(atLeast = 1) { apiClient.refreshToken() }
+        verify { tokenProvider.setSession(refreshedToken) }
+        assertTrue(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh rejected with 401 signs the user out`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.Error("Unauthorized", 401)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        assertFalse(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh transient failure does not sign the user out`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.NetworkUnavailable
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        assertTrue(vm.state.value.isAuthenticated)
+    }
+
+    @Test
+    fun `scheduled refresh does not fire when token is not near expiry`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns false
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+
+        vm.signIn(activity)
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(exactly = 0) { apiClient.refreshToken() }
+    }
+
+    @Test
+    fun `signOut cancels the scheduled refresh loop`() = runTest {
+        every { tokenProvider.token } returns "token-value"
+        every { tokenProvider.isNearExpiry() } returns true
+        coEvery { passkeyService.authenticate(activity) } returns Result.success(Unit)
+        coEvery { apiClient.refreshToken() } returns ApiResult.Success(
+            com.ethosprotocol.models.AuthToken(token = "new-token", expiresAt = "2099-01-01T00:00:00Z")
+        )
+
+        vm.signIn(activity)
+        vm.signOut()
+        every { tokenProvider.token } returns null
+        testDispatcher.scheduler.advanceTimeBy(31_000)
+
+        coVerify(exactly = 0) { apiClient.refreshToken() }
     }
 
     @Test

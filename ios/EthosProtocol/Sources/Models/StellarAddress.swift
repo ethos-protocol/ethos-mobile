@@ -1,15 +1,34 @@
 import Foundation
 
-// Validates Stellar "G..." account IDs (StrKey-encoded ed25519 public keys) so a
-// malformed beneficiary address is caught before it round-trips to the server.
-// Structure per the StrKey spec: 1-byte version (6 << 3 for an ed25519 public
-// key) + 32-byte payload + 2-byte CRC16/XModem checksum, base32-encoded
-// (RFC 4648, no padding) to exactly 56 characters starting with "G". Kept
-// dependency-free (no external Stellar SDK) since this is the only check the
-// app needs. Shared wherever a Stellar address needs the same validation (#113).
+// Validates Stellar addresses: both ed25519 public keys (G..., 56 chars) and
+// muxed accounts (M..., 69 chars per SEP-0023) so a malformed beneficiary address
+// is caught before it round-trips to the server.
+// Public key structure: 1-byte version (6 << 3 for ed25519 public key) + 32-byte
+// payload + 2-byte CRC16/XModem checksum, base32-encoded (RFC 4648, no padding)
+// to exactly 56 characters starting with "G".
+// Muxed account structure: 1-byte version (12 << 3 for muxed ed25519) + 32-byte
+// payload + 8-byte memo ID + 2-byte CRC16/XModem checksum, base32-encoded to
+// exactly 69 characters starting with "M" (SEP-0023).
+// Kept dependency-free (no external Stellar SDK) since this is the only check the
+// app needs. Shared wherever a Stellar address needs validation (#264, #113).
 enum StellarAddress {
     private static let base32Alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
-    private static let ed25519PublicKeyVersionByte: UInt8 = 6 << 3
+    private static let ed25519PublicKeyVersionByte: UInt8 = 6 << 3        // 0x30
+    private static let muxedAccountVersionByte: UInt8 = 12 << 3           // 0x60
+
+    /// Sanitizes a Stellar address by removing leading/trailing whitespace and
+    /// common invisible characters before validation. Call this when accepting
+    /// user input (especially from clipboard paste) before passing to [isValidPublicKey].
+    static func sanitize(_ input: String) -> String {
+        return input
+            .trimmingCharacters(in: .whitespaces)
+            // Remove common invisible/zero-width characters
+            .replacingOccurrences(of: "\u{200B}", with: "") // Zero-width space
+            .replacingOccurrences(of: "\u{200C}", with: "") // Zero-width non-joiner
+            .replacingOccurrences(of: "\u{200D}", with: "") // Zero-width joiner
+            .replacingOccurrences(of: "\u{200E}", with: "") // Left-to-right mark
+            .replacingOccurrences(of: "\u{200F}", with: "") // Right-to-left mark
+    }
 
     // #268: Detects the federation-address shape (user*domain.com).
     // Federation addresses use a `*` separator between the local name and the
@@ -25,13 +44,31 @@ enum StellarAddress {
     }
 
     static func isValidPublicKey(_ value: String) -> Bool {
-        guard value.count == 56, value.hasPrefix("G") else { return false }
+        guard value.count == 56, value.hasPrefix("G") else {
+            // Try muxed account validation if not a G-address
+            return isValidMuxedAccount(value)
+        }
+        return isValidGAddress(value)
+    }
+
+    private static func isValidGAddress(_ value: String) -> Bool {
         guard let decoded = base32Decode(value), decoded.count == 35 else { return false }
         guard decoded[0] == ed25519PublicKeyVersionByte else { return false }
 
         let versionAndPayload = Array(decoded[0..<33])
         let expectedChecksum = crc16XModem(versionAndPayload)
         let actualChecksum = UInt16(decoded[33]) | (UInt16(decoded[34]) << 8)
+        return expectedChecksum == actualChecksum
+    }
+
+    private static func isValidMuxedAccount(_ value: String) -> Bool {
+        guard value.count == 69, value.hasPrefix("M") else { return false }
+        guard let decoded = base32Decode(value), decoded.count == 43 else { return false }
+        guard decoded[0] == muxedAccountVersionByte else { return false }
+
+        let versionPayloadAndMemo = Array(decoded[0..<41])
+        let expectedChecksum = crc16XModem(versionPayloadAndMemo)
+        let actualChecksum = UInt16(decoded[41]) | (UInt16(decoded[42]) << 8)
         return expectedChecksum == actualChecksum
     }
 

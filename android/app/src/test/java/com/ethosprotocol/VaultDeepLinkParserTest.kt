@@ -2,6 +2,7 @@ package com.ethosprotocol
 
 import com.ethosprotocol.services.VaultDeepLinkAction
 import com.ethosprotocol.services.VaultDeepLinkParser
+import com.ethosprotocol.services.DeepLinkSource
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests for [VaultDeepLinkParser] and [VaultDeepLinkParser.isValidVaultId].
+ * Tests for [VaultDeepLinkParser], [VaultDeepLinkParser.isValidVaultId], and [DeepLinkSource].
  *
  * The happy-path tests at the top verify correct parsing of well-formed URIs.
  *
@@ -18,6 +19,9 @@ import org.junit.Test
  * source comment on [VaultDeepLinkParser] — vault IDs are interpolated directly into API
  * paths and Compose navigation routes, so any character outside `[A-Za-z0-9_-]{1,128}` must
  * be rejected *before* the value reaches those consumers.
+ *
+ * The source parameter tests (see #260) verify that deep link attribution is tracked for
+ * analytics purposes without logging sensitive vault data.
  *
  * Cross-link: #37 — iOS's port of the same validation should maintain test parity with this
  * file.
@@ -74,6 +78,70 @@ class VaultDeepLinkParserTest {
     @Test
     fun parseUrl_missingActionSegment_returnsNull() {
         assertNull(VaultDeepLinkParser.parseUrl("ethosprotocol://vault/v1"))
+    }
+
+    // =========================================================================
+    // #260 — Analytics source parameter
+    // =========================================================================
+
+    @Test
+    fun parseUrl_withPushSource_roundTripsCorrectly() {
+        val result = VaultDeepLinkParser.parseUrl(
+            "ethosprotocol://vault/vault-1/check-in",
+            source = DeepLinkSource.PUSH_NOTIFICATION
+        )
+        assertEquals("vault-1", result?.vaultId)
+        assertEquals(VaultDeepLinkAction.CHECK_IN, result?.action)
+        assertEquals(DeepLinkSource.PUSH_NOTIFICATION, result?.source)
+    }
+
+    @Test
+    fun parseUrl_withEmailSource_roundTripsCorrectly() {
+        val result = VaultDeepLinkParser.parseUrl(
+            "ethosprotocol://vault/vault-1/check-in",
+            source = DeepLinkSource.EMAIL
+        )
+        assertEquals(DeepLinkSource.EMAIL, result?.source)
+    }
+
+    @Test
+    fun parseUrl_withShareSource_roundTripsCorrectly() {
+        val result = VaultDeepLinkParser.parseUrl(
+            "ethosprotocol://vault/vault-1/check-in",
+            source = DeepLinkSource.SHARE_LINK
+        )
+        assertEquals(DeepLinkSource.SHARE_LINK, result?.source)
+    }
+
+    @Test
+    fun parseUrl_withWidgetSource_roundTripsCorrectly() {
+        val result = VaultDeepLinkParser.parseUrl(
+            "ethosprotocol://vault/vault-1/check-in",
+            source = DeepLinkSource.WIDGET
+        )
+        assertEquals(DeepLinkSource.WIDGET, result?.source)
+    }
+
+    @Test
+    fun parseUrl_defaultSource_isUnknown() {
+        // Source defaults to UNKNOWN if not specified
+        val result = VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-1/check-in")
+        assertEquals(DeepLinkSource.UNKNOWN, result?.source)
+    }
+
+    @Test
+    fun deepLinkSourceFromString_validSources_parsedCorrectly() {
+        assertEquals(DeepLinkSource.PUSH_NOTIFICATION, DeepLinkSource.fromString("push"))
+        assertEquals(DeepLinkSource.EMAIL, DeepLinkSource.fromString("email"))
+        assertEquals(DeepLinkSource.SHARE_LINK, DeepLinkSource.fromString("share"))
+        assertEquals(DeepLinkSource.WIDGET, DeepLinkSource.fromString("widget"))
+    }
+
+    @Test
+    fun deepLinkSourceFromString_invalidSource_defaultsToUnknown() {
+        assertEquals(DeepLinkSource.UNKNOWN, DeepLinkSource.fromString("invalid"))
+        assertEquals(DeepLinkSource.UNKNOWN, DeepLinkSource.fromString(null))
+        assertEquals(DeepLinkSource.UNKNOWN, DeepLinkSource.fromString(""))
     }
 
     // =========================================================================
@@ -264,6 +332,123 @@ class VaultDeepLinkParserTest {
         assertNull(
             VaultDeepLinkParser.parseUrl("ethosprotocol://vault/../../etc/passwd/check-in")
         )
+    }
+
+    // =========================================================================
+    // #258 — parseRecoveryLink
+    // =========================================================================
+
+    @Test
+    fun parseRecoveryLink_wellFormedUrl_returnsRecoveryDeepLink() {
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link?token=abc123-XYZ")
+        val result = VaultDeepLinkParser.parseRecoveryLink(uri)
+        assertEquals("abc123-XYZ", result?.token)
+    }
+
+    @Test
+    fun parseRecoveryLink_missingToken_returnsNull() {
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_emptyToken_returnsNull() {
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link?token=")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_wrongScheme_returnsNull() {
+        val uri = android.net.Uri.parse("http://ethos-protocol.app/auth/recover/link?token=abc123")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_customScheme_returnsNull() {
+        val uri = android.net.Uri.parse("ethosprotocol://ethos-protocol.app/auth/recover/link?token=abc123")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_wrongHost_returnsNull() {
+        val uri = android.net.Uri.parse("https://evil.com/auth/recover/link?token=abc123")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_wrongPath_returnsNull() {
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/reset/link?token=abc123")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_invalidToken_returnsNull() {
+        // Token with disallowed characters must be rejected.
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link?token=abc%40evil")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_overLengthToken_returnsNull() {
+        val longToken = "a".repeat(129)
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link?token=$longToken")
+        assertNull(VaultDeepLinkParser.parseRecoveryLink(uri))
+    }
+
+    @Test
+    fun parseRecoveryLink_maxLengthToken_accepted() {
+        val maxToken = "a".repeat(128)
+        val uri = android.net.Uri.parse("https://ethos-protocol.app/auth/recover/link?token=$maxToken")
+        val result = VaultDeepLinkParser.parseRecoveryLink(uri)
+        assertEquals(maxToken, result?.token)
+    }
+
+    // =========================================================================
+    // #259 — Client-side vault ID ownership validation
+    // =========================================================================
+
+    @After
+    fun resetOwnerVaultIds() {
+        VaultDeepLinkParser.ownerVaultIds = null
+    }
+
+    @Test
+    fun parseUrl_vaultIdOwnedByUser_returnsDeepLink() {
+        VaultDeepLinkParser.ownerVaultIds = setOf("vault-mine")
+        val result = VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-mine/check-in")
+        assertEquals("vault-mine", result?.vaultId)
+    }
+
+    @Test
+    fun parseUrl_vaultIdNotOwnedByUser_returnsNull() {
+        VaultDeepLinkParser.ownerVaultIds = setOf("vault-mine")
+        // A vault the signed-in user does not own must be rejected client-side.
+        // The error must not reveal whether the vault exists at all.
+        val result = VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-someone-elses/check-in")
+        assertNull(result)
+    }
+
+    @Test
+    fun parseUrl_ownerVaultIdsNull_skipOwnershipCheck() {
+        // When the vault list has not been loaded yet (null = unknown), the ownership
+        // check is skipped so the deep link still routes — the server will 403 if needed.
+        VaultDeepLinkParser.ownerVaultIds = null
+        val result = VaultDeepLinkParser.parseUrl("ethosprotocol://vault/vault-abc-123/check-in")
+        assertEquals("vault-abc-123", result?.vaultId)
+    }
+
+    @Test
+    fun parse_vaultIdNotOwnedByUser_returnsNull() {
+        VaultDeepLinkParser.ownerVaultIds = setOf("vault-mine")
+        val uri = android.net.Uri.parse("ethosprotocol://vault/vault-other/check-in")
+        assertNull(VaultDeepLinkParser.parse(uri))
+    }
+
+    @Test
+    fun parse_emptyOwnerSet_rejectsAllVaultIds() {
+        VaultDeepLinkParser.ownerVaultIds = emptySet()
+        val uri = android.net.Uri.parse("ethosprotocol://vault/vault-abc/check-in")
+        assertNull(VaultDeepLinkParser.parse(uri))
     }
 }
 

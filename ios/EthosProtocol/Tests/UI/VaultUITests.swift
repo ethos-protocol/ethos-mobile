@@ -57,6 +57,44 @@ final class VaultUITests: XCTestCase {
         }
     }
 
+    // MARK: - #215 Create Vault Confirmation Step
+
+    func testCreateVaultView_next_showsConfirmationBeforeCreating() throws {
+        let createButton = app.buttons["plus"]
+        guard createButton.exists else { return }
+        createButton.tap()
+
+        // A syntactically valid Stellar public key: 56 chars, starts with 'G'.
+        app.textFields["Stellar address"].tap()
+        app.textFields["Stellar address"].typeText("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+
+        let nextButton = app.buttons["Next"]
+        guard nextButton.exists, nextButton.isEnabled else { return }
+        nextButton.tap()
+
+        XCTAssertTrue(app.navigationBars["Confirm Vault"].exists, "Submitting the form should open a review step, not create the vault directly")
+        XCTAssertTrue(app.buttons["Confirm & Create"].exists, "Review step must require an explicit confirmation before creating")
+    }
+
+    func testCreateVaultView_back_returnsToInputFormWithoutCreating() throws {
+        let createButton = app.buttons["plus"]
+        guard createButton.exists else { return }
+        createButton.tap()
+
+        app.textFields["Stellar address"].tap()
+        app.textFields["Stellar address"].typeText("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+
+        let nextButton = app.buttons["Next"]
+        guard nextButton.exists, nextButton.isEnabled else { return }
+        nextButton.tap()
+
+        let backButton = app.buttons["Back"]
+        if backButton.exists {
+            backButton.tap()
+            XCTAssertTrue(app.navigationBars["New Vault"].exists, "Back must return to the editable form")
+        }
+    }
+
     // MARK: - Vault Detail and Check-in
 
     func testVaultDetailView_displaysVaultInfo() throws {

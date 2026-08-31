@@ -109,6 +109,20 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         center.removeDeliveredNotifications(withIdentifiers: [Self.queuedCheckInIdentifier])
     }
 
+    func showVaultExpiredNotification(vaultId: String) {
+        let center = UNUserNotificationCenter.current()
+        let identifier = "vault-expired-\(vaultId)"
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in Failed \u{2014} Vault Expired"
+        content.body = "A queued check-in was discarded because this vault already expired while you were offline. The vault may have released funds to the beneficiary."
+        content.sound = .default
+        content.userInfo = ["vault_id": vaultId]
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        center.add(request)
+    }
+
     func removeAllPendingNotifications() {
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
     }
