@@ -1245,6 +1245,41 @@ final class StellarAddressTests: XCTestCase {
     func test_isValidPublicKey_rejectsEmptyString() {
         XCTAssertFalse(StellarAddress.isValidPublicKey(""))
     }
+
+    // Mutation-testing gap-fill (see shared/MUTATION_TESTING.md): a Mull run
+    // against this file found the version-byte check (step 5) and a
+    // non-final-character checksum corruption (step 6) had no dedicated
+    // fixture, so mutants in those specific branches survived even though
+    // "broad" valid/invalid coverage looked complete.
+
+    func test_isValidPublicKey_rejectsCorrectPrefixAndChecksumButWrongVersionByte() {
+        // Decodes to a structurally valid 35-byte value with an internally
+        // consistent CRC-16/XModem checksum, but decoded[0] == 0x31 instead
+        // of the required 0x30. Prefix, length, and character-set checks all
+        // pass here — only the explicit version-byte comparison rejects it.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBDI"
+        ))
+    }
+
+    func test_isValidPublicKey_rejectsChecksumCorruptedInMiddleNotLastChar() {
+        // Same all-zero payload as `validAddress`, but the corruption is at
+        // index 27 rather than the trailing checksum characters, so this
+        // exercises the checksum comparison independently of the "last
+        // character changed" fixture above.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    func test_isValidPublicKey_rejectsInvalidCharacterAsLastCharacter() {
+        // Guards against an off-by-one loop-boundary mutant in the
+        // character-set scan that would only check up to, but not
+        // including, the final index.
+        XCTAssertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0"
+        ))
+    }
 }
 
 // MARK: - #18 Retry With Exponential Backoff Tests

@@ -302,4 +302,52 @@ class MemoValidatorTest {
         val nonHex = "G".repeat(64) // G is not in hex
         assertFalse(MemoValidator.isValidHashMemo(nonHex))
     }
+
+    // -------------------------------------------------------------------------
+    // Mutation-testing gap-fill (see shared/MUTATION_TESTING.md).
+    //
+    // The cases above exercise length, prefix, character-set, and a
+    // last-character checksum corruption, but a mutation-testing pass
+    // (PIT-style) against this file found two reject conditions from
+    // `shared/stellar-validation-spec.md` that survived every existing test:
+    // the version-byte check (step 5) and a checksum corruption that isn't
+    // at the final character (step 6, different code path than the
+    // last-char case above). Both are added below with fixtures generated
+    // directly from the spec's algorithm so they fail for the *specific*
+    // reason named, not coincidentally.
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `isValidPublicKey rejects address with correct prefix and checksum but wrong version byte`() {
+        // Decodes to a valid 35-byte structure with an internally-consistent
+        // CRC-16/XModem checksum, but decoded[0] == 0x31, not the required
+        // 0x30. Prefix ('G'), length, and character-set checks all pass —
+        // only step 5 (version byte) catches this. A mutant that deletes or
+        // inverts the version-byte comparison would let this through.
+        assertFalse(StellarAddress.isValidPublicKey(
+            "GEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBDI"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey rejects address with checksum corrupted in the middle, not the last char`() {
+        // Same payload as the all-zero valid address, but character index 27
+        // (well before the two trailing checksum characters) is flipped.
+        // This exercises the checksum comparison against a corruption that
+        // propagates through the middle of the decoded payload, rather than
+        // only ever testing a corruption confined to the final character.
+        assertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        ))
+    }
+
+    @Test
+    fun `isValidPublicKey rejects address containing invalid character as the last character`() {
+        // Character-set violations were only tested mid-string previously;
+        // a mutant in a loop's boundary condition (e.g. `< length - 1`
+        // instead of `< length`) would only be caught by checking the edge.
+        assertFalse(StellarAddress.isValidPublicKey(
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0"
+        ))
+    }
 }
