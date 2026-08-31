@@ -483,6 +483,7 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
+                result.data.vaults.forEach(::scheduleCheckInReminder)
                 subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
@@ -603,6 +604,23 @@ class VaultViewModel @Inject constructor(
 
     private fun updateVaultInPlace(vault: Vault) {
         _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
+        scheduleCheckInReminder(vault)
+    }
+
+    /**
+     * Re-times the vault's check-in reminders whenever its TTL changes (#197). Reminders are
+     * only meaningful while the vault is active; any other status cancels them.
+     */
+    private fun scheduleCheckInReminder(vault: Vault) {
+        if (vault.status == VaultStatus.active) {
+            notificationHelper.scheduleCheckInReminder(
+                vaultId = vault.id,
+                ttlRemaining = vault.ttlRemaining,
+                checkInInterval = vault.checkInInterval
+            )
+        } else {
+            notificationHelper.cancelCheckInReminders(vault.id)
+        }
     }
 
     /// Update the beneficiary for a vault (owner-only). On success the vault list is
