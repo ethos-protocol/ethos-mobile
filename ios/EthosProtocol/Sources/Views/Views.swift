@@ -609,6 +609,50 @@ struct StatusBadge: View {
     }
 }
 
+// MARK: - Connection Status Badge (#255)
+
+/// Small "Live" / "Reconnecting" / "Polling" indicator driven by the WebSocket state.
+struct ConnectionStatusBadge: View {
+    let state: VaultEventSocket.ConnectionState
+
+    var body: some View {
+        Label(label, systemImage: icon)
+            .font(.caption2.bold())
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.1))
+            .clipShape(Capsule())
+    }
+
+    private var label: String {
+        switch state {
+        case .connected:         return "Live"
+        case .connecting:        return "Connecting…"
+        case .disconnected:      return "Reconnecting…"
+        case .fallbackToPolling: return "Polling"
+        }
+    }
+
+    private var icon: String {
+        switch state {
+        case .connected:         return "dot.radiowaves.left.and.right"
+        case .connecting:        return "dot.radiowaves.left.and.right"
+        case .disconnected:      return "arrow.clockwise"
+        case .fallbackToPolling: return "arrow.clockwise"
+        }
+    }
+
+    private var color: Color {
+        switch state {
+        case .connected:         return .green
+        case .connecting:        return .blue
+        case .disconnected:      return .orange
+        case .fallbackToPolling: return .gray
+        }
+    }
+}
+
 // MARK: - Vault Detail
 
 struct VaultDetailView: View {
@@ -645,6 +689,9 @@ struct VaultDetailView: View {
                 }
                 if let ttl = ttlRemaining {
                     LabeledContent("TTL Remaining", value: formatDuration(ttl))
+                }
+                LabeledContent("Connection") {
+                    ConnectionStatusBadge(state: vaultStore.socketConnectionState)
                 }
             }
 

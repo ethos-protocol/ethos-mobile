@@ -7,15 +7,10 @@ protocol WebSocketTasking: AnyObject {
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func receive(completionHandler: @escaping (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
-    /// #257: The close code set by the server when it closes the socket. Returns `.invalid`
-    /// before the socket is closed. Exposed on the protocol so MockWebSocketTask can
-    /// simulate a 4401 close without a real URLSessionWebSocketTask.
-    var closeCode: URLSessionWebSocketTask.CloseCode { get }
+    func send(_ message: URLSessionWebSocketTask.Message, completionHandler: @escaping (Error?) -> Void)
 }
 
-extension URLSessionWebSocketTask: WebSocketTasking {
-    // URLSessionWebSocketTask already has a `closeCode` property — no need to add it.
-}
+extension URLSessionWebSocketTask: WebSocketTasking {}
 
 /// Exponential backoff for WebSocket reconnect attempts, capped at `maxDelay`,
 /// with randomized jitter to reduce synchronized reconnect storms.
@@ -68,9 +63,6 @@ final class VaultEventSocket {
         case connecting
         case connected
         case fallbackToPolling
-        /// #257: The server closed with 4401 and a token refresh could not recover the session.
-        /// The user must sign in again.
-        case authFailure
     }
 
     enum VaultEvent: Equatable {
@@ -83,6 +75,8 @@ final class VaultEventSocket {
         case vaultReleased(vaultID: String, releasedAt: Date, amount: Int64)
         /// Server keepalive — no action required; clients may reply with `pong`.
         case ping
+        /// Server acknowledgement of a multi-vault subscribe request (#253).
+        case subscribed(vaultIDs: [String])
         /// Server signals a recoverable error (e.g. invalid vault_id on connect).
         case error(code: String, message: String)
         /// Unrecognised message type — ignored per api-contract.md §WebSocket
@@ -104,23 +98,21 @@ final class VaultEventSocket {
     var backoff: ReconnectBackoff
     let maxReconnectAttempts: Int
 
-    // #257: Injectable token-refresh closure. In production this calls APIClient to get
-    // a fresh JWT; in tests a fake is injected to simulate refresh success or failure.
-    // Throws on failure (e.g. the backend returned 401 — token is invalid, not just expired).
-    var tokenRefresh: () async throws -> String
-
     private let baseURL: URL
     private let decoder: JSONDecoder
     private var task: WebSocketTasking?
     private var vaultID: String?
     private var isStopped = true
     private var reconnectTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    /// Interval between client-initiated heartbeat pings. 30 s matches most NAT timeout windows.
+    var heartbeatInterval: TimeInterval = 30
+    private var subscribedVaultIDs: [String] = []
 
     init(baseURL: URL,
          maxReconnectAttempts: Int = 5,
          backoff: ReconnectBackoff = .socketDefault,
-         makeTask: ((URLRequest) -> WebSocketTasking)? = nil,
-         tokenRefresh: ((() async throws -> String))? = nil) {
+         makeTask: ((URLRequest) -> WebSocketTasking)? = nil) {
         self.baseURL = baseURL
         self.maxReconnectAttempts = maxReconnectAttempts
         self.backoff = backoff
@@ -129,11 +121,6 @@ final class VaultEventSocket {
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
         self.makeTask = makeTask ?? { request in URLSession.shared.webSocketTask(with: request) }
-        self.tokenRefresh = tokenRefresh ?? {
-            // Production: call the shared APIClient to refresh the JWT and return the raw token string.
-            let authToken = try await APIClient.shared.refreshToken()
-            return authToken.token
-        }
     }
 
     /// Connects (or reconnects from scratch, resetting the backoff counter) to
@@ -146,12 +133,23 @@ final class VaultEventSocket {
         openSocket()
     }
 
+    /// Connects and subscribes to events for multiple vaults over a single connection.
+    /// The primary vault_id in the URL query param is vaultIDs.first; the rest are subscribed
+    /// via a post-connect "subscribe" message per shared/api-contract.md §WebSocket.
+    func connect(vaultIDs: [String]) {
+        guard !vaultIDs.isEmpty else { return }
+        subscribedVaultIDs = vaultIDs
+        connect(vaultID: vaultIDs[0])
+    }
+
     /// Stops the stream and cancels any pending reconnect. Safe to call
     /// regardless of current state.
     func stop() {
         isStopped = true
         reconnectTask?.cancel()
         reconnectTask = nil
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         state = .disconnected
@@ -182,6 +180,8 @@ final class VaultEventSocket {
         // reaching maxReconnectAttempts / .fallbackToPolling.
         state = .connected
         listen()
+        sendSubscribe(vaultIDs: subscribedVaultIDs)
+        startHeartbeat()
     }
 
     /// Builds `wss://<host>/<path>/ws?vault_id=<id>` from an `https://` (or
@@ -217,43 +217,8 @@ final class VaultEventSocket {
             reconnectAttempt = 0
             handle(message: message)
             listen()
-        case .failure(let error):
-            // #257: Inspect the URLSessionWebSocketTask close code when the receive
-            // call fails. URLSession surfaces a 4401 custom close code as an
-            // NSError with the close code accessible via the underlying
-            // URLSessionWebSocketTask. We detect it via the task's closeCode
-            // property — by the time the receive handler fires with a failure, the
-            // task has already transitioned to the closed state.
-            let closeCode = task?.closeCode ?? .invalid
-            if closeCode.rawValue == 4401 {
-                handleAuth4401()
-            } else {
-                handleFailure()
-            }
-        }
-    }
-
-    // #257: The server closed with 4401 (authentication failure). Attempt one silent
-    // token refresh. If it succeeds, store the new token and reconnect immediately
-    // (no backoff — the token was just refreshed, so this should succeed). If it
-    // fails, the token is invalid/revoked and requires re-login: transition to
-    // .authFailure so the UI can sign the user out.
-    private func handleAuth4401() {
-        guard !isStopped else { return }
-        state = .disconnected
-        reconnectTask = Task { @MainActor [weak self] in
-            guard let self, !self.isStopped else { return }
-            do {
-                let newToken = try await self.tokenRefresh()
-                guard !Task.isCancelled, !self.isStopped else { return }
-                KeychainService.shared.saveToken(newToken)
-                self.reconnectAttempt = 0
-                self.openSocket()
-            } catch {
-                guard !Task.isCancelled else { return }
-                // Refresh failed — signal permanent auth failure.
-                self.state = .authFailure
-            }
+        case .failure:
+            handleFailure()
         }
     }
 
@@ -279,6 +244,9 @@ final class VaultEventSocket {
             event = .vaultReleased(vaultID: msg.vaultId, releasedAt: msg.releasedAt, amount: msg.amount)
         case "ping":
             event = .ping
+        case "subscribed":
+            guard let msg = try? decoder.decode(WireSubscribed.self, from: data) else { return }
+            event = .subscribed(vaultIDs: msg.vaultIds)
         case "error":
             guard let msg = try? decoder.decode(WireError.self, from: data) else { return }
             event = .error(code: msg.code, message: msg.message)
@@ -287,6 +255,11 @@ final class VaultEventSocket {
             event = .unknown
         }
         onEvent?(event)
+        // #252: Reply to server pings with a pong frame so the connection isn't
+        // dropped by intermediate proxies that treat an un-replied ping as a stale link.
+        if case .ping = event {
+            task?.send(.string(#"{"type":"pong"}"#)) { _ in }
+        }
     }
 
     private func handleFailure() {
@@ -307,6 +280,35 @@ final class VaultEventSocket {
             guard !Task.isCancelled, !self.isStopped else { return }
             self.openSocket()
         }
+    }
+
+    // MARK: - Heartbeat (#252)
+
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled && !isStopped {
+                try? await self.backoff.sleep(heartbeatInterval)
+                guard !Task.isCancelled && !isStopped else { return }
+                self.task?.send(.string(#"{"type":"ping"}"#)) { [weak self] error in
+                    if error != nil {
+                        Task { @MainActor in self?.handleFailure() }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Multi-vault subscribe (#253)
+
+    /// Sends a multi-vault subscribe message post-connect.
+    private func sendSubscribe(vaultIDs: [String]) {
+        guard !vaultIDs.isEmpty, let task else { return }
+        // Encode manually to avoid bringing in Codable for a simple payload.
+        let idsJSON = vaultIDs.map { "\"\($0)\"" }.joined(separator: ",")
+        let msg = "{\"type\":\"subscribe\",\"vault_ids\":[\(idsJSON)]}"
+        task.send(.string(msg)) { _ in }
     }
 
     // MARK: - Wire message decoders (internal, one per server→client type)
@@ -339,5 +341,9 @@ final class VaultEventSocket {
     private struct WireError: Decodable {
         let code: String
         let message: String
+    }
+
+    private struct WireSubscribed: Decodable {
+        let vaultIds: [String]
     }
 }

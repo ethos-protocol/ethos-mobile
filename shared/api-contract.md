@@ -159,6 +159,14 @@ deposit, withdrawal, beneficiary change, status transition).
 { "type": "ping" }
 ```
 
+**`subscribed`** — server acknowledgement of a client `subscribe` request.
+```json
+{
+  "type": "subscribed",
+  "vault_ids": ["string", "..."]
+}
+```
+
 **`error`** — server signals a recoverable error (e.g. invalid vault_id on connect).
 ```json
 {
@@ -175,11 +183,39 @@ deposit, withdrawal, beneficiary change, status transition).
 { "type": "pong" }
 ```
 
+**`subscribe`** — sent immediately after connect to subscribe to additional vault IDs on the same connection, supporting N vaults over a single WebSocket rather than N connections.
+```json
+{
+  "type": "subscribe",
+  "vault_ids": ["string", "..."]
+}
+```
+The server routes subsequent `vault_updated`/`vault_expired`/`vault_released` events for all listed vault IDs over this connection. Clients connecting to a single vault via the URL query parameter need not send `subscribe`. The server acknowledges with a `subscribed` message.
+
 #### Connection lifecycle
 - Reconnect with exponential backoff (base 1 s, max 60 s) on any non-4401 close.
 - On `vault_updated`, merge the embedded `vault` object into the local vault list in-place
   (do not full-reload from REST).
 - On `vault_expired` / `vault_released`, trigger a local notification if the app is backgrounded.
+- Client SHOULD send a `pong` text frame in response to every `ping` to signal liveness to the server.
+- Client SHOULD also send periodic `ping` frames (interval: 30 s) to detect silently-dead TCP connections before the OS closes the socket. If the send fails, the client MUST treat it as a connection drop and reconnect with backoff.
+- If the server closes the socket with code 4401, do NOT reconnect — re-authenticate first.
+
+### Backoff/Jitter Formula (#254)
+
+Both platforms use full-jitter exponential backoff for WebSocket reconnects:
+
+```
+base_delay = 1 s
+max_delay  = 30 s
+capped     = min(max_delay, base_delay * 2^attempt)
+actual     = random_uniform(0, capped)
+```
+
+- `attempt` is 0-based and resets to 0 on the first message successfully received from a new connection.
+- Full jitter (not additive) spreads reconnect storms across the full `[0, capped)` window instead of clustering near `capped`.
+- iOS: `ReconnectBackoff.delay(forAttempt:)` in `VaultEventSocket.swift`.
+- Android: `ReconnectBackoff.delayForAttempt()` in `VaultEventSocket.kt`.
 
 ---
 
