@@ -674,9 +674,11 @@ fun ManageBeneficiaryScreen(
     var newBeneficiary by remember { mutableStateOf("") }
     var showConfirmation by remember { mutableStateOf(false) }
 
-    // The server rejects an address that is empty or unchanged. Mirror the same
-    // validation used by iOS BeneficiaryUpdate.isValidNewBeneficiary().
-    val isAddressValid = newBeneficiary.trim().isNotEmpty() && newBeneficiary.trim() != vault.beneficiary
+    // The server rejects an address that is empty, unchanged, or not a syntactically valid
+    // Stellar StrKey address. Mirror the same validation used by CreateVaultDialog (#113) and
+    // iOS BeneficiaryUpdate.isValidNewBeneficiary().
+    val isAddressValid = StellarAddress.isValidPublicKey(newBeneficiary.trim()) &&
+        newBeneficiary.trim() != vault.beneficiary
 
     LaunchedEffect(state.beneficiaryUpdated) {
         if (state.beneficiaryUpdated) {
@@ -748,7 +750,7 @@ fun ManageBeneficiaryScreen(
                 modifier = Modifier.fillMaxWidth(),
                 isError = newBeneficiary.isNotEmpty() && !isAddressValid,
                 supportingText = if (newBeneficiary.isNotEmpty() && !isAddressValid) {
-                    { Text("Enter a non-empty address that differs from the current beneficiary.") }
+                    { Text("Enter a valid Stellar address that differs from the current beneficiary.") }
                 } else null
             )
             state.error?.let {
@@ -768,6 +770,30 @@ fun ManageBeneficiaryScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Cancel") }
         }
+    }
+}
+
+/**
+ * Loads [vaultId]'s current [Vault] before handing off to [ManageBeneficiaryScreen], which
+ * needs the full vault (for the current beneficiary) rather than just its id.
+ */
+@Composable
+fun ManageBeneficiaryRoute(
+    vaultId: String,
+    onDone: () -> Unit,
+    vm: VaultViewModel = hiltViewModel()
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val vault = state.vaults.find { it.id == vaultId }
+
+    LaunchedEffect(Unit) { vm.load() }
+
+    if (vault == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+    } else {
+        ManageBeneficiaryScreen(vault = vault, onDone = onDone, vm = vm)
     }
 }
 
@@ -1553,15 +1579,25 @@ private fun TwoFactorVerifyScreen(
 fun VaultDetailScreen(
     vaultId: String,
     onBack: () -> Unit,
-    twoFactorVm: TwoFactorViewModel = hiltViewModel()
+    onDeposit: () -> Unit = {},
+    onWithdraw: (Long) -> Unit = {},
+    onManageBeneficiary: () -> Unit = {},
+    twoFactorVm: TwoFactorViewModel = hiltViewModel(),
+    vaultVm: VaultViewModel = hiltViewModel()
 ) {
     val state by twoFactorVm.state.collectAsStateWithLifecycle()
+    val vaultState by vaultVm.state.collectAsStateWithLifecycle()
+    val vault = vaultState.vaults.find { it.id == vaultId }
     val context = LocalContext.current
     var showSetup by remember { mutableStateOf(false) }
     var showVerify by remember { mutableStateOf(false) }
     var biometricError by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(vaultId) { twoFactorVm.loadStatus(vaultId) }
+    // Vaults are shown in this screen via balance/beneficiary fields that VaultListScreen's
+    // already-loaded state doesn't carry across (a new VaultViewModel instance is created for
+    // this destination), so this screen loads them itself, matching VaultListScreen's own load().
+    LaunchedEffect(Unit) { vaultVm.load() }
 
     if (showSetup) {
         TwoFactorSetupScreen(
@@ -1588,6 +1624,36 @@ fun VaultDetailScreen(
                 .padding(16.dp)
                 .fillMaxSize()
         ) {
+            Text("Funds", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            vault?.let {
+                Text("Balance: ${it.formattedBalance}", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+            }
+            Button(onClick = onDeposit, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
+                Text("Deposit")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { vault?.let { onWithdraw(it.balance) } },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = vault != null
+            ) {
+                Text("Withdraw")
+            }
+            Spacer(Modifier.height(24.dp))
+
+            Text("Beneficiary", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            vault?.let {
+                Text(it.beneficiary, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(8.dp))
+            }
+            OutlinedButton(onClick = onManageBeneficiary, modifier = Modifier.fillMaxWidth(), enabled = vault != null) {
+                Text("Manage Beneficiary")
+            }
+            Spacer(Modifier.height(24.dp))
+
             Text("Two-Factor Authentication", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
 
