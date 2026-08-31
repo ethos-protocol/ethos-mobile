@@ -443,6 +443,16 @@ struct VaultListView: View {
             .onChange(of: vaultStore.pendingDeepLink) { _, link in
                 if link != nil { showDeepLinkSheet = true }
             }
+            // #a11y-live-region: the offline banner being labeled isn't enough — VoiceOver only
+            // announces a view on first appearance or on an explicit accessibility notification.
+            // vaultsCacheAge flipping between nil (online) and non-nil (offline) needs an
+            // explicit UIAccessibility.post(notification: .announcement) so the transition
+            // itself — not just the banner's static label — reaches a VoiceOver user, matching
+            // the Android-side announceForAccessibility fix in Screens.kt.
+            .onChange(of: vaultStore.vaultsCacheAge == nil) { wasOnlineBefore, isOnlineNow in
+                let message = isOnlineNow ? "Back online" : "Offline — showing cached data"
+                UIAccessibility.post(notification: .announcement, argument: message)
+            }
             // #118: Non-blocking jailbreak warning — dismissible by the user.
             .alert("Security Warning", isPresented: $showIntegrityWarning) {
                 Button("I Understand", role: .cancel) { showIntegrityWarning = false }
