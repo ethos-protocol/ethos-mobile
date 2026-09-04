@@ -4,7 +4,7 @@ This document tracks the implementation status of every user-facing feature acro
 the iOS and Android clients. Update it whenever a platform-specific change is made
 (see [Contributing](#contributing)).
 
-Last audited: 2026-07-27
+Last audited: 2026-08-31
 
 ---
 
@@ -66,8 +66,8 @@ Last audited: 2026-07-27
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |
 | Offline read cache (SHA-256 keyed) | ✅ | ✅ | |
-| Offline check-in queue + WorkManager retry | ❌ | ✅ | iOS has no persistent offline queue; mutations fail with an error banner |
-| Offline queue badge / notification | ❌ | ✅ | |
+| Offline check-in queue + WorkManager retry | ✅ | ✅ | iOS: PendingCheckInStore + CheckInSyncTask; Android: PendingActionDao + WorkManager |
+| Offline queue badge / notification | ✅ | ✅ | iOS: queuedCheckInCount in Stores; Android: BadgeService broadcasts queue updates | |
 | **Widget** | | | |
 | Home-screen vault TTL widget | ✅ | ✅ | iOS: WidgetKit TTLWidget; Android: VaultStatusWidget (Glance) |
 | TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (#TBD) |

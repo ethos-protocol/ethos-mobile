@@ -45,10 +45,14 @@ import org.junit.Test
  *   - VaultListScreen (empty state)
  *   - VaultListScreen (populated)
  *   - AuthScreen
- *   - DepositScreen
- *   - WithdrawScreen
- *   - BeneficiaryAcceptanceScreen
+ *   - DepositScreen (with light and dark mode coverage)
+ *   - WithdrawScreen (with light and dark mode coverage)
+ *   - ManageBeneficiaryScreen (with light and dark mode coverage, when implemented in #87)
+ *   - BeneficiaryAcceptanceScreen (with light and dark mode coverage)
  *   - VaultDeepLinkScreen (check-in action)
+ *
+ * Issue #296: Deposit, Withdraw, and Manage-Beneficiary snapshots are reconciled
+ * against pre-existing golden images to ensure they match the current implementation.
  */
 
 // ---------------------------------------------------------------------------
