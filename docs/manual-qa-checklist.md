@@ -17,14 +17,14 @@ Covers Android issue #android-a11y-font-scale (mirrors iOS #45).
 
 ## TalkBack / VoiceOver pass
 
-Covers Android issue #android-a11y-content-descriptions (mirrors iOS #44).
-
 - [ ] Android: enable TalkBack and swipe through Auth, Vault list (including the offline banner
-      and expiring-soon warning), Beneficiary acceptance, and 2FA screens. Confirm state-carrying
-      icons (offline, warning, lock/security context) are announced, and decorative icons are
-      silently skipped.
+      and empty state), Vault detail, Beneficiary acceptance, and 2FA flows. Every interactive
+      element must have a meaningful label; decorative images must be marked hidden.
+- [ ] **Widget:** add the home-screen VaultStatusWidget to the TalkBack pass. Long-press the
+      widget and verify TalkBack announces the vault name, TTL, balance, and beneficiary with
+      meaningful labels (not just raw text).
 - [ ] iOS: run the equivalent VoiceOver pass per #44.
-
+- [ ] **Widget:** add the home-screen TTLWidget to the VoiceOver pass and verify labels.
 ## OTP field accessibility (TalkBack / VoiceOver)
 
 Covers issue #230.
