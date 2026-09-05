@@ -147,12 +147,16 @@ class VaultStatusWidget : AppWidgetProvider() {
 
             val views = RemoteViews(context.packageName, layoutId).apply {
                 setTextViewText(R.id.widget_vault_name, vaultName)
+                setContentDescription(R.id.widget_vault_name, "Vault name: $vaultName")
                 setTextViewText(R.id.widget_ttl, "TTL: $ttl")
+                setContentDescription(R.id.widget_ttl, "Time to live: $ttl")
                 // Medium and large layouts include balance / beneficiary views.
                 // setTextViewText on a view that doesn't exist in the current layout is a no-op
                 // for RemoteViews, so these calls are safe across all layout sizes.
                 setTextViewText(R.id.widget_balance, balance)
+                setContentDescription(R.id.widget_balance, "Vault balance: $balance")
                 setTextViewText(R.id.widget_beneficiary, beneficiary)
+                setContentDescription(R.id.widget_beneficiary, "Beneficiary: $beneficiary")
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
             }
             manager.updateAppWidget(widgetId, views)
