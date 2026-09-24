@@ -218,6 +218,7 @@ class ApiClient(
             val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
                 client.get("$baseUrl$path") { bearerAuth() }
             }
+            ApiDebugLog.record("GET", path, response.status.value)
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
@@ -230,6 +231,7 @@ class ApiClient(
                 // recovery token/proof on completeRecovery) — surface it instead of the
                 // generic "Unauthorized" so the caller isn't left with a dead-end message.
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
+                429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
@@ -251,12 +253,14 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            ApiDebugLog.record("POST", path, response.status.value)
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
                 // recovery token/proof on completeRecovery) — surface it instead of the
                 // generic "Unauthorized" so the caller isn't left with a dead-end message.
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
+                429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
@@ -272,6 +276,7 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            ApiDebugLog.record("DELETE", path, response.status.value)
             // Ktor does not throw on non-2xx responses by default, so the status must be
             // checked explicitly here (as get()/post() already do) — otherwise a failed
             // deletion (401/500/etc.) is silently reported back to callers as success.
@@ -281,6 +286,7 @@ class ApiClient(
                 // recovery token/proof on completeRecovery) — surface it instead of the
                 // generic "Unauthorized" so the caller isn't left with a dead-end message.
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
+                429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
@@ -334,6 +340,12 @@ class ApiClient(
     private suspend fun HttpResponse.unauthorizedMessage(): String =
         runCatching { Json.decodeFromString<Map<String, String>>(bodyAsText())["error"] }
             .getOrNull() ?: "Unauthorized"
+
+    private fun HttpResponse.retryAfterMessage(): String {
+        val retryAfter = headers[HttpHeaders.RetryAfter]
+        return if (retryAfter.isNullOrBlank()) "Rate limited. Please retry later."
+            else "Rate limited. Retry after $retryAfter seconds."
+    }
 
     private fun isRetryableNetworkError(e: Throwable): Boolean =
         e is HttpRequestTimeoutException || e is IOException
