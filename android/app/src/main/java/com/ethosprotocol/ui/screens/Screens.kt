@@ -110,6 +110,12 @@ fun AuthScreenContent(
             else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
         }
         Spacer(Modifier.height(8.dp))
+        Text(
+            "Uses passkeys when available; older Android versions fall back to device credentials.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
         TextButton(onClick = onRegister) { Text("Create account") }
     }
 }
@@ -292,7 +298,9 @@ fun VaultListScreen(
                         onRefresh = { vm.load() },
                         modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
                     ) {
-                        LazyColumn {
+                        LazyColumn(
+                            contentPadding = WindowInsets.navigationBars.asPaddingValues()
+                        ) {
                             if (state.isOffline) item {
                                 OfflineBanner()
                             }
@@ -490,14 +498,20 @@ private fun VaultCard(
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = onCheckIn, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text("Check In")
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onDeposit, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("Deposit")
                     }
                     OutlinedButton(onClick = onWithdraw, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.ArrowDownward, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
                         Text("Withdraw")
                     }
                 }
