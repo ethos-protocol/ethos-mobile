@@ -581,6 +581,7 @@ class VaultViewModel @Inject constructor(
     private val pendingActionDao: PendingActionDao,
     private val vaultEventSocket: VaultEventSocket,
     private val expiringVaultsManager: com.ethosprotocol.services.ExpiringVaultsManager,
+    private val offlineCache: com.ethosprotocol.api.OfflineCache,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -594,6 +595,8 @@ class VaultViewModel @Inject constructor(
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
+        // Invalidate cache on manual refresh to ensure fresh data
+        offlineCache.invalidate("/vaults")
         when (val result = apiClient.listVaults(limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
                 nextCursor = result.data.nextCursor

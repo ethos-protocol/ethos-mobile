@@ -48,6 +48,10 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     // "last updated N hours ago" instead of silently serving data. -1L means no expiry enforced.
     internal var maxAgeMs: Long = DEFAULT_MAX_AGE_MS
 
+    // Optional more aggressive TTL (in addition to maxAgeMs) for faster cache invalidation
+    // when needed. Set to non-negative value to enable. -1L means no aggressive TTL enforced.
+    internal var aggressiveTtlMs: Long = -1L
+
     // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
     // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
     // since its resolution varies across filesystems/devices and would make eviction order
@@ -60,6 +64,8 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
 
     init {
         dir.listFiles()?.sortedBy { it.lastModified() }?.forEach { accessOrder[it.name] = Unit }
+        // Clean up expired cache entries on app launch
+        cleanupExpiredEntries()
     }
 
     fun save(key: String, json: String) {
@@ -95,10 +101,35 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
         accessOrder.clear()
     }
 
-    /** Returns true when the given cache timestamp is older than [maxAgeMs]. */
+    /** Returns true when the given cache timestamp is older than [maxAgeMs] or [aggressiveTtlMs]. */
     fun isCachedAtStale(timestamp: Long): Boolean {
+        val now = System.currentTimeMillis()
+        val age = now - timestamp
+        // Check aggressive TTL first if set
+        if (aggressiveTtlMs >= 0 && age > aggressiveTtlMs) return true
+        // Then check standard maxAgeMs
         if (maxAgeMs < 0) return false
-        return System.currentTimeMillis() - timestamp > maxAgeMs
+        return age > maxAgeMs
+    }
+
+    /** Cleans up expired cache entries on app launch or manual trigger. */
+    fun cleanupExpiredEntries() {
+        dir.listFiles()?.forEach { file ->
+            runCatching {
+                val envelope = Json.decodeFromString(CacheEnvelope.serializer(), file.readText())
+                if (isCachedAtStale(envelope.timestamp)) {
+                    file.delete()
+                    accessOrder.keys.remove(file.name)
+                }
+            }
+        }
+    }
+
+    /** Invalidate cache entry for a specific key, typically on manual refresh. */
+    fun invalidate(key: String) {
+        val fileName = key.sha256()
+        File(dir, fileName).delete()
+        accessOrder.keys.remove(fileName)
     }
 
     private fun touch(fileName: String) {
