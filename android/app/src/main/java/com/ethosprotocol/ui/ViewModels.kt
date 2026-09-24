@@ -580,11 +580,14 @@ class VaultViewModel @Inject constructor(
     private val notificationHelper: NotificationHelper,
     private val pendingActionDao: PendingActionDao,
     private val vaultEventSocket: VaultEventSocket,
+    private val expiringVaultsManager: com.ethosprotocol.services.ExpiringVaultsManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
+
+    val expiringVaultsState = expiringVaultsManager.bannerState
 
     private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
@@ -602,6 +605,7 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
+                expiringVaultsManager.updateVaults(result.data.vaults)
                 subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
@@ -625,13 +629,15 @@ class VaultViewModel @Inject constructor(
             when (val result = apiClient.listVaults(limit = PAGE_SIZE, after = cursor)) {
                 is ApiResult.Success -> {
                     nextCursor = result.data.nextCursor
+                    val allVaults = _state.value.vaults + result.data.vaults
                     _state.update {
                         it.copy(
-                            vaults = it.vaults + result.data.vaults,
+                            vaults = allVaults,
                             isLoadingMore = false,
                             hasMore = result.data.hasMore
                         )
                     }
+                    expiringVaultsManager.updateVaults(allVaults)
                     subscribeToEvents(result.data.vaults.map { it.id })
                 }
                 ApiResult.NetworkUnavailable -> {
@@ -659,6 +665,7 @@ class VaultViewModel @Inject constructor(
                     cursor = result.data.nextCursor
                     if (!result.data.hasMore) {
                         _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+                        expiringVaultsManager.updateVaults(accumulated)
                         return@launch
                     }
                 }
@@ -673,6 +680,11 @@ class VaultViewModel @Inject constructor(
             }
         } while (cursor != null)
         _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+        expiringVaultsManager.updateVaults(accumulated)
+    }
+
+    fun dismissExpiringVaultsBanner() {
+        expiringVaultsManager.dismissBanner()
     }
 
     // Keeps one VaultEventSocket subscription per vault currently in [_state], so
@@ -733,6 +745,7 @@ class VaultViewModel @Inject constructor(
     // api-contract.md (#223): whichever is received last always overwrites in place.
     private fun updateVaultInPlace(vault: Vault) {
         _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
+        expiringVaultsManager.updateVaults(_state.value.vaults)
     }
 
     /// Update the beneficiary for a vault (owner-only). On success the vault list is

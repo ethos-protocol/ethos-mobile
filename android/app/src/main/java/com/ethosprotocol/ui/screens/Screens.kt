@@ -207,6 +207,7 @@ fun VaultListScreen(
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val expiringState by vm.expiringVaultsState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
@@ -295,6 +296,15 @@ fun VaultListScreen(
                         LazyColumn {
                             if (state.isOffline) item {
                                 OfflineBanner()
+                            }
+                            if (expiringState.expiredVaults.isNotEmpty() && !expiringState.isDismissed) {
+                                item {
+                                    ExpiringVaultsBanner(
+                                        vaults = expiringState.expiredVaults,
+                                        onDismiss = { vm.dismissExpiringVaultsBanner() },
+                                        onCheckIn = { vault -> pendingCheckIn = vault }
+                                    )
+                                }
                             }
                             val errorMsg = biometricError ?: state.error
                             errorMsg?.let { err ->
@@ -434,6 +444,48 @@ private fun OfflineBanner(cachedAt: Long? = null) {
             Spacer(Modifier.width(8.dp))
             Text(message, color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ExpiringVaultsBanner(
+    vaults: List<Vault>,
+    onDismiss: () -> Unit,
+    onCheckIn: (Vault) -> Unit
+) {
+    val summary = if (vaults.size == 1) {
+        "1 vault expires in less than 24 hours"
+    } else {
+        "${vaults.size} vaults expire in less than 24 hours"
+    }
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = "Expiring Soon",
+                    tint = MaterialTheme.colorScheme.onErrorContainer)
+                Spacer(Modifier.width(8.dp))
+                Text(summary, color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("Dismiss", fontSize = MaterialTheme.typography.labelSmall.fontSize)
+                }
+                if (vaults.size == 1) {
+                    Button(onClick = { onCheckIn(vaults[0]) }, modifier = Modifier.weight(1f)) {
+                        Text("Check In", fontSize = MaterialTheme.typography.labelSmall.fontSize)
+                    }
+                }
+            }
         }
     }
 }
