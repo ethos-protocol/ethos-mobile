@@ -25,8 +25,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import android.util.Base64
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 import javax.net.ssl.SSLContext
@@ -79,6 +84,8 @@ class ApiClient(
     companion object {
         private const val TAG = "ApiClient"
     }
+
+    private val etagsByPath = ConcurrentHashMap<String, String>()
 
     // internal (not private): VaultEventSocket reuses this same client/connection pool
     // to open the `/ws` connection documented in shared/api-contract.md, rather than
@@ -216,13 +223,23 @@ class ApiClient(
         }
         return runCatching {
             val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
-                client.get("$baseUrl$path") { bearerAuth() }
+                client.get("$baseUrl$path") {
+                    bearerAuth()
+                    etagsByPath[path]?.let { header(HttpHeaders.IfNoneMatch, it) }
+                }
             }
+            HpkpTelemetry.record(response)
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
+                    response.headers[HttpHeaders.ETag]?.let { etagsByPath[path] = it }
                     offlineCache.save(path, Json.encodeToString(kotlinx.serialization.serializer(), body))
                     ApiResult.Success(body)
+                }
+                304 -> {
+                    val cached = offlineCache.load(path)
+                    if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
+                    else ApiResult.Error("Cached response unavailable", 504)
                 }
                 // The token the server rejected is no longer valid — clear it locally so it
                 // isn't kept being sent, and so the UI correctly routes back to AuthScreen.
@@ -251,6 +268,7 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            HpkpTelemetry.record(response)
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
@@ -272,6 +290,7 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            HpkpTelemetry.record(response)
             // Ktor does not throw on non-2xx responses by default, so the status must be
             // checked explicitly here (as get()/post() already do) — otherwise a failed
             // deletion (401/500/etc.) is silently reported back to callers as success.
@@ -366,7 +385,29 @@ class ApiClient(
         val timestamp = System.currentTimeMillis() / 1_000L
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
+        requestSignature(nonce, timestamp, idempotencyKey)?.let { header("X-Request-Signature", it) }
         if (idempotencyKey != null) header("X-Idempotency-Key", idempotencyKey)
+    }
+
+    private fun requestSignature(nonce: String, timestamp: Long, idempotencyKey: String?): String? {
+        val token = tokenProvider.token ?: return null
+        val canonical = listOf(nonce, timestamp.toString(), idempotencyKey.orEmpty()).joinToString(":")
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        return Base64.encodeToString(mac.doFinal(canonical.toByteArray()), Base64.NO_WRAP)
+    }
+}
+
+object HpkpTelemetry {
+    private val _pinHeadersSeen = AtomicLong(0)
+    private val _reportOnlyHeadersSeen = AtomicLong(0)
+
+    val pinHeadersSeen: Long get() = _pinHeadersSeen.get()
+    val reportOnlyHeadersSeen: Long get() = _reportOnlyHeadersSeen.get()
+
+    fun record(response: HttpResponse) {
+        if (response.headers["Public-Key-Pins"] != null) _pinHeadersSeen.incrementAndGet()
+        if (response.headers["Public-Key-Pins-Report-Only"] != null) _reportOnlyHeadersSeen.incrementAndGet()
     }
 }
 
