@@ -40,9 +40,9 @@ class PendingActionSyncWorker @AssistedInject constructor(
         val startMs = System.currentTimeMillis()
         val runAtIso = isoTimestamp(startMs)
 
-        val pending = dao.getAll()
+        val pending = compactConflicts(dao.getAll())
         if (pending.isEmpty()) {
-            recordOutcome(runAtIso, succeeded = 0, failed = 0, retrying = false)
+            recordOutcome(runAtIso, succeeded = 0, failed = 0, retrying = false, queued = 0, lastModifiedAt = null)
             Log.i(TAG, "run finished — nothing to sync")
             return Result.success()
         }
@@ -109,7 +109,15 @@ class PendingActionSyncWorker @AssistedInject constructor(
         }
 
         val willRetry = hasRetryableFailure
-        recordOutcome(runAtIso, succeeded, permanentlyFailed, willRetry)
+        val remaining = dao.getAll()
+        recordOutcome(
+            runAtIso,
+            succeeded,
+            permanentlyFailed,
+            willRetry,
+            queued = remaining.size,
+            lastModifiedAt = remaining.maxOfOrNull { it.queuedAt }?.let(::isoTimestamp)
+        )
 
         val elapsedMs = System.currentTimeMillis() - startMs
         Log.i(TAG,
@@ -123,12 +131,36 @@ class PendingActionSyncWorker @AssistedInject constructor(
      * Persists the last sync attempt timestamp and outcome to SharedPreferences so that
      * support/debug tooling can surface it without needing logcat access.
      */
-    private fun recordOutcome(timestamp: String, succeeded: Int, failed: Int, retrying: Boolean) {
+    private suspend fun compactConflicts(items: List<PendingAction>): List<PendingAction> {
+        val deduped = mutableListOf<PendingAction>()
+        val grouped = items.groupBy { it.dedupeKey }
+        for ((key, group) in grouped) {
+            if (key == null || group.size == 1) {
+                deduped += group
+                continue
+            }
+            val winner = group.maxBy { it.queuedAt }
+            group.filter { it.id != winner.id }.forEach { dao.delete(it) }
+            deduped += winner
+        }
+        return deduped.sortedBy { it.queuedAt }
+    }
+
+    private fun recordOutcome(
+        timestamp: String,
+        succeeded: Int,
+        failed: Int,
+        retrying: Boolean,
+        queued: Int,
+        lastModifiedAt: String?
+    ) {
         prefs.edit()
             .putString(PREF_LAST_SYNC_AT, timestamp)
             .putInt(PREF_LAST_SYNC_SUCCEEDED, succeeded)
             .putInt(PREF_LAST_SYNC_FAILED, failed)
             .putBoolean(PREF_LAST_SYNC_RETRYING, retrying)
+            .putInt(PREF_LAST_SYNC_QUEUED, queued)
+            .putString(PREF_LAST_SYNC_LAST_MODIFIED_AT, lastModifiedAt)
             .apply()
     }
 
@@ -142,6 +174,8 @@ class PendingActionSyncWorker @AssistedInject constructor(
         const val PREF_LAST_SYNC_SUCCEEDED = "last_sync_succeeded"
         const val PREF_LAST_SYNC_FAILED = "last_sync_failed"
         const val PREF_LAST_SYNC_RETRYING = "last_sync_retrying"
+        const val PREF_LAST_SYNC_QUEUED = "last_sync_queued"
+        const val PREF_LAST_SYNC_LAST_MODIFIED_AT = "last_sync_last_modified_at"
         private const val TAG = "PendingActionSyncWorker"
 
         // Error codes where the server has told us unambiguously that this action can
@@ -177,7 +211,9 @@ class PendingActionSyncWorker @AssistedInject constructor(
                 lastSyncAt = timestamp,
                 succeeded = prefs.getInt(PREF_LAST_SYNC_SUCCEEDED, 0),
                 failed = prefs.getInt(PREF_LAST_SYNC_FAILED, 0),
-                isRetrying = prefs.getBoolean(PREF_LAST_SYNC_RETRYING, false)
+                isRetrying = prefs.getBoolean(PREF_LAST_SYNC_RETRYING, false),
+                queued = prefs.getInt(PREF_LAST_SYNC_QUEUED, 0),
+                lastModifiedAt = prefs.getString(PREF_LAST_SYNC_LAST_MODIFIED_AT, null)
             )
         }
     }
@@ -188,5 +224,7 @@ data class SyncDiagnostics(
     val lastSyncAt: String,
     val succeeded: Int,
     val failed: Int,
-    val isRetrying: Boolean
+    val isRetrying: Boolean,
+    val queued: Int = 0,
+    val lastModifiedAt: String? = null
 )
