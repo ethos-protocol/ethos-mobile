@@ -26,6 +26,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicLong
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -74,7 +75,9 @@ class ApiClient(
             }
         }
     },
-    private val retryPolicy: RetryPolicy = RetryPolicy.networkDefault
+    private val retryPolicy: RetryPolicy = RetryPolicy.networkDefault,
+    private val timeoutConfig: ApiTimeoutConfig = ApiTimeoutConfig.fromEnvironment(),
+    private val circuitBreaker: ApiCircuitBreaker = ApiCircuitBreaker()
 ) {
     companion object {
         private const val TAG = "ApiClient"
@@ -103,9 +106,9 @@ class ApiClient(
         // No timeouts were configured previously, so a stalled connection (e.g. dead wifi
         // captive portal) could hang a request — and the caller's loading state — forever.
         install(HttpTimeout) {
-            requestTimeoutMillis = 30_000
-            connectTimeoutMillis = 15_000
-            socketTimeoutMillis = 30_000
+            requestTimeoutMillis = timeoutConfig.requestTimeoutMillis
+            connectTimeoutMillis = timeoutConfig.connectTimeoutMillis
+            socketTimeoutMillis = timeoutConfig.socketTimeoutMillis
         }
         install(WebSockets)
     }
@@ -214,10 +217,13 @@ class ApiClient(
             return if (cached != null) ApiResult.Success(Json.decodeFromString(cached.data), cachedAt = cached.timestamp)
             else ApiResult.NetworkUnavailable
         }
+        if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
                 client.get("$baseUrl$path") { bearerAuth() }
             }
+            ApiResponseDecompressionMetrics.record(response)
+            circuitBreaker.recordSuccess()
             when (response.status.value) {
                 in 200..299 -> {
                     val body: T = response.body()
@@ -233,7 +239,10 @@ class ApiClient(
                 404 -> ApiResult.Error("Not found", 404)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
+        }.getOrElse { e ->
+            circuitBreaker.recordFailure()
+            ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }
+        }
     }
 
     private suspend inline fun <reified B, reified T> post(
@@ -244,6 +253,7 @@ class ApiClient(
     ): ApiResult<T> {
         if (!skipTokenRefresh) ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
+        if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = client.post("$baseUrl$path") {
                 bearerAuth()
@@ -251,6 +261,8 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            ApiResponseDecompressionMetrics.record(response)
+            circuitBreaker.recordSuccess()
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
@@ -259,12 +271,16 @@ class ApiClient(
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
+        }.getOrElse { e ->
+            circuitBreaker.recordFailure()
+            ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }
+        }
     }
 
     private suspend inline fun <reified B, reified T> delete(path: String, body: B): ApiResult<T> {
         ensureFreshToken()
         if (!networkMonitor.isConnected) return ApiResult.NetworkUnavailable
+        if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = client.delete("$baseUrl$path") {
                 bearerAuth()
@@ -272,6 +288,8 @@ class ApiClient(
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
+            ApiResponseDecompressionMetrics.record(response)
+            circuitBreaker.recordSuccess()
             // Ktor does not throw on non-2xx responses by default, so the status must be
             // checked explicitly here (as get()/post() already do) — otherwise a failed
             // deletion (401/500/etc.) is silently reported back to callers as success.
@@ -283,7 +301,10 @@ class ApiClient(
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
+        }.getOrElse { e ->
+            circuitBreaker.recordFailure()
+            ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }
+        }
     }
 
     // Guards ensureFreshToken()'s refresh so concurrent callers near token expiry
@@ -367,6 +388,53 @@ class ApiClient(
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
         if (idempotencyKey != null) header("X-Idempotency-Key", idempotencyKey)
+    }
+}
+
+data class ApiTimeoutConfig(
+    val requestTimeoutMillis: Long,
+    val connectTimeoutMillis: Long,
+    val socketTimeoutMillis: Long
+) {
+    companion object {
+        fun fromEnvironment() = ApiTimeoutConfig(
+            requestTimeoutMillis = System.getProperty("ethos.api.requestTimeoutMillis")?.toLongOrNull() ?: 30_000,
+            connectTimeoutMillis = System.getProperty("ethos.api.connectTimeoutMillis")?.toLongOrNull() ?: 15_000,
+            socketTimeoutMillis = System.getProperty("ethos.api.socketTimeoutMillis")?.toLongOrNull() ?: 30_000
+        )
+    }
+}
+
+class ApiCircuitBreaker(
+    private val failureThreshold: Int = 5,
+    private val openMillis: Long = 30_000
+) {
+    private val failures = AtomicLong(0)
+    private val openedUntil = AtomicLong(0)
+
+    fun allowRequest(now: Long = System.currentTimeMillis()): Boolean = now >= openedUntil.get()
+
+    fun recordSuccess() {
+        failures.set(0)
+        openedUntil.set(0)
+    }
+
+    fun recordFailure(now: Long = System.currentTimeMillis()) {
+        val count = failures.incrementAndGet()
+        if (count >= failureThreshold) openedUntil.set(now + openMillis)
+    }
+}
+
+object ApiResponseDecompressionMetrics {
+    private val _decompressedResponses = AtomicLong(0)
+
+    val decompressedResponses: Long get() = _decompressedResponses.get()
+
+    fun record(response: HttpResponse) {
+        val encoding = response.headers[HttpHeaders.ContentEncoding]
+        if (encoding != null && !encoding.equals("identity", ignoreCase = true)) {
+            _decompressedResponses.incrementAndGet()
+        }
     }
 }
 
