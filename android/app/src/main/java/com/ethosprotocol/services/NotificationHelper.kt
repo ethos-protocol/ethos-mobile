@@ -65,6 +65,7 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         val pi = PendingIntent.getActivity(context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+        val groupKey = vaultId ?: "general"
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle(title)
@@ -75,11 +76,42 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
             // Groups all of a vault's notifications together so they visually cluster even if
             // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
             // for replace-vs-append behavior.
-            .setGroup(vaultId ?: "general")
+            .setGroup(groupKey)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .build()
 
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.notify(notificationIdFor(vaultId), notification)
+
+        // Post a summary notification for the group if there are multiple notifications
+        if (vaultId != null) {
+            showGroupSummary(nm, groupKey)
+        }
+    }
+
+    private fun showGroupSummary(nm: NotificationManager, groupKey: String) {
+        // Notification ID for summary: use a deterministic high number based on group key hash
+        val summaryId = 50_000 + (groupKey.hashCode() and 0x7FFFFFFF) % 50_000
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pi = PendingIntent.getActivity(context, summaryId, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+        val summary = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+            .setContentTitle("Vault Reminders")
+            .setContentText("Multiple check-in reminders")
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        nm.notify(summaryId, summary)
     }
 
     fun showQueuedActions(count: Int) {
