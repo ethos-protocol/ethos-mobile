@@ -1,25 +1,33 @@
 package com.ethosprotocol.ui.screens
 
 import androidx.activity.ComponentActivity
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ethosprotocol.models.Vault
+import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.models.DestructiveConfirmation
 import com.ethosprotocol.models.TwoFactorMethod
 import com.ethosprotocol.models.TwoFactorStatus
@@ -37,6 +45,7 @@ import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
 import com.ethosprotocol.services.NotificationDeliveryLog
+import kotlinx.coroutines.delay
 
 // MARK: - Auth Screen
 
@@ -287,10 +296,21 @@ fun VaultListScreen(
                 else -> {
                     // Ties the pull gesture to the same VaultViewModel.load() used for the initial
                     // fetch, so state.isLoading naturally drives the pull indicator too.
+                    val refreshState = rememberPullToRefreshState()
                     PullToRefreshBox(
                         isRefreshing = state.isLoading,
                         onRefresh = { vm.load() },
-                        modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
+                        state = refreshState,
+                        modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh"),
+                        indicator = {
+                            PullToRefreshDefaults.Indicator(
+                                isRefreshing = state.isLoading,
+                                state = refreshState,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                modifier = Modifier.align(Alignment.TopCenter)
+                            )
+                        }
                     ) {
                         LazyColumn {
                             if (state.isOffline) item {
@@ -459,7 +479,23 @@ private fun VaultCard(
     onDeposit: () -> Unit = {},
     onWithdraw: () -> Unit = {}
 ) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+    val statusColor = vault.status.statusColor()
+    val animatedStatusColor by animateColorAsState(statusColor, label = "vaultStatusColor")
+    val containerColor by animateColorAsState(
+        when (vault.status) {
+            VaultStatus.expired -> MaterialTheme.colorScheme.errorContainer
+            VaultStatus.released -> MaterialTheme.colorScheme.secondaryContainer
+            VaultStatus.paused -> MaterialTheme.colorScheme.surfaceVariant
+            VaultStatus.active -> MaterialTheme.colorScheme.surface
+        },
+        label = "vaultStatusContainer"
+    )
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = androidx.compose.foundation.BorderStroke(1.dp, animatedStatusColor.copy(alpha = 0.35f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
         Column(Modifier.padding(16.dp)) {
             // At the largest font scale a full-length id + chip in one row will clip rather than
             // wrap the layout; ellipsize the id (already truncated to 12 chars) so the chip stays visible.
@@ -472,6 +508,10 @@ private fun VaultCard(
             Spacer(Modifier.height(4.dp))
             Text(vault.formattedBalance, style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            vault.ttlRemaining?.let { ttl ->
+                Spacer(Modifier.height(4.dp))
+                VaultCountdownText(ttl)
+            }
             if (vault.isExpiringSoon) {
                 Spacer(Modifier.height(4.dp))
                 // mergeDescendants groups the icon + label into a single TalkBack stop instead of two.
@@ -507,17 +547,87 @@ private fun VaultCard(
 }
 
 @Composable
-private fun StatusChip(status: com.ethosprotocol.models.VaultStatus) {
-    val (label, color) = when (status) {
-        com.ethosprotocol.models.VaultStatus.active -> "Active" to MaterialTheme.colorScheme.primary
-        com.ethosprotocol.models.VaultStatus.expired -> "Expired" to MaterialTheme.colorScheme.error
-        com.ethosprotocol.models.VaultStatus.released -> "Released" to MaterialTheme.colorScheme.secondary
-        com.ethosprotocol.models.VaultStatus.paused -> "Paused" to MaterialTheme.colorScheme.outline
+private fun VaultCountdownText(initialTtlSeconds: Long) {
+    var remainingSeconds by remember(initialTtlSeconds) { mutableLongStateOf(initialTtlSeconds.coerceAtLeast(0L)) }
+    LaunchedEffect(initialTtlSeconds) {
+        remainingSeconds = initialTtlSeconds.coerceAtLeast(0L)
+        while (remainingSeconds > 0L) {
+            delay(1_000)
+            remainingSeconds = (remainingSeconds - 1L).coerceAtLeast(0L)
+        }
     }
-    SuggestionChip(
+    val urgencyAlpha by animateFloatAsState(
+        targetValue = if (remainingSeconds < 3_600L) 1f else 0.82f,
+        label = "vaultCountdownAlpha"
+    )
+    val countdownColor = when {
+        remainingSeconds == 0L -> MaterialTheme.colorScheme.error
+        remainingSeconds < 3_600L -> MaterialTheme.colorScheme.error
+        remainingSeconds < 86_400L -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        Modifier.semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.Schedule,
+            contentDescription = "Vault countdown",
+            tint = countdownColor,
+            modifier = Modifier.size(14.dp).alpha(urgencyAlpha)
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            "Unlocks in ${formatCountdown(remainingSeconds)}",
+            color = countdownColor,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (remainingSeconds < 3_600L) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.alpha(urgencyAlpha)
+        )
+    }
+}
+
+private fun formatCountdown(seconds: Long): String {
+    val days = seconds / 86_400
+    val hours = (seconds % 86_400) / 3_600
+    val minutes = (seconds % 3_600) / 60
+    val secs = seconds % 60
+    return when {
+        days > 0 -> "${days}d ${hours}h"
+        hours > 0 -> "${hours}h ${minutes}m"
+        minutes > 0 -> "${minutes}m ${secs}s"
+        else -> "${secs}s"
+    }
+}
+
+@Composable
+private fun VaultStatus.statusColor() = when (this) {
+    VaultStatus.active -> MaterialTheme.colorScheme.primary
+    VaultStatus.expired -> MaterialTheme.colorScheme.error
+    VaultStatus.released -> MaterialTheme.colorScheme.secondary
+    VaultStatus.paused -> MaterialTheme.colorScheme.outline
+}
+
+@Composable
+private fun StatusChip(status: VaultStatus) {
+    val label = when (status) {
+        VaultStatus.active -> "Active"
+        VaultStatus.expired -> "Expired"
+        VaultStatus.released -> "Released"
+        VaultStatus.paused -> "Paused"
+    }
+    val color = status.statusColor()
+    AssistChip(
         onClick = {},
         label = { Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        colors = SuggestionChipDefaults.suggestionChipColors(labelColor = color)
+        shape = RoundedCornerShape(50),
+        colors = AssistChipDefaults.assistChipColors(
+            containerColor = color.copy(alpha = 0.12f),
+            labelColor = color
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.55f))
     )
 }
 

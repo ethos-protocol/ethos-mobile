@@ -21,4 +21,8 @@
     <string name="widget_balance_label">Balance</string>
     <string name="widget_beneficiary_label">Beneficiary</string>
     <string name="widget_no_vaults">No vaults available</string>
+    <string name="shortcut_vaults_short">Vaults</string>
+    <string name="shortcut_vaults_long">Open vault list</string>
+    <string name="shortcut_check_in_short">Check in</string>
+    <string name="shortcut_check_in_long">Open vault check-in</string>
 </resources>
