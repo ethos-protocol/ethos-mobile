@@ -217,21 +217,62 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         let source: NotificationDeliveryEvent.Source = type != nil ? .push : .local
         let eventType = type ?? notification.request.content.categoryIdentifier
         NotificationDeliveryLog.shared.record(kind: .delivered, source: source, eventType: eventType, vaultID: vaultID)
-        completionHandler([.banner, .sound, .badge])
+        // Show banner, sound, badge, and list for better visibility of notification actions
+        completionHandler([.banner, .sound, .badge, .list])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                  didReceive response: UNNotificationResponse,
                                  withCompletionHandler completionHandler: @escaping () -> Void) {
         let vaultID = response.notification.request.content.userInfo["vault_id"] as? String
-        if response.actionIdentifier == "CHECK_IN_ACTION", let id = vaultID {
+
+        switch response.actionIdentifier {
+        case "CHECK_IN_ACTION":
+            guard let id = vaultID else { break }
             // `checkIn(vaultID:idempotencyKey:)` is ambiguous between APIClient's original
             // throwing/Void signature and the CheckInSyncTask.APIClientProtocol conformance's
             // overload — pin the reference to the original before calling it.
             let performCheckIn: (String, String?) async throws -> Void = APIClient.shared.checkIn(vaultID:idempotencyKey:)
             Task { try? await performCheckIn(id, nil) }
+
+        case "SNOOZE_7_DAYS":
+            rescheduleNotificationReminder(forVaultID: vaultID, delaySeconds: 7 * 24 * 3_600)
+
+        case "SNOOZE_14_DAYS":
+            rescheduleNotificationReminder(forVaultID: vaultID, delaySeconds: 14 * 24 * 3_600)
+
+        default:
+            break
         }
+
         completionHandler()
+    }
+
+    /// Reschedules a notification reminder after a snooze action.
+    private func rescheduleNotificationReminder(forVaultID vaultID: String?, delaySeconds: Int) {
+        guard let vaultID = vaultID else { return }
+
+        let center = UNUserNotificationCenter.current()
+        // Remove existing reminder for this vault
+        center.removePendingNotificationRequests(withIdentifiers: [
+            "checkin-primary-\(vaultID)",
+            "checkin-secondary-\(vaultID)",
+            "ttl-warning-\(vaultID)"
+        ])
+
+        // Schedule new reminder after the snooze duration
+        let content = UNMutableNotificationContent()
+        content.title = "Check-in Reminder"
+        content.body = "Vault \(truncatedVaultID(vaultID)) reminder. Tap to check in and keep it active."
+        content.sound = .default
+        content.userInfo = ["vault_id": vaultID]
+        content.categoryIdentifier = "CHECK_IN"
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(delaySeconds), repeats: false)
+        let request = UNNotificationRequest(identifier: "checkin-snoozed-\(vaultID)", content: content, trigger: trigger)
+        center.add(request)
+
+        NotificationDeliveryLog.shared.record(kind: .scheduled, source: .local, eventType: "snooze_reminder", vaultID: vaultID)
     }
 
     // Fires immediately to warn the user their vault TTL is under 24 hours (called from background refresh).

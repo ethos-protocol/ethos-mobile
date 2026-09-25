@@ -309,11 +309,60 @@ final class VaultStore: ObservableObject {
     @Published private(set) var queuedCheckInCount = 0
     /// Current WebSocket connection state for the real-time event stream (#255).
     @Published private(set) var socketConnectionState: VaultEventSocket.ConnectionState = .disconnected
+    /// Timestamp of the last successful vault sync, used for displaying refresh feedback.
+    @Published private(set) var lastSyncTime: Date?
+    /// Search text for filtering vaults by ID/name
+    @Published var searchText: String = "" {
+        didSet { saveSearchPreferences() }
+    }
+    /// Status filter for vault list (Healthy, Expiring Soon, etc.)
+    @Published var statusFilter: VaultStatusFilter = .all {
+        didSet { saveSearchPreferences() }
+    }
+    /// Sort option for vault list (by expiry, name, creation date)
+    @Published var sortOption: VaultSortOption = .expiryDate {
+        didSet { saveSearchPreferences() }
+    }
 
     private var eventSocket: VaultEventSocket?
 
     /// Whether a further page is available for VaultListView's "Load More".
     var hasMorePages: Bool { nextCursor != nil }
+
+    /// Filtered and sorted vaults based on search text, status filter, and sort option
+    var filteredAndSortedVaults: [Vault] {
+        vaults
+            .filter { vault in
+                statusFilter.matches(vault: vault) &&
+                (searchText.isEmpty || vault.id.lowercased().contains(searchText.lowercased()))
+            }
+            .sorted { lhs, rhs in
+                sortOption.compare(lhs: lhs, rhs: rhs)
+            }
+    }
+
+    init() {
+        loadSearchPreferences()
+    }
+
+    private func loadSearchPreferences() {
+        let preferences = VaultSearchPreferences.current
+        searchText = preferences.searchText
+        if let filter = VaultStatusFilter(rawValue: preferences.statusFilter) {
+            statusFilter = filter
+        }
+        if let sort = VaultSortOption(rawValue: preferences.sortOption) {
+            sortOption = sort
+        }
+    }
+
+    private func saveSearchPreferences() {
+        var preferences = VaultSearchPreferences.current
+        preferences.searchText = searchText
+        preferences.statusFilter = statusFilter.rawValue
+        preferences.sortOption = sortOption.rawValue
+        VaultSearchPreferences.current = preferences
+    }
 
     private func updateQueuedIndicator() {
         queuedCheckInCount = PendingCheckInStore.shared.count
