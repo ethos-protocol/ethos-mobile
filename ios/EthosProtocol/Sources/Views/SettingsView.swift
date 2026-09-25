@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var iCloudSyncEnabled = ICloudSyncService.shared.isSyncEnabled
     @State private var reLockTimeout = ReLockTimeoutOption.current
+    @State private var hapticFeedbackEnabled = HapticFeedbackService.isEnabled
 
     var body: some View {
         Form {
@@ -34,6 +35,19 @@ struct SettingsView: View {
                 Text("Privacy")
             }
 
+            Section {
+                Toggle("Haptic Feedback", isOn: $hapticFeedbackEnabled)
+                    .onChange(of: hapticFeedbackEnabled) { _, newValue in
+                        HapticFeedbackService.isEnabled = newValue
+                        HapticFeedbackService.shared.lightImpact()
+                    }
+                Text("Enable haptic feedback for successful actions, errors, and biometric unlock.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Feedback")
+            }
+
             #if DEBUG
             Section {
                 NavigationLink("Notification Log", destination: NotificationDebugView())
@@ -43,5 +57,136 @@ struct SettingsView: View {
             #endif
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $showPINChange) {
+            PINChangeView()
+        }
+    }
+}
+
+struct PINChangeView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var oldPIN = ""
+    @State private var newPIN = ""
+    @State private var newPINConfirm = ""
+    @State private var error: String?
+    @State private var isProcessing = false
+    let isPINSetup = PINAuthenticationService.shared.isPINSetup()
+
+    var newPINsMatch: Bool {
+        !newPIN.isEmpty && newPIN == newPINConfirm
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.blue)
+                    Text(isPINSetup ? "Change PIN" : "Set Up PIN").font(.title.bold())
+                }
+                .padding(.vertical, 16)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    if isPINSetup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Current PIN").font(.caption.bold()).foregroundStyle(.secondary)
+                            SecureField("PIN", text: $oldPIN)
+                                .textContentType(.oneTimeCode)
+                                .keyboardType(.numberPad)
+                                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 150)
+                                .padding(12)
+                                .background(Color(.systemGray6))
+                                .cornerRadius(8)
+                                .disabled(isProcessing)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("New 6-digit PIN").font(.caption.bold()).foregroundStyle(.secondary)
+                        SecureField("PIN", text: $newPIN)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 150)
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                            .disabled(isProcessing)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Confirm PIN").font(.caption.bold()).foregroundStyle(.secondary)
+                        SecureField("Confirm PIN", text: $newPINConfirm)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 150)
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                            .disabled(isProcessing)
+                    }
+
+                    if let error {
+                        Text(error).font(.caption).foregroundStyle(.red)
+                    }
+
+                    if !newPIN.isEmpty && !newPINConfirm.isEmpty && newPIN != newPINConfirm {
+                        Text("PINs do not match").font(.caption).foregroundStyle(.orange)
+                    }
+                }
+
+                Spacer()
+
+                VStack(spacing: 12) {
+                    Button(action: changePIN) {
+                        Label(isProcessing ? "Processing…" : "Confirm", systemImage: "checkmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isValid || isProcessing)
+
+                    Button(action: { dismiss() }) {
+                        Text("Cancel").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isProcessing)
+                }
+            }
+            .padding(32)
+            .navigationTitle(isPINSetup ? "Change PIN" : "Set Up PIN")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var isValid: Bool {
+        if isPINSetup {
+            return !oldPIN.isEmpty && newPINsMatch
+        } else {
+            return newPINsMatch
+        }
+    }
+
+    private func changePIN() {
+        guard !isProcessing else { return }
+        isProcessing = true
+        error = nil
+
+        do {
+            if isPINSetup {
+                try PINAuthenticationService.shared.verifyPIN(oldPIN)
+            }
+            try PINAuthenticationService.shared.resetPIN(newPIN)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isProcessing = false
     }
 }

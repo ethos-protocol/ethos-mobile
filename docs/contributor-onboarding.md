@@ -4,6 +4,36 @@ Minimal path to a running **debug** build on each platform. This intentionally
 skips release-signing and certificate-pinning setup — see the links at the end
 for those when you're ready to ship a release build.
 
+## Pre-Commit Hooks (Secrets Scanning)
+
+Before making any commits, install pre-commit hooks to prevent accidental
+leaks of sensitive files (credentials, API keys, signing keystores):
+
+```bash
+# Install pre-commit framework (macOS)
+brew install pre-commit
+
+# Install pre-commit framework (Linux/Windows/other)
+pip install pre-commit
+
+# Install the hooks from .pre-commit-config.yaml
+pre-commit install
+
+# (Optional) Run all hooks against the entire repo
+pre-commit run --all-files
+```
+
+The hooks will:
+- Scan for common secret patterns (API keys, private keys, etc.)
+- Check for sensitive files (gradle.properties, google-services.json, keystores, etc.)
+- Block commits if secrets are detected
+
+**What gets scanned:**
+- `gradle.properties` — never commit `ethos.certPins` (use `~/.gradle/gradle.properties` instead)
+- `google-services.json` (Firebase config) — add to `.gitignore` locally
+- `GoogleService-Info.plist` (iOS Firebase config)
+- Signing keystores (`.keystore`, `.jks`, `.p8`, `.p12`, `.mobileprovision`)
+
 ## iOS
 
 1. Install XcodeGen: `brew install xcodegen`

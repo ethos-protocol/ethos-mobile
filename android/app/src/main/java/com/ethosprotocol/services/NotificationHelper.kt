@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import com.ethosprotocol.R
 import com.ethosprotocol.services.PendingActionType
 import com.ethosprotocol.ui.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,12 +26,9 @@ class NotificationHelper @Inject constructor(
 
     companion object {
         const val CHANNEL_ID = "ttl_reminders"
-        const val CHANNEL_NAME = "Check-in Reminders"
         const val QUEUED_CHANNEL_ID = "ttl_queued"
-        const val QUEUED_CHANNEL_NAME = "Queued Requests"
         const val QUEUED_NOTIFICATION_ID = 9_001
         const val EXPIRED_CHANNEL_ID = "vault_expired"
-        const val EXPIRED_CHANNEL_NAME = "Vault Expiry Alerts"
 
         // Reserved range for per-vault notification IDs, kept clear of QUEUED_NOTIFICATION_ID
         // and NO_VAULT_NOTIFICATION_ID below.
@@ -51,9 +49,9 @@ class NotificationHelper @Inject constructor(
         context.getSharedPreferences(VAULT_NOTIFICATION_IDS_PREFS, Context.MODE_PRIVATE)
 
     init {
-        createChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
-        createChannel(QUEUED_CHANNEL_ID, QUEUED_CHANNEL_NAME, NotificationManager.IMPORTANCE_DEFAULT)
-        createChannel(EXPIRED_CHANNEL_ID, EXPIRED_CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH)
+        createChannel(CHANNEL_ID, context.getString(R.string.notification_channel_checkin_reminders), NotificationManager.IMPORTANCE_HIGH)
+        createChannel(QUEUED_CHANNEL_ID, context.getString(R.string.notification_channel_queued_requests), NotificationManager.IMPORTANCE_DEFAULT)
+        createChannel(EXPIRED_CHANNEL_ID, context.getString(R.string.notification_channel_vault_expiry), NotificationManager.IMPORTANCE_HIGH)
     }
 
     @Synchronized
@@ -138,12 +136,12 @@ class NotificationHelper @Inject constructor(
         val pi = PendingIntent.getActivity(context, QUEUED_NOTIFICATION_ID, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val body = if (count == 1) "1 request will be submitted when back online"
-                   else "$count requests will be submitted when back online"
+        val body = if (count == 1) context.getString(R.string.notification_queued_single)
+                   else context.getString(R.string.notification_queued_plural, count)
 
         val notification = NotificationCompat.Builder(context, QUEUED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("Request queued")
+            .setContentTitle(context.getString(R.string.notification_queued_title))
             .setContentText(body)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -160,11 +158,10 @@ class NotificationHelper @Inject constructor(
     }
 
     fun showVaultExpiredNotification(vaultId: String, actionType: PendingActionType) {
-        // Vault expired notifications are critical and bypass DND
-        val actionLabel = if (actionType == PendingActionType.CHECK_IN) "check-in" else "request"
-        val body = "A queued $actionLabel was discarded because this vault already expired " +
-            "while you were offline. The vault may have released funds to the beneficiary."
-
+        val body = if (actionType == PendingActionType.CHECK_IN)
+            context.getString(R.string.notification_vault_expired_body_checkin)
+        else
+            context.getString(R.string.notification_vault_expired_body_request)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (vaultId.isNotEmpty())
@@ -176,7 +173,7 @@ class NotificationHelper @Inject constructor(
         )
         val notification = NotificationCompat.Builder(context, EXPIRED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("Check-in Failed \u2014 Vault Expired")
+            .setContentTitle(context.getString(R.string.notification_vault_expired_title))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
