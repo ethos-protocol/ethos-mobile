@@ -12,9 +12,17 @@ import com.ethosprotocol.ui.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Singleton
-class NotificationHelper @Inject constructor(@ApplicationContext private val context: Context) {
+class NotificationHelper @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val dndHelper: DoNotDisturbHelper
+) {
+    private val notificationScope = CoroutineScope(Dispatchers.Default)
 
     companion object {
         const val CHANNEL_ID = "ttl_reminders"
@@ -55,29 +63,70 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         return id
     }
 
-    fun show(title: String, body: String, vaultId: String?) {
+    fun show(title: String, body: String, vaultId: String?, ttlRemaining: Long? = null, isCritical: Boolean = false) {
+        val effectiveIsCritical = isCritical || (ttlRemaining?.let { dndHelper.isExpirationCritical(it) } ?: false)
+        val delay = dndHelper.getDelayForNotification(effectiveIsCritical)
+
+        notificationScope.launch {
+            if (delay > 0) {
+                delay(delay)
+            }
+
+            val intent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                vaultId?.let { data = android.net.Uri.parse("ethosprotocol://vault/$it/check-in") }
+            }
+            val pi = PendingIntent.getActivity(context, 0, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+            val groupKey = vaultId ?: "general"
+            val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                // Groups all of a vault's notifications together so they visually cluster even if
+                // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
+                // for replace-vs-append behavior.
+                .setGroup(groupKey)
+                .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
+                .build()
+
+            val nm = context.getSystemService(NotificationManager::class.java)
+            nm.notify(notificationIdFor(vaultId), notification)
+
+            // Post a summary notification for the group if there are multiple notifications
+            if (vaultId != null) {
+                showGroupSummary(nm, groupKey)
+            }
+        }
+    }
+
+    private fun showGroupSummary(nm: NotificationManager, groupKey: String) {
+        // Notification ID for summary: use a deterministic high number based on group key hash
+        val summaryId = 50_000 + (groupKey.hashCode() and 0x7FFFFFFF) % 50_000
+
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            vaultId?.let { data = android.net.Uri.parse("ethosprotocol://vault/$it/check-in") }
         }
-        val pi = PendingIntent.getActivity(context, 0, intent,
+        val pi = PendingIntent.getActivity(context, summaryId, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val summary = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle(title)
-            .setContentText(body)
+            .setContentTitle("Vault Reminders")
+            .setContentText("Multiple check-in reminders")
             .setAutoCancel(true)
             .setContentIntent(pi)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            // Groups all of a vault's notifications together so they visually cluster even if
-            // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
-            // for replace-vs-append behavior.
-            .setGroup(vaultId ?: "general")
             .build()
 
-        val nm = context.getSystemService(NotificationManager::class.java)
-        nm.notify(notificationIdFor(vaultId), notification)
+        nm.notify(summaryId, summary)
     }
 
     fun showQueuedActions(count: Int) {
