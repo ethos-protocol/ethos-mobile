@@ -19,6 +19,29 @@ import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Quality tier derived from the active network. Higher tiers allow larger images and page sizes;
+ * slower tiers (cellular, 2G) trade fidelity for responsiveness.
+ */
+enum class NetworkQualityTier(val imageQuality: Int, val pageSize: Int) {
+    WIFI(imageQuality = 90, pageSize = 30),
+    FIVE_G(imageQuality = 85, pageSize = 25),
+    FOUR_G(imageQuality = 70, pageSize = 15),
+    TWO_G(imageQuality = 50, pageSize = 8)
+}
+
+/** User-facing quality preference. [AUTO] defers to the detected network tier. */
+enum class QualityPreference {
+    AUTO, HIGH, LOW;
+
+    /** Resolves this preference against the detected [tier], honouring explicit overrides. */
+    fun resolve(tier: NetworkQualityTier): NetworkQualityTier = when (this) {
+        AUTO -> tier
+        HIGH -> NetworkQualityTier.WIFI
+        LOW -> NetworkQualityTier.TWO_G
+    }
+}
+
 @Singleton
 class NetworkMonitor @Inject constructor(@ApplicationContext private val context: Context) {
     val isConnected: Boolean
@@ -28,6 +51,60 @@ class NetworkMonitor @Inject constructor(@ApplicationContext private val context
             val caps = cm.getNetworkCapabilities(network) ?: return false
             return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         }
+
+    /** Detects the active network and maps it to a [NetworkQualityTier]. */
+    fun currentTier(): NetworkQualityTier {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val network = cm.activeNetwork ?: return NetworkQualityTier.TWO_G
+        val caps = cm.getNetworkCapabilities(network) ?: return NetworkQualityTier.TWO_G
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkQualityTier.WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> cellularTier(caps)
+            else -> NetworkQualityTier.FOUR_G
+        }
+    }
+
+    private fun cellularTier(caps: NetworkCapabilities): NetworkQualityTier = when {
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) -> NetworkQualityTier.WIFI
+        caps.linkDownstreamBandwidthKbps >= 20_000 -> NetworkQualityTier.FIVE_G
+        caps.linkDownstreamBandwidthKbps >= 2_000 -> NetworkQualityTier.FOUR_G
+        else -> NetworkQualityTier.TWO_G
+    }
+}
+
+/**
+ * Resolves the effective [NetworkQualityTier] by combining the user's [QualityPreference] with the
+ * network detected by [NetworkMonitor]. Persists the preference so it survives process restarts.
+ */
+@Singleton
+class NetworkQualityManager @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val networkMonitor: NetworkMonitor
+) {
+    companion object {
+        private const val PREFS = "network_quality"
+        private const val KEY_PREFERENCE = "quality_preference"
+    }
+
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    /** The user's stored preference, defaulting to [QualityPreference.AUTO]. */
+    var preference: QualityPreference
+        get() = runCatching {
+            QualityPreference.valueOf(prefs.getString(KEY_PREFERENCE, null) ?: QualityPreference.AUTO.name)
+        }.getOrDefault(QualityPreference.AUTO)
+        set(value) {
+            prefs.edit().putString(KEY_PREFERENCE, value.name).apply()
+        }
+
+    /** The tier to use right now, after applying the user's preference over the detected network. */
+    fun effectiveTier(): NetworkQualityTier = preference.resolve(networkMonitor.currentTier())
+
+    /** Image quality (0-100) to request for the current effective tier. */
+    fun imageQuality(): Int = effectiveTier().imageQuality
+
+    /** API pagination limit to request for the current effective tier. */
+    fun pageSize(): Int = effectiveTier().pageSize
 }
 
 /**
@@ -182,67 +259,6 @@ object SecurityHeaderValidator {
 
 /** Tracks counts of invalid/missing security headers for debug/support diagnostics. */
 object SecurityHeaderTelemetry {
-    private val _invalidCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private val _invalidCounts = java.util.co
 
-    fun recordInvalid(headerName: String) {
-        _invalidCounts.getOrPut(headerName) { java.util.concurrent.atomic.AtomicLong(0) }.incrementAndGet()
-    }
-
-    fun invalidCount(headerName: String): Long = _invalidCounts[headerName]?.get() ?: 0L
-
-    fun snapshot(): Map<String, Long> = _invalidCounts.mapValues { it.value.get() }
-}
-
-// Wraps a cached response with the wall-clock time it was written, so callers can tell how
-// stale the data is instead of presenting it as unconditionally "current".
-@Serializable
-data class CacheEnvelope(val timestamp: Long, val data: String)
-
-@Singleton
-class OfflineCache @Inject constructor(@ApplicationContext private val context: Context) {
-    private val dir = File(context.cacheDir, "ttl_offline").also { it.mkdirs() }
-
-    // Byte cap for the cache directory's total size; least-recently-used entries are evicted
-    // once a save() pushes the directory over this cap. Exposed as `internal var` (rather than
-    // a constructor param) so tests can shrink it to force eviction deterministically without
-    // fighting Hilt's @Inject constructor resolution.
-    internal var maxCacheBytes: Long = DEFAULT_MAX_CACHE_BYTES
-
-    // Entries older than maxAgeMs are treated as stale by load() — a non-null cachedAt is
-    // still returned by load() but also flagged via the CacheEnvelope so the UI can surface
-    // "last updated N hours ago" instead of silently serving data. -1L means no expiry enforced.
-    internal var maxAgeMs: Long = DEFAULT_MAX_AGE_MS
-
-    // Optional more aggressive TTL (in addition to maxAgeMs) for faster cache invalidation
-    // when needed. Set to non-negative value to enable. -1L means no aggressive TTL enforced.
-    internal var aggressiveTtlMs: Long = -1L
-
-    // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
-    // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
-    // since its resolution varies across filesystems/devices and would make eviction order
-    // unpredictable; this only needs to be accurate for the current process's lifetime.
-    private val accessOrder = Collections.synchronizedMap(
-        object : LinkedHashMap<String, Unit>(16, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>) = false
-        }
-    )
-
-    init {
-        dir.listFiles()?.sortedBy { it.lastModified() }?.forEach { accessOrder[it.name] = Unit }
-        // Clean up expired cache entries on app launch
-        cleanupExpiredEntries()
-    }
-
-    fun save(key: String, json: String) {
-        val fileName = key.sha256()
-        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = encodeCachedPayload(json))
-        File(dir, fileName).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
-        touch(fileName)
-        CacheTelemetry.recordWrite(json.length.toLong())
-        evictIfNeeded()
-    }
-
-    fun load(key: String): CacheEnvelope? {
-        val fileName = key.sha256()
-        val envelope = runCatching {
-            val raw = Json.decodeFromString(CacheEnvelope.serializer(),
+/* … truncated 3221 chars — edit only what you need near the top … */
