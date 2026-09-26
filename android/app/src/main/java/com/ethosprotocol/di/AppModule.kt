@@ -9,6 +9,7 @@ import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.EncryptedTokenProvider
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.services.AppVersionChecker
 import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PendingActionDatabase
 import com.ethosprotocol.services.PendingActionDao
@@ -54,4 +55,15 @@ object AppModule {
     @Provides @Singleton
     fun provideCredentialManagerFactory(): CredentialManagerFactory =
         CredentialManagerFactory { activity -> CredentialManager.create(activity) }
+
+    /**
+     * Provides the [AppVersionChecker] used on startup to compare the locally
+     * installed version against the latest published store version and to
+     * surface update prompts (including forced updates for critical releases).
+     */
+    @Provides @Singleton
+    fun provideAppVersionChecker(
+        @ApplicationContext context: Context,
+        apiClient: ApiClient
+    ): AppVersionChecker = AppVersionChecker(context, apiClient)
 }
