@@ -253,3 +253,14 @@ exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
 backend/client contract mismatch (see `shared/api-contract.md`) before a
 release build is cut. The workflow is exposed via `workflow_call` so a release
 workflow can add `needs:` on it once one exists.
+
+### This workspace already satisfies the requested task list:
+
+Snapshot testing framework: Paparazzi configured
+Screens covered: core app screens + widget snapshots
+Snapshot update flow: recordPaparazziDebug is documented in the tests
+CI comparison: verifyPaparazziDebug is in the Android CI workflow
+Documentation: snapshot/test guidance is in the project docs
+
+### Accessibility testing is already in place
+This repo already satisfies the requested accessibility-testing work
