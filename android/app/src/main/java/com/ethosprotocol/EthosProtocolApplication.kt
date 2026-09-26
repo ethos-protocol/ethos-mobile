@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.ethosprotocol.crash.CrashReporter
 import com.ethosprotocol.utils.AppVersionUpdateChecker
 import com.ethosprotocol.utils.StartupPerformance
 import com.ethosprotocol.widget.VaultWidgetUpdateWorker
@@ -18,6 +19,8 @@ class EthosProtocolApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var appVersionUpdateChecker: AppVersionUpdateChecker
 
+    @Inject lateinit var crashReporter: CrashReporter
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
@@ -26,6 +29,11 @@ class EthosProtocolApplication : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         StartupPerformance.markAppStart()
+
+        // Initialize crash reporting as early as possible so that any crash
+        // during startup is captured with stack traces, device context and
+        // release/version tracking (#425).
+        crashReporter.initialize(this)
 
         // Defer non-critical initialization (widget updates) to after first frame
         // to reduce cold-start time (#317). Schedule after ~2 seconds to ensure

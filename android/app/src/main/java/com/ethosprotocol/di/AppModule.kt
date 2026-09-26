@@ -10,6 +10,7 @@ import com.ethosprotocol.api.EncryptedTokenProvider
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
 import com.ethosprotocol.services.AppVersionChecker
+import com.ethosprotocol.services.CrashReporter
 import com.ethosprotocol.services.CredentialManagerFactory
 import com.ethosprotocol.services.PendingActionDatabase
 import com.ethosprotocol.services.PendingActionDao
@@ -66,4 +67,13 @@ object AppModule {
         @ApplicationContext context: Context,
         apiClient: ApiClient
     ): AppVersionChecker = AppVersionChecker(context, apiClient)
+
+    /**
+     * Provides the [CrashReporter] used to capture uncaught exceptions, stack
+     * traces and breadcrumbs, and to attach release/version context to every
+     * reported event.
+     */
+    @Provides @Singleton
+    fun provideCrashReporter(@ApplicationContext context: Context): CrashReporter =
+        CrashReporter(context)
 }
