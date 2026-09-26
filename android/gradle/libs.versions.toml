@@ -19,6 +19,7 @@ work = "2.10.0"
 security-crypto = "1.1.0-alpha06"
 paparazzi = "1.3.4"
 dependency-check = "12.2.2"
+benchmark = "1.3.1"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -67,6 +68,7 @@ androidx-test-ext = { group = "androidx.test.ext", name = "junit", version = "1.
 espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version = "3.6.1" }
 security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "security-crypto" }
 paparazzi = { group = "app.cash.paparazzi", name = "paparazzi", version.ref = "paparazzi" }
+benchmark-macro = { group = "androidx.benchmark", name = "benchmark-macro", version.ref = "benchmark" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

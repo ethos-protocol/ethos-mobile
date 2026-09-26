@@ -39,6 +39,7 @@ import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
 import com.ethosprotocol.ui.screens.WithdrawScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
+import com.ethosprotocol.utils.StartupPerformance
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -82,6 +83,10 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             EthosProtocolTheme {
+                LaunchedEffect(Unit) {
+                    StartupPerformance.markFirstFrame(this@MainActivity)
+                }
+
                 val beneficiaryAccept by deepLinkViewModel.pendingBeneficiaryAccept
                     .collectAsStateWithLifecycle()
                 val vaultDeepLink by deepLinkViewModel.pendingVaultDeepLink

@@ -12,17 +12,118 @@
           \"target\": {
             \"namespace\": \"android_app\",
             \"package_name\": \"com.ethosprotocol\",
-            \"sha256_cert_fingerprints\": [\"REPLACE_WITH_RELEASE_CERT_SHA256_FINGERPRINT\"]
+            \"sha256_cert_fingerprints\": [\"A3:3A:0A:24:68:B0:10:91:E6:F9:61:44:53:76:D4:9A:AE:A0:F6:02:95:CE:09:5B:55:47:E1:96:CF:16:D6:6C\"]
           }
         }]
     </string>
 
+    <!-- Widget strings -->
     <string name="widget_configure_title">Select Vault for Widget</string>
     <string name="widget_balance_label">Balance</string>
     <string name="widget_beneficiary_label">Beneficiary</string>
     <string name="widget_no_vaults">No vaults available</string>
-    <string name="shortcut_vaults_short">Vaults</string>
-    <string name="shortcut_vaults_long">Open vault list</string>
-    <string name="shortcut_check_in_short">Check in</string>
-    <string name="shortcut_check_in_long">Open vault check-in</string>
+
+    <!-- Authentication Screen strings -->
+    <string name="app_title">Ethos-Protocol</string>
+    <string name="app_tagline">Secure digital inheritance</string>
+    <string name="sign_in_with_passkey">Sign in with Passkey</string>
+    <string name="create_account">Create account</string>
+    <string name="auth_too_many_attempts">Too many failed attempts. Try again in %1$ds.</string>
+
+    <!-- Account Registration strings -->
+    <string name="register_title">Create Account</string>
+    <string name="register_username_label">Username</string>
+    <string name="register_username_rules">%1$d-%2$d characters: letters, numbers, \'.\', \'_\', \'-\' (must start/end with a letter or number)</string>
+    <string name="register_button">Register</string>
+
+    <!-- Account Recovery strings -->
+    <string name="recover_title">Recover Your Account</string>
+    <string name="recover_instructions">Enter your username and we\'ll send a recovery code to your account\'s verified email.</string>
+    <string name="recover_confirmation_instructions">Check your email for a confirmation, then tap Continue to link a new passkey on this device to your account.</string>
+    <string name="recover_send_code">Send Code</string>
+
+    <!-- Common action strings -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_back">Back</string>
+    <string name="action_done">Done</string>
+    <string name="action_verify">Verify</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_accept">Accept</string>
+    <string name="action_decline">Decline</string>
+
+    <!-- Vault List Screen strings -->
+    <string name="vault_list_title">My Vaults</string>
+    <string name="vault_list_empty">No vaults yet. Tap + to create one.</string>
+    <string name="vault_list_load_more">Load more</string>
+    <string name="vault_create_button">Create vault</string>
+
+    <!-- Security Warning strings -->
+    <string name="security_warning_title">Security Warning</string>
+    <string name="security_warning_message">This device appears to be rooted. Your vault data, passkeys, and 2FA secrets may be at greater risk. Consider using a non-rooted device for maximum security.</string>
+    <string name="security_warning_acknowledge">I Understand</string>
+
+    <!-- Create Vault Dialog strings -->
+    <string name="create_vault_title">New Vault</string>
+    <string name="create_vault_action">Create</string>
+
+    <!-- Check-In strings -->
+    <string name="checkin_title">Confirm Check-In</string>
+    <string name="checkin_vault_id">Vault: %1$s…</string>
+    <string name="checkin_ttl_extension">TTL will be extended by %1$s.</string>
+    <string name="checkin_requires_auth">Biometric or PIN confirmation is required.</string>
+    <string name="checkin_button">Check In</string>
+    <string name="checkin_expiring_soon">Expiring soon!</string>
+
+    <!-- Vault Detail strings -->
+    <string name="vault_deposit">Deposit</string>
+    <string name="vault_withdraw">Withdraw</string>
+
+    <!-- Destructive Confirmation strings -->
+    <string name="destructive_confirm_instruction">Type \"%1$s\" to confirm.</string>
+
+    <!-- Beneficiary Acceptance strings -->
+    <string name="beneficiary_acceptance_title">Beneficiary Acceptance</string>
+    <string name="beneficiary_vault_id_label">Vault ID</string>
+    <string name="beneficiary_stellar_address_label">Beneficiary Stellar address</string>
+    <string name="beneficiary_accept_button">Accept</string>
+    <string name="beneficiary_decline_button">Decline</string>
+
+    <!-- Manage Beneficiary strings -->
+    <string name="manage_beneficiary_title">Manage Beneficiary</string>
+    <string name="manage_beneficiary_current_label">Current beneficiary:</string>
+    <string name="manage_beneficiary_change_title">Confirm Change</string>
+    <string name="manage_beneficiary_from_label">From:</string>
+    <string name="manage_beneficiary_to_label">To:</string>
+    <string name="manage_beneficiary_new_address_label">New Beneficiary (Stellar address)</string>
+    <string name="manage_beneficiary_new_address_hint">Enter a valid Stellar address (56 characters, starting with G).</string>
+    <string name="manage_beneficiary_error_empty">Enter a non-empty address that differs from the current beneficiary.</string>
+    <string name="manage_beneficiary_confirm_change">Confirm Change</string>
+
+    <!-- Two-Factor Authentication strings -->
+    <string name="twofa_title">Two-Factor Authentication</string>
+    <string name="twofa_loading">Loading 2FA status…</string>
+    <string name="twofa_status_disabled">Status: Disabled</string>
+    <string name="twofa_enable">Enable 2FA</string>
+    <string name="twofa_disable">Disable 2FA</string>
+    <string name="twofa_switch_method">Switch Method</string>
+    <string name="twofa_verification_title">Authentication Method</string>
+    <string name="twofa_verify_now">Verify Now</string>
+
+    <!-- 2FA Method specific strings -->
+    <string name="twofa_email_label">Email address</string>
+    <string name="twofa_phone_label">Phone number</string>
+    <string name="twofa_code_hint">6-digit code</string>
+
+    <!-- Notification strings -->
+    <string name="notification_log_title">Notification Log</string>
+    <string name="notification_log_empty">No notification events logged yet.</string>
+
+    <!-- Vault specific strings -->
+    <string name="vault_checkin_interval">Check-in interval: %1$d days</string>
+    <string name="vault_balance_placeholder">0.0000000</string>
+
+    <!-- Remember device strings -->
+    <string name="remember_device">Remember this device</string>
 </resources>

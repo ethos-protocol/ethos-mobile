@@ -88,14 +88,14 @@ mobile/
 4. Set your Apple Developer Team in signing settings for both the `EthosProtocol` and `TTLWidget` targets (`project.yml` leaves `DEVELOPMENT_TEAM` blank on purpose — bundle IDs `com.ethosprotocol` / `com.ethosprotocol.TTLWidget` are already set)
 5. `API_BASE_URL` is already set in `EthosProtocol/Info.plist` and `TTLWidget/Info.plist`; edit both (they're separate bundles, read independently at runtime) if you need to point at a different environment
 6. Certificate pinning is **not active by default**: both `Info.plist`s declare `TLS_PUBLIC_KEY_PINS` as the `$(TLS_PUBLIC_KEY_PIN_CURRENT)` / `$(TLS_PUBLIC_KEY_PIN_BACKUP)` build settings (declared blank in `project.yml`), and `PinningDelegate` ignores blank/unexpanded entries. Set both settings to Base64-encoded SPKI SHA-256 hashes — in Xcode's build settings, an `.xcconfig`, or on the `xcodebuild` invocation (`xcodebuild … TLS_PUBLIC_KEY_PIN_CURRENT=… TLS_PUBLIC_KEY_PIN_BACKUP=…`) — before shipping a Release build; see `Sources/Services/CertificatePinning.swift` for the rotation strategy. `ios-ci.yml`'s `build-and-test` job runs `.github/scripts/check_tls_pinning.py --configuration Release` against both files and fails the build if either is missing or empty; Debug builds are exempt (`PinningDelegate` intentionally treats an empty pin set as "pinning disabled" for local dev)
-7. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`, listing this app's App ID under both `applinks` (Universal Links) and `webcredentials` (platform passkeys)
+7. Configure Apple App Site Association at `https://ethos-protocol.app/.well-known/apple-app-site-association`, listing this app's App ID under both `applinks` (Universal Links) and `webcredentials` (platform passkeys). CI automatically verifies this file daily and on any change to `EthosProtocol.entitlements` (see `ios-applinks-verify.yml`).
 8. In the Apple Developer portal, enable Push Notifications, Associated Domains, iCloud (Key-Value storage), and Keychain Sharing capabilities for the `com.ethosprotocol` App ID, and Keychain Sharing for `com.ethosprotocol.TTLWidget` — matching `EthosProtocol/EthosProtocol.entitlements` / `TTLWidget/TTLWidget.entitlements`. Set up an APNs key in App Store Connect for push.
 9. Re-run `mkdir -p Xcode && xcodegen generate --project Xcode` any time `project.yml` changes; the generated `Xcode/` directory is disposable and shouldn't be committed
 
 ### Android
 1. Open `android` in Android Studio Hedgehog+
 2. Add `google-services.json` from Firebase Console
-3. Configure `assetlinks.json` at `https://ethos-protocol.app/.well-known/assetlinks.json`
+3. Configure `assetlinks.json` at `https://ethos-protocol.app/.well-known/assetlinks.json`. CI automatically verifies this file daily and on any change to `AndroidManifest.xml` (see `android-applinks-verify.yml`).
 4. Set `API_BASE_URL` in `build.gradle.kts` `buildConfigField`
 5. Configure the certificate pins for release builds by setting `ETHOS_CERT_PINS` (environment variable) or `ethos.certPins` (in `~/.gradle/gradle.properties`, never committed) to a comma-separated list of Base64 SHA-256 SPKI digests — the current certificate's pin plus a backup for the next one. This is required before any release build: pinning is **not** active by default. When unset, `CertificatePinner`'s pin set is empty — pinning is disabled and the system trust store decides (#169), so there is no compiled-in pin that could reject every real certificate. CI's `Verify release certificate pins are not placeholders` step reports an unconfigured release build (#173), and fails it outright once the pins are configured but wrong, or once release signing is configured (i.e. the artifact is actually shippable). Debug builds are not gated, since an empty pin set disables pinning for local/dev hosts. Compute a pin with:
    ```bash
@@ -145,6 +145,35 @@ cd android
 ```
 Covers: ViewModel state transitions, model logic, Compose UI smoke tests.
 
+#### RTL Layout Testing (Issue #314)
+
+The app supports Right-to-Left (RTL) locales (Arabic, Hebrew, etc.) via automatic layout mirroring. To test RTL functionality:
+
+**Enable RTL layout direction on a device/emulator:**
+```bash
+adb shell settings put global debug.force_rtl_layout 1
+```
+
+**Run the app and verify:**
+- All screens display with proper mirroring (buttons, text, icons)
+- No text clipping or overlap at edges
+- Numerical values format correctly (see Issue #313 for locale-aware formatting)
+
+**Disable RTL when done:**
+```bash
+adb shell settings put global debug.force_rtl_layout 0
+```
+
+See [docs/rtl-layout-testing.md](docs/rtl-layout-testing.md) for comprehensive RTL testing procedures on both platforms.
+
+### iOS RTL Testing
+
+Enable RTL pseudo-language in Xcode to test Right-to-Left layout support:
+
+1. Edit Scheme → Run → Options
+2. Set "App Language" to an RTL pseudo-language (e.g., `ar-XB` for Arabic-Pseudo)
+3. Run the app and verify all screens mirror correctly
+
 <<<<<<< HEAD
 ### Dependency vulnerability scanning
 The repo runs a dependency scan for both platforms with the same trigger model:
@@ -186,7 +215,34 @@ gh pr list --state merged --limit 200 --json number,title,body > merged-prs.json
 ```
 
 This keeps parity-status messaging consistent with the cross-platform tracking table and helps release notes communicate platform catch-up progress accurately.
-=======
+
+### App Links Verification (Deep Linking & Passkeys)
+
+Both platforms verify that their respective deep-linking and passkey configuration files are correctly hosted and match the app's entitlements/manifest expectations. These checks run daily and on any change to app configuration, catching server-side drift without requiring a code push:
+
+#### iOS: Apple App Site Association (Universal Links + Passkeys)
+- **Workflow**: `.github/workflows/ios-applinks-verify.yml`
+- **Script**: `scripts/verify_apple_app_site_association.sh`
+- **Verification targets**:
+  - File is reachable at `https://ethos-protocol.app/.well-known/apple-app-site-association` (HTTP 200)
+  - File contains valid JSON
+  - `applinks` section lists the app's Team ID + Bundle ID (`com.ethosprotocol`)
+  - `webcredentials` section lists the app's Team ID + Bundle ID (required for platform passkeys)
+- **Configuration**: Set `APPLE_TEAM_IDENTIFIER` as a repository variable (Apple Developer Team ID, e.g., "ABCDEFGHIJ")
+
+#### Android: Digital Asset Links (App Links + Passkeys)
+- **Workflow**: `.github/workflows/android-applinks-verify.yml`
+- **Script**: `scripts/verify_assetlinks.sh`
+- **Verification targets**:
+  - File is reachable at `https://ethos-protocol.app/.well-known/assetlinks.json` (HTTP 200)
+  - File contains valid JSON
+  - Contains `delegate_permission/common.handle_all_urls` relation for `com.ethosprotocol`
+  - Namespace is `android_app`
+  - Certificate fingerprint matches the release signing certificate (optional, configurable)
+- **Configuration**: Set `ANDROID_CERT_SHA256` as a repository secret (SHA-256 fingerprints, one per line)
+
+Both workflows file an automated GitHub issue alert on scheduled-run failures, avoiding duplicate alerts by commenting on existing open issues instead of creating new ones each run.
+
 ### Staging Smoke Test
 
 `.github/workflows/staging-smoke-test.yml` runs `scripts/smoke_test_staging.sh`
@@ -197,4 +253,3 @@ exercises auth, `GET /vaults`, and `POST /vaults/{id}/checkin` to catch a
 backend/client contract mismatch (see `shared/api-contract.md`) before a
 release build is cut. The workflow is exposed via `workflow_call` so a release
 workflow can add `needs:` on it once one exists.
->>>>>>> pr-365-merge

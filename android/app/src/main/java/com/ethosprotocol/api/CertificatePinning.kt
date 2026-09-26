@@ -68,11 +68,18 @@ open class CertificatePinner(
      * pins configured) so the caller falls back to the system trust store.
      */
     fun checkPin(chain: Array<out X509Certificate>): Boolean {
-        if (!isPinningEnabled) return true
-        return chain.any { cert ->
+        return validatePins(chain).isValid
+    }
+
+    fun validatePins(chain: Array<out X509Certificate>): PinValidationResult {
+        if (!isPinningEnabled) return PinValidationResult(isValid = true, matchedHash = null, checkedPins = 0)
+        for (cert in chain) {
             val hash = spkiSHA256(cert)
-            pinnedHashes.contains(hash)
+            if (pinnedHashes.contains(hash)) {
+                return PinValidationResult(isValid = true, matchedHash = hash, checkedPins = chain.size)
+            }
         }
+        return PinValidationResult(isValid = false, matchedHash = null, checkedPins = chain.size)
     }
 
     /**
@@ -114,6 +121,12 @@ open class CertificatePinner(
                 .toSet()
     }
 }
+
+data class PinValidationResult(
+    val isValid: Boolean,
+    val matchedHash: String?,
+    val checkedPins: Int
+)
 
 /**
  * A [X509TrustManager] that wraps a [CertificatePinner].

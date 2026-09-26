@@ -9,6 +9,7 @@ import com.ethosprotocol.models.AuthToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import android.util.Base64
 import java.io.File
 import java.security.MessageDigest
 import java.time.Duration
@@ -48,6 +49,10 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     // "last updated N hours ago" instead of silently serving data. -1L means no expiry enforced.
     internal var maxAgeMs: Long = DEFAULT_MAX_AGE_MS
 
+    // Optional more aggressive TTL (in addition to maxAgeMs) for faster cache invalidation
+    // when needed. Set to non-negative value to enable. -1L means no aggressive TTL enforced.
+    internal var aggressiveTtlMs: Long = -1L
+
     // Tracks access recency in-memory (accessOrder = true keeps the most-recently-used entry at
     // the tail on both get and put). Filesystem mtime is deliberately not used for LRU ordering
     // since its resolution varies across filesystems/devices and would make eviction order
@@ -60,20 +65,24 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
 
     init {
         dir.listFiles()?.sortedBy { it.lastModified() }?.forEach { accessOrder[it.name] = Unit }
+        // Clean up expired cache entries on app launch
+        cleanupExpiredEntries()
     }
 
     fun save(key: String, json: String) {
         val fileName = key.sha256()
-        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = json)
+        val envelope = CacheEnvelope(timestamp = System.currentTimeMillis(), data = encodeCachedPayload(json))
         File(dir, fileName).writeText(Json.encodeToString(CacheEnvelope.serializer(), envelope))
         touch(fileName)
+        CacheTelemetry.recordWrite(json.length.toLong())
         evictIfNeeded()
     }
 
     fun load(key: String): CacheEnvelope? {
         val fileName = key.sha256()
         val envelope = runCatching {
-            Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
+            val raw = Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
+            raw.copy(data = decodeCachedPayload(raw.data))
         }.getOrNull()
         if (envelope != null) {
             touch(fileName)
@@ -95,10 +104,35 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
         accessOrder.clear()
     }
 
-    /** Returns true when the given cache timestamp is older than [maxAgeMs]. */
+    /** Returns true when the given cache timestamp is older than [maxAgeMs] or [aggressiveTtlMs]. */
     fun isCachedAtStale(timestamp: Long): Boolean {
+        val now = System.currentTimeMillis()
+        val age = now - timestamp
+        // Check aggressive TTL first if set
+        if (aggressiveTtlMs >= 0 && age > aggressiveTtlMs) return true
+        // Then check standard maxAgeMs
         if (maxAgeMs < 0) return false
-        return System.currentTimeMillis() - timestamp > maxAgeMs
+        return age > maxAgeMs
+    }
+
+    /** Cleans up expired cache entries on app launch or manual trigger. */
+    fun cleanupExpiredEntries() {
+        dir.listFiles()?.forEach { file ->
+            runCatching {
+                val envelope = Json.decodeFromString(CacheEnvelope.serializer(), file.readText())
+                if (isCachedAtStale(envelope.timestamp)) {
+                    file.delete()
+                    accessOrder.keys.remove(file.name)
+                }
+            }
+        }
+    }
+
+    /** Invalidate cache entry for a specific key, typically on manual refresh. */
+    fun invalidate(key: String) {
+        val fileName = key.sha256()
+        File(dir, fileName).delete()
+        accessOrder.keys.remove(fileName)
     }
 
     private fun touch(fileName: String) {
@@ -120,6 +154,18 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
         }
     }
 
+    private fun encodeCachedPayload(json: String): String =
+        Base64.encodeToString(xorWithCacheKey(json.toByteArray()), Base64.NO_WRAP)
+
+    private fun decodeCachedPayload(encoded: String): String =
+        runCatching { String(xorWithCacheKey(Base64.decode(encoded, Base64.NO_WRAP))) }.getOrDefault(encoded)
+
+    private fun xorWithCacheKey(bytes: ByteArray): ByteArray {
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest("${context.packageName}:offline-cache".toByteArray())
+        return ByteArray(bytes.size) { index -> (bytes[index].toInt() xor key[index % key.size].toInt()).toByte() }
+    }
+
     private fun String.sha256(): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
@@ -128,6 +174,7 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     companion object {
         const val DEFAULT_MAX_CACHE_BYTES = 5L * 1024 * 1024 // 5 MB
         const val DEFAULT_MAX_AGE_MS = 24L * 60 * 60 * 1000 // 24 hours
+        const val ENABLE_HTTP2_PUSH_CACHE = false
     }
 }
 
@@ -136,21 +183,24 @@ object CacheTelemetry {
     private val _hits = java.util.concurrent.atomic.AtomicLong(0)
     private val _misses = java.util.concurrent.atomic.AtomicLong(0)
     private val _staleServed = java.util.concurrent.atomic.AtomicLong(0)
+    private val _bytesWritten = java.util.concurrent.atomic.AtomicLong(0)
 
     val hits: Long get() = _hits.get()
     val misses: Long get() = _misses.get()
     val staleServed: Long get() = _staleServed.get()
+    val bytesWritten: Long get() = _bytesWritten.get()
 
     fun recordHit() { _hits.incrementAndGet() }
     fun recordMiss() { _misses.incrementAndGet() }
     fun recordStaleServed() { _staleServed.incrementAndGet() }
+    fun recordWrite(bytes: Long) { _bytesWritten.addAndGet(bytes.coerceAtLeast(0L)) }
 
-    fun reset() { _hits.set(0); _misses.set(0); _staleServed.set(0) }
+    fun reset() { _hits.set(0); _misses.set(0); _staleServed.set(0); _bytesWritten.set(0) }
 
-    fun snapshot() = CacheTelemetrySnapshot(hits, misses, staleServed)
+    fun snapshot() = CacheTelemetrySnapshot(hits, misses, staleServed, bytesWritten)
 }
 
-data class CacheTelemetrySnapshot(val hits: Long, val misses: Long, val staleServed: Long)
+data class CacheTelemetrySnapshot(val hits: Long, val misses: Long, val staleServed: Long, val bytesWritten: Long)
 
 /**
  * Abstracted so PasskeyServiceTest can supply an in-memory fake without a real
