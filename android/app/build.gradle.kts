@@ -292,13 +292,13 @@ jacoco {
 }
 
 tasks.withType<Test>().configureEach {
-    jacoco {
+    extensions.configure<JacocoTaskExtension> {
         isIncludeNoLocationClasses = true
     }
 }
 
-task<JacocoReport>("jacocoTestReport") {
-    dependsOn(tasks.testDebugUnitTest)
+tasks.register<JacocoReport>("jacocoTestReport") {
+    dependsOn("testDebugUnitTest")
     group = "Coverage"
     description = "Generate JaCoCo coverage report for unit tests"
 

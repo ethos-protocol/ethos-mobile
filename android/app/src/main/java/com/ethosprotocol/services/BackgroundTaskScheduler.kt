@@ -78,6 +78,46 @@ import java.util.concurrent.TimeUnit
  * Adaptive intervals (like VaultWidgetUpdateWorker's 15/60 min) are a workaround to
  * provide faster updates when needed without bumping the minimum.
  */
+data class BatteryTaskMetric(
+    val name: String,
+    val purpose: String,
+    val intervalMinutes: Long,
+    val requiresNetwork: Boolean,
+    val maxWakeupsPerHour: Double
+)
+
+object BatteryDrainMetrics {
+    const val MAX_URGENT_WAKEUPS_PER_HOUR = 4.0
+    const val MAX_NORMAL_WAKEUPS_PER_HOUR = 1.0
+
+    /**
+     * Work items that are most likely to impact battery life because they wake the device,
+     * fetch remote data, or run while the app is backgrounded.
+     */
+    val powerHungryOperations = listOf(
+        BatteryTaskMetric(
+            name = "VaultWidgetUpdateWorker",
+            purpose = "Refresh cached widget data and TTL status",
+            intervalMinutes = 15L,
+            requiresNetwork = true,
+            maxWakeupsPerHour = MAX_URGENT_WAKEUPS_PER_HOUR
+        ),
+        BatteryTaskMetric(
+            name = "PendingActionSyncWorker",
+            purpose = "Retry queued offline actions once connectivity returns",
+            intervalMinutes = 15L,
+            requiresNetwork = true,
+            maxWakeupsPerHour = MAX_URGENT_WAKEUPS_PER_HOUR
+        )
+    )
+
+    fun estimateWakeupsPerHour(intervalMinutes: Long): Double =
+        if (intervalMinutes <= 0L) Double.POSITIVE_INFINITY else 60.0 / intervalMinutes.toDouble()
+
+    fun isWithinBudget(intervalMinutes: Long, maxWakeupsPerHour: Double): Boolean =
+        estimateWakeupsPerHour(intervalMinutes) <= maxWakeupsPerHour
+}
+
 object BackgroundTaskScheduler {
 
     /**
