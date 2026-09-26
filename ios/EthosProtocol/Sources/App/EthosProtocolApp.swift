@@ -51,6 +51,14 @@ struct EthosProtocolApp: App {
                     guard let url = activity.webpageURL else { return }
                     vaultStore.pendingDeepLink = UniversalLinkRouter.shared.parse(url: url)
                 }
+                // #440: Handle Spotlight search result taps — route the user directly to
+                // the vault detail view for the tapped vault.
+                .onContinueUserActivity(SpotlightService.activityType) { activity in
+                    guard let vaultID = activity.userInfo?["vaultID"] as? String else { return }
+                    vaultStore.pendingDeepLink = UniversalLinkRouter.shared.parse(
+                        url: URL(string: "ethosprotocol://vault/\(vaultID)/view-details")!
+                    )
+                }
                 // #276: Observe scene-phase transitions to drive session-lock timers.
                 .onChange(of: scenePhase) { newPhase in
                     switch newPhase {
