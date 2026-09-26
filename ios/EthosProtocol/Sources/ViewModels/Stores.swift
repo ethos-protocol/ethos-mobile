@@ -388,6 +388,10 @@ final class VaultStore: ObservableObject {
                     DuplicateVaultLogger.shared.logDeduplication(count: duplicateCount)
                 }
                 scheduleReminders()
+                // Donate all active vaults to Spotlight so users can find them from
+                // the home screen without opening the app (#440).
+                let activeVaults = dedupedVaults.filter { $0.status == .active }
+                SpotlightService.shared.donateAll(vaults: activeVaults)
             }
         } catch APIError.networkUnavailable {
             // Vaults already populated from offline cache via APIClient
@@ -551,10 +555,14 @@ final class VaultStore: ObservableObject {
                 // Recorded before the refetch so a same-instant push (#232) sees it.
                 NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
                                                        eventType: "vault_expired", vaultID: expiredVaultID)
+                // Remove the vault from Spotlight — it's no longer active (#440).
+                SpotlightService.shared.revoke(vaultID: expiredVaultID)
                 Task { await self.load() }
             case .vaultReleased(let releasedVaultID, _, _):
                 NotificationDeliveryLog.shared.record(kind: .delivered, source: .websocket,
                                                        eventType: "vault_released", vaultID: releasedVaultID)
+                // Remove the vault from Spotlight — it's no longer active (#440).
+                SpotlightService.shared.revoke(vaultID: releasedVaultID)
                 Task { await self.load() }
             case .ping:
                 // Server keepalive — no state change.

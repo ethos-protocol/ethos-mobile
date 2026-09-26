@@ -86,6 +86,47 @@ class WidgetScreenshotDarkTest {
             )
         }
     }
+
+    // -------------------------------------------------------------------------
+    // #439: Additional dark mode test cases for issue #439 (Widget Dark Mode Support)
+    // -------------------------------------------------------------------------
+
+    /**
+     * #439: Dark-mode widget — expiring vault state (TTL < 24h, isExpiringSoon = true).
+     *
+     * Distinct from widget_expiringSoon_dark (TTL < 30 min) — this covers the broader
+     * 24-hour urgency window that drives the isExpiringSoon flag and orange TTL colour.
+     */
+    @Test
+    fun widget_expiring_dark() {
+        paparazzi.snapshot {
+            VaultWidgetPreview(
+                vaultName = "vault-aabbccdd…",
+                ttl = "18h 30m",
+                lastCheckIn = "6 hours ago",
+                darkTheme = true,
+                isExpiringSoon = true
+            )
+        }
+    }
+
+    /**
+     * #439: Dark-mode widget — empty state ("No active vaults").
+     *
+     * Distinct from widget_unavailable_dark (network error) — this represents the case
+     * where the user has no active vaults at all, showing a dash vault name.
+     */
+    @Test
+    fun widget_empty_dark() {
+        paparazzi.snapshot {
+            VaultWidgetPreview(
+                vaultName = "No active vaults",
+                ttl = "—",
+                lastCheckIn = "—",
+                darkTheme = true
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

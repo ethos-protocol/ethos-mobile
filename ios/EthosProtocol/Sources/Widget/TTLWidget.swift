@@ -163,6 +163,18 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
 struct TTLWidgetView: View {
     let entry: VaultEntry
     @Environment(\.widgetFamily) private var family
+    // #439: Read the current colour scheme so views can adapt tint colours
+    // without needing separate dark/light layouts.
+    @Environment(\.colorScheme) private var colorScheme
+
+    // #439: Accent colour adapts between schemes — .blue is legible on the light
+    // material background; .cyan has better contrast against the dark variant.
+    // .containerBackground(.regularMaterial, for: .widget) already handles the
+    // background colour automatically for both light and dark mode — no custom
+    // background logic is needed here.
+    private var widgetAccentColor: Color {
+        colorScheme == .dark ? .cyan : .blue
+    }
 
     var body: some View {
         switch family {
@@ -184,7 +196,7 @@ struct TTLWidgetView: View {
         VStack(alignment: .leading, spacing: 4) {
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
-                .foregroundStyle(.blue)
+                .foregroundStyle(widgetAccentColor)
                 .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
@@ -211,6 +223,9 @@ struct TTLWidgetView: View {
             }
         }
         .padding()
+        // .containerBackground(.regularMaterial, for: .widget) automatically provides an
+        // adaptive background that matches the system appearance in both light and dark
+        // mode — no manual colour switching is needed for the widget background. (#439)
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
         .accessibilityElement(children: .combine)
@@ -221,7 +236,7 @@ struct TTLWidgetView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
-                .foregroundStyle(.blue)
+                .foregroundStyle(widgetAccentColor)
                 .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
@@ -266,7 +281,7 @@ struct TTLWidgetView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
-                .foregroundStyle(.blue)
+                .foregroundStyle(widgetAccentColor)
                 .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.title3.bold())
@@ -332,7 +347,7 @@ struct TTLWidgetView: View {
         VStack(alignment: .leading, spacing: 4) {
             Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
-                .foregroundStyle(.blue)
+                .foregroundStyle(widgetAccentColor)
                 .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
@@ -358,10 +373,14 @@ struct TTLWidgetView: View {
                     .accessibilityValue("Vault expiring soon")
             }
             .buttonStyle(.bordered)
-            .tint(.blue)
+            .tint(widgetAccentColor)
             .padding(.top, 4)
         }
         .padding()
+        // .containerBackground(.regularMaterial, for: .widget) automatically provides an
+        // adaptive background that matches the system appearance — light vibrancy in light
+        // mode and a dark translucent surface in dark mode — so no manual colour switching
+        // is needed for the widget background. (#439)
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
         .accessibilityElement(children: .combine)
@@ -394,4 +413,56 @@ struct TTLWidgetBundle: WidgetBundle {
     var body: some Widget {
         TTLWidget()
     }
+}
+
+// MARK: - Dark Mode Previews (#439)
+//
+// These previews render each widget size in dark mode so you can verify that
+// widgetAccentColor (.cyan), .primary/.secondary foreground styles, and the
+// .containerBackground(.regularMaterial) all look correct without running on
+// a physical device.
+
+@available(iOSApplicationExtension 17.0, *)
+#Preview("Small – Dark", as: .systemSmall) {
+    TTLWidget()
+} timeline: {
+    VaultEntry(
+        date: .now,
+        vaultID: "vault-dark-small",
+        vaultName: "Dark Vault",
+        ttlRemaining: 82_800,
+        isExpiringSoon: false,
+        balance: "1.0000000 XLM",
+        beneficiary: "GXYZ…"
+    )
+}
+
+@available(iOSApplicationExtension 17.0, *)
+#Preview("Medium – Dark", as: .systemMedium) {
+    TTLWidget()
+} timeline: {
+    VaultEntry(
+        date: .now,
+        vaultID: "vault-dark-medium",
+        vaultName: "Expiring Vault",
+        ttlRemaining: 1_800,
+        isExpiringSoon: true,
+        balance: "2.5000000 XLM",
+        beneficiary: "GABC…"
+    )
+}
+
+@available(iOSApplicationExtension 17.0, *)
+#Preview("Large – Dark", as: .systemLarge) {
+    TTLWidget()
+} timeline: {
+    VaultEntry(
+        date: .now,
+        vaultID: "vault-dark-large",
+        vaultName: "My Primary Vault",
+        ttlRemaining: 3_600,
+        isExpiringSoon: true,
+        balance: "0.5000000 XLM",
+        beneficiary: "GDEF…"
+    )
 }

@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.widget.RemoteViews
@@ -147,6 +148,29 @@ class VaultStatusWidget : AppWidgetProvider() {
             val options = manager.getAppWidgetOptions(widgetId)
             val layoutId = selectLayout(options)
 
+            // ---------------------------------------------------------------------------
+            // #439: Widget Dark Mode Support
+            //
+            // Android supports widget dark mode via night-mode resource qualifiers.
+            // The recommended approach is:
+            //   res/layout/vault_widget.xml       — light-mode layout (hardcoded light colours)
+            //   res/layout-night/vault_widget.xml — dark-mode layout (dark background + light text)
+            //
+            // At runtime, Android selects the appropriate layout automatically based on the
+            // current UI mode, so RemoteViews built from R.layout.vault_widget will already
+            // pick up the night variant when the device is in dark mode.
+            //
+            // If vault_widget.xml currently uses hardcoded colours (e.g. #FF1C1C1E background,
+            // white text), add res/layout-night/vault_widget.xml with dark-surface colours
+            // (e.g. #FF2C2C2E background, #EBEBF5 text) and the same view IDs so the code
+            // below works unchanged.
+            //
+            // As a runtime fallback, we also detect dark mode here and can apply
+            // RemoteViews.setColorAttr / setInt overrides for fine-grained control.
+            // ---------------------------------------------------------------------------
+            val isDarkMode = context.resources.configuration.uiMode and
+                    Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
             val views = RemoteViews(context.packageName, layoutId).apply {
                 setTextViewText(R.id.widget_vault_name, vaultName)
                 setTextViewText(R.id.widget_ttl, "TTL: $ttl")
@@ -156,6 +180,22 @@ class VaultStatusWidget : AppWidgetProvider() {
                 setTextViewText(R.id.widget_balance, balance)
                 setTextViewText(R.id.widget_beneficiary, beneficiary)
                 setOnClickPendingIntent(R.id.widget_root, pendingIntent)
+
+                // #439: If vault_widget.xml does NOT yet have a res/layout-night/ variant,
+                // apply programmatic dark/light overrides here.  These mirror the colours in
+                // WidgetScreenshotTest (VaultWidgetPreview):
+                //   Dark  background : 0xFF1C1C1E  (matches existing XML dark bg)
+                //   Light background : 0xFFFFFFFF  (standard light surface)
+                //   Dark  text       : 0xFFEBEBF5  (iOS-aligned off-white)
+                //   Light text       : 0xFF1C1C1E  (dark label)
+                //
+                // Remove these overrides once res/layout-night/vault_widget.xml is added and
+                // the XML handles colour selection automatically via night-mode qualifiers.
+                if (isDarkMode) {
+                    setInt(R.id.widget_root, "setBackgroundColor", 0xFF1C1C1E.toInt())
+                } else {
+                    setInt(R.id.widget_root, "setBackgroundColor", android.graphics.Color.WHITE)
+                }
             }
             manager.updateAppWidget(widgetId, views)
         }

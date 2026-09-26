@@ -235,3 +235,92 @@ jobs:
             -scheme EthosProtocolTests \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             -skipMacroValidation
+
+  # ── UI Automation Tests (#441) ────────────────────────────────────────────
+  # Runs the XCUITest suite (Tests/UI/) against a booted iOS Simulator.
+  #
+  # This job is intentionally marked continue-on-error: true for two reasons:
+  #   1. XCUITest requires the app to be installed and running inside a fully
+  #      booted simulator. In certain macos-latest runner configurations the
+  #      simulator environment is non-deterministically unavailable, causing
+  #      spurious failures that don't reflect real regressions.
+  #   2. Several tests are auth-gated and skip gracefully when the app doesn't
+  #      support the UI_TEST_MOCK_AUTHENTICATED launch-environment flag yet.
+  #      Once the app-side mock-auth support is in place, this flag can be
+  #      tightened (continue-on-error: false) to enforce the full suite.
+  #
+  # The job always runs after build-and-test (needs:) so it never starts
+  # against a build that is already known to be broken.
+  ui-tests:
+    needs: build-and-test
+    runs-on: macos-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      # Resolve the newest available iPhone simulator to a concrete UDID.
+      # Using a hard-coded "OS=latest" destination breaks whenever the runner
+      # image changes and a runtime disappears — the same approach used in
+      # build-and-test avoids that fragility.
+      - name: Select iOS Simulator destination
+        id: simulator
+        run: |
+          SIMULATOR=$(xcrun simctl list devices available \
+            | sed -n '/^-- iOS/,$p' \
+            | grep -E '^ +iPhone' \
+            | tail -1)
+          UDID=$(echo "$SIMULATOR" | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+
+          if [ -z "$UDID" ]; then
+            echo "::warning::No available iPhone simulator found — UI tests will be skipped."
+            echo "udid=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Using simulator: $SIMULATOR"
+            echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The XcodeGen-generated project is required for xcodebuild to resolve
+      # the EthosProtocol *app* scheme (the SPM Package.swift only produces
+      # library products, not an installable .app that XCUITest can launch).
+      - name: Generate Xcode project (XcodeGen)
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
+
+      # Boot the simulator explicitly before xcodebuild so it is ready when
+      # the test process tries to install the app. Without this, xcodebuild
+      # sometimes times out waiting for the simulator to finish booting.
+      - name: Boot simulator
+        if: steps.simulator.outputs.udid != ''
+        run: |
+          xcrun simctl boot "${{ steps.simulator.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
+
+      # Run only the UI test target. The -only-testing flag scopes xcodebuild
+      # to the EthosProtocolUITests bundle so unit tests are not re-executed
+      # here (they ran in build-and-test above).
+      #
+      # UI_TEST_MOCK_AUTHENTICATED is forwarded as a TEST_RUNNER_ variable so
+      # the simulator-hosted app process receives it. This is the same pattern
+      # used for TEST_RUNNER_CI in the hosted unit-test step above.
+      - name: Run UI Tests (iOS Simulator)
+        if: steps.simulator.outputs.udid != ''
+        run: |
+          TEST_RUNNER_UI_TEST_MOCK_AUTHENTICATED=1 \
+          TEST_RUNNER_UI_TEST_SEED_VAULTS=1 \
+          xcodebuild test \
+            -project Xcode/EthosProtocol.xcodeproj \
+            -scheme EthosProtocol \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            -only-testing:EthosProtocolUITests \
+            -skipMacroValidation \
+            -resultBundlePath ui-test-results.xcresult
