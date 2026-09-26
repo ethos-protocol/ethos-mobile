@@ -25,9 +25,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import android.util.Base64
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 import javax.net.ssl.SSLContext
@@ -413,7 +416,29 @@ class ApiClient(
         val timestamp = System.currentTimeMillis() / 1_000L
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
+        requestSignature(nonce, timestamp, idempotencyKey)?.let { header("X-Request-Signature", it) }
         if (idempotencyKey != null) header("X-Idempotency-Key", idempotencyKey)
+    }
+
+    private fun requestSignature(nonce: String, timestamp: Long, idempotencyKey: String?): String? {
+        val token = tokenProvider.token ?: return null
+        val canonical = listOf(nonce, timestamp.toString(), idempotencyKey.orEmpty()).joinToString(":")
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        return Base64.encodeToString(mac.doFinal(canonical.toByteArray()), Base64.NO_WRAP)
+    }
+}
+
+object HpkpTelemetry {
+    private val _pinHeadersSeen = AtomicLong(0)
+    private val _reportOnlyHeadersSeen = AtomicLong(0)
+
+    val pinHeadersSeen: Long get() = _pinHeadersSeen.get()
+    val reportOnlyHeadersSeen: Long get() = _reportOnlyHeadersSeen.get()
+
+    fun record(response: HttpResponse) {
+        if (response.headers["Public-Key-Pins"] != null) _pinHeadersSeen.incrementAndGet()
+        if (response.headers["Public-Key-Pins-Report-Only"] != null) _reportOnlyHeadersSeen.incrementAndGet()
     }
 }
 
