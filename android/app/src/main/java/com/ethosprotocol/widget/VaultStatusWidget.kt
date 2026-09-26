@@ -16,11 +16,13 @@ import com.ethosprotocol.api.ApiClient
 import com.ethosprotocol.api.ApiResult
 import com.ethosprotocol.models.VaultStatus
 import com.ethosprotocol.ui.MainActivity
+import com.ethosprotocol.utils.DateTimeFormatter
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlin.math.absoluteValue
 
 class VaultStatusWidget : AppWidgetProvider() {
 
@@ -125,8 +127,8 @@ class VaultStatusWidget : AppWidgetProvider() {
             val prefs = context.getSharedPreferences(prefsName(widgetId), Context.MODE_PRIVATE)
             val vaultId = prefs.getString(KEY_VAULT_ID, null)
             val vaultName = prefs.getString(KEY_VAULT_NAME, "—") ?: "—"
-            val ttl = prefs.getString(KEY_TTL, "Unknown") ?: "Unknown"
-            val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, "Never") ?: "Never"
+            val ttl = prefs.getString(KEY_TTL, context.getString(R.string.widget_ttl_unknown)) ?: context.getString(R.string.widget_ttl_unknown)
+            val lastCheckIn = prefs.getString(KEY_LAST_CHECK_IN, context.getString(R.string.widget_last_checkin_never)) ?: context.getString(R.string.widget_last_checkin_never)
             val balance = prefs.getString(KEY_BALANCE, "—") ?: "—"
             val beneficiary = prefs.getString(KEY_BENEFICIARY, "—") ?: "—"
 
@@ -165,19 +167,26 @@ class VaultStatusWidget : AppWidgetProvider() {
         }
 
         /** Formats an ISO-8601 timestamp as a relative time ("2 hours ago") for widget display. */
-        internal fun formatLastCheckIn(isoTimestamp: String, now: Instant = Instant.now()): String {
+        internal fun formatLastCheckIn(isoTimestamp: String, context: Context, now: Instant = Instant.now()): String {
             val checkInInstant = runCatching { Instant.parse(isoTimestamp) }.getOrNull() ?: return isoTimestamp
             val seconds = Duration.between(checkInInstant, now).seconds.coerceAtLeast(0)
             return when {
-                seconds < 60 -> "Just now"
-                seconds < 3_600 -> relative(seconds / 60, "minute")
-                seconds < 86_400 -> relative(seconds / 3_600, "hour")
-                else -> relative(seconds / 86_400, "day")
+                seconds < 60 -> context.getString(R.string.widget_last_checkin_just_now)
+                seconds < 3_600 -> relative(context, seconds / 60, "minute")
+                seconds < 86_400 -> relative(context, seconds / 3_600, "hour")
+                else -> relative(context, seconds / 86_400, "day")
             }
         }
 
-        private fun relative(value: Long, unit: String): String =
-            "$value $unit${if (value == 1L) "" else "s"} ago"
+        private fun relative(context: Context, value: Long, unit: String): String {
+            val plural = if (value == 1L) "" else "s"
+            return when (unit) {
+                "minute" -> context.getString(R.string.widget_last_checkin_minutes, value, plural)
+                "hour" -> context.getString(R.string.widget_last_checkin_hours, value, plural)
+                "day" -> context.getString(R.string.widget_last_checkin_days, value, plural)
+                else -> "$value $unit$plural ago"
+            }
+        }
     }
 }
 
@@ -223,8 +232,8 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
                     widgetId = widgetId,
                     vaultId = vault.id,
                     vaultName = vault.id.take(12) + "…",
-                    ttlRemaining = formatTtl(vault.ttlRemaining),
-                    lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn),
+                    ttlRemaining = formatTtl(applicationContext, vault.ttlRemaining),
+                    lastCheckIn = VaultStatusWidget.formatLastCheckIn(vault.lastCheckIn, applicationContext),
                     balance = vault.formattedBalance,
                     beneficiary = vault.beneficiary.take(12) + "…"
                 )
@@ -236,11 +245,9 @@ class VaultWidgetUpdateWorker @AssistedInject constructor(
         return Result.success()
     }
 
-    private fun formatTtl(seconds: Long?): String {
-        if (seconds == null) return "Unknown"
-        val days = seconds / 86400
-        val hours = (seconds % 86400) / 3600
-        return if (days > 0) "${days}d ${hours}h" else "${hours}h"
+    private fun formatTtl(context: Context, seconds: Long?): String {
+        if (seconds == null) return context.getString(R.string.widget_ttl_unknown)
+        return DateTimeFormatter.formatDurationInSeconds(seconds)
     }
 
     companion object {

@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 data class RetryPolicy(
     val maxAttempts: Int,
     val baseDelayMillis: Long,
+    val maxDelayMillis: Long = 30_000,
     val sleep: suspend (Long) -> Unit = { delay(it) },
     // Source of randomness for jitter (see [withRetry]). Injectable so tests can
     // supply a seeded/deterministic Random instead of the real one.
@@ -39,7 +40,7 @@ suspend fun <T> withRetry(
         } catch (e: Throwable) {
             attempt++
             if (attempt >= policy.maxAttempts || !isRetryable(e)) throw e
-            val maxDelayMillis = policy.baseDelayMillis * (1L shl (attempt - 1))
+            val maxDelayMillis = (policy.baseDelayMillis * (1L shl (attempt - 1))).coerceAtMost(policy.maxDelayMillis)
             val delayMillis = if (maxDelayMillis > 0) policy.random.nextLong(0, maxDelayMillis) else 0L
             policy.sleep(delayMillis)
         }

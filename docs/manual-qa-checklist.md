@@ -24,6 +24,10 @@ Covers Android issue #android-a11y-content-descriptions (mirrors iOS #44).
       icons (offline, warning, lock/security context) are announced, and decorative icons are
       silently skipped.
 - [ ] iOS: run the equivalent VoiceOver pass per #44.
+- [ ] **Home-screen widget**: enable TalkBack (Android) or VoiceOver (iOS) and interact with the
+      vault status widget. Confirm vault name, TTL countdown, balance (medium/large sizes), and
+      beneficiary (large size) are announced with their labels, and the expiring-soon warning is
+      announced when present. Test all widget sizes (small, medium, large, and lock-screen variants).
 
 ## OTP field accessibility (TalkBack / VoiceOver)
 
