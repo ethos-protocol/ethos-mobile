@@ -31,6 +31,83 @@ class NetworkMonitor @Inject constructor(@ApplicationContext private val context
 }
 
 /**
+ * Sliding-window token refresh. On each successful authenticated request the session's expiry
+ * is extended, so active users are not logged out mid-session. A refresh is only attempted once
+ * per [refreshIntervalMs] (default 5 minutes) to avoid hammering the auth endpoint. If the
+ * refresh token itself has expired, the session is cleared and the caller is told to re-auth.
+ */
+@Singleton
+class TokenRefreshManager @Inject constructor(
+    @ApplicationContext private val context: Context
+) {
+    companion object {
+        private const val TAG = "TokenRefresh"
+        const val DEFAULT_REFRESH_INTERVAL_MS = 5 * 60 * 1000L
+        private const val PREFS = "token_refresh"
+        private const val KEY_LAST_REFRESH = "last_refresh_at"
+    }
+
+    /** Minimum time between sliding-window refreshes. Configurable for tests. */
+    internal var refreshIntervalMs: Long = DEFAULT_REFRESH_INTERVAL_MS
+
+    /** How far past the current expiry a successful refresh extends the session. */
+    internal var extensionMs: Long = DEFAULT_REFRESH_INTERVAL_MS
+
+    private val prefs by lazy {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+
+    /**
+     * Called after a successful authenticated request. Extends [token]'s expiry when the sliding
+     * window allows a refresh. Returns the (possibly extended) token, or null when the refresh
+     * token has expired and the session must be re-established.
+     */
+    fun onSuccessfulRequest(token: AuthToken, now: Instant = Instant.now()): AuthToken? {
+        if (isRefreshTokenExpired(token, now)) {
+            Log.w(TAG, "Refresh token expired; clearing session")
+            clearSession()
+            return null
+        }
+        if (!shouldRefresh(now)) return token
+        val extended = extendExpiry(token, now)
+        prefs.edit().putLong(KEY_LAST_REFRESH, now.toEpochMilli()).apply()
+        return extended
+    }
+
+    /** True when enough time has elapsed since the last sliding-window refresh. */
+    fun shouldRefresh(now: Instant = Instant.now()): Boolean {
+        val last = prefs.getLong(KEY_LAST_REFRESH, 0L)
+        return now.toEpochMilli() - last >= refreshIntervalMs
+    }
+
+    /** Extends the token's expiry by [extensionMs] from [now]. */
+    fun extendExpiry(token: AuthToken, now: Instant = Instant.now()): AuthToken {
+        val newExpiry = now.plusMillis(extensionMs)
+        return token.copy(expiresAt = newExpiry)
+    }
+
+    /** True when the refresh token is missing or already past its expiry. */
+    fun isRefreshTokenExpired(token: AuthToken, now: Instant = Instant.now()): Boolean {
+        val refreshExpiry = token.refreshExpiresAt ?: return false
+        return !refreshExpiry.isAfter(now)
+    }
+
+    /** Clears the sliding-window bookkeeping so the next session starts fresh. */
+    fun clearSession() {
+        prefs.edit().remove(KEY_LAST_REFRESH).apply()
+    }
+}
+
+/**
  * Validates security-relevant HTTP response headers so the app can detect header-stripping
  * attacks (e.g. a proxy or MITM silently dropping hardening headers). Missing or invalid
  * headers are logged via [SecurityHeaderTelemetry] and surfaced to callers as a report.
@@ -168,124 +245,4 @@ class OfflineCache @Inject constructor(@ApplicationContext private val context: 
     fun load(key: String): CacheEnvelope? {
         val fileName = key.sha256()
         val envelope = runCatching {
-            val raw = Json.decodeFromString(CacheEnvelope.serializer(), File(dir, fileName).readText())
-            raw.copy(data = decodeCachedPayload(raw.data))
-        }.getOrNull()
-        if (envelope != null) {
-            touch(fileName)
-            if (isCachedAtStale(envelope.timestamp)) {
-                CacheTelemetry.recordStaleServed()
-            } else {
-                CacheTelemetry.recordHit()
-            }
-        } else {
-            CacheTelemetry.recordMiss()
-        }
-        return envelope
-    }
-
-    // Wipes every cached entry, e.g. on sign-out so the next user's device doesn't retain a
-    // previous account's vault data offline.
-    fun clear() {
-        dir.listFiles()?.forEach { it.delete() }
-        accessOrder.clear()
-    }
-
-    /** Returns true when the given cache timestamp is older than [maxAgeMs] or [aggressiveTtlMs]. */
-    fun isCachedAtStale(timestamp: Long): Boolean {
-        val now = System.currentTimeMillis()
-        val age = now - timestamp
-        // Check aggressive TTL first if set
-        if (aggressiveTtlMs >= 0 && age > aggressiveTtlMs) return true
-        // Then check standard maxAgeMs
-        if (maxAgeMs < 0) return false
-        return age > maxAgeMs
-    }
-
-    /** Cleans up expired cache entries on app launch or manual trigger. */
-    fun cleanupExpiredEntries() {
-        dir.listFiles()?.forEach { file ->
-            runCatching {
-                val envelope = Json.decodeFromString(CacheEnvelope.serializer(), file.readText())
-                if (isCachedAtStale(envelope.timestamp)) {
-                    file.delete()
-                    accessOrder.keys.remove(file.name)
-                }
-            }
-        }
-    }
-
-    /** Invalidate cache entry for a specific key, typically on manual refresh. */
-    fun invalidate(key: String) {
-        val fileName = key.sha256()
-        File(dir, fileName).delete()
-        accessOrder.keys.remove(fileName)
-    }
-
-    private fun touch(fileName: String) {
-        accessOrder[fileName] = Unit
-    }
-
-    private fun evictIfNeeded() {
-        var totalSize = dir.listFiles()?.sumOf { it.length() } ?: 0L
-        if (totalSize <= maxCacheBytes) return
-        val leastRecentlyUsed = synchronized(accessOrder) { accessOrder.keys.toList() }
-        for (fileName in leastRecentlyUsed) {
-            if (totalSize <= maxCacheBytes) break
-            val file = File(dir, fileName)
-            if (file.exists()) {
-                totalSize -= file.length()
-                file.delete()
-            }
-            accessOrder.keys.remove(fileName)
-        }
-    }
-
-    private fun encodeCachedPayload(json: String): String =
-        Base64.encodeToString(xorWithCacheKey(json.toByteArray()), Base64.NO_WRAP)
-
-    private fun decodeCachedPayload(encoded: String): String =
-        runCatching { String(xorWithCacheKey(Base64.decode(encoded, Base64.NO_WRAP))) }.getOrDefault(encoded)
-
-    private fun xorWithCacheKey(bytes: ByteArray): ByteArray {
-        val key = MessageDigest.getInstance("SHA-256")
-            .digest("${context.packageName}:offline-cache".toByteArray())
-        return ByteArray(bytes.size) { index -> (bytes[index].toInt() xor key[index % key.size].toInt()).toByte() }
-    }
-
-    private fun String.sha256(): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
-    }
-
-    companion object {
-        const val DEFAULT_MAX_CACHE_BYTES = 5L * 1024 * 1024 // 5 MB
-        const val DEFAULT_MAX_AGE_MS = 24L * 60 * 60 * 1000 // 24 hours
-        const val ENABLE_HTTP2_PUSH_CACHE = false
-    }
-}
-
-/** Tracks offline-cache access statistics for debug/support diagnostics. */
-object CacheTelemetry {
-    private val _hits = java.util.concurrent.atomic.AtomicLong(0)
-    private val _misses = java.util.concurrent.atomic.AtomicLong(0)
-    private val _staleServed = java.util.concurrent.atomic.AtomicLong(0)
-    private val _bytesWritten = java.util.concurrent.atomic.AtomicLong(0)
-
-    val hits: Long get() = _hits.get()
-    val misses: Long get() = _misses.get()
-    val staleServed: Long get() = _staleServed.get()
-    val bytesWritten: Long get() = _bytesWritten.get()
-
-    fun recordHit() { _hits.incrementAndGet() }
-    fun recordMiss() { _misses.incrementAndGet() }
-    fun recordStaleServed() { _staleServed.incrementAndGet() }
-    fun recordWrite(bytes: Long) { _bytesWritten.addAndGet(bytes) }
-
-    fun reset() {
-        _hits.set(0)
-        _misses.set(0)
-        _staleServed.set(0)
-        _bytesWritten.set(0)
-    }
-}
+            val raw = Json.decodeFromString(CacheEnvelope.serializer(),
