@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- Enable HardcodedText check to prevent hardcoded strings in Compose/Layout files.
+         This complements the externalizing of existing hardcoded strings in Issue #312
+         by preventing new hardcoded strings from being added in the future. -->
+    <issue id="HardcodedText" severity="error" />
+</lint>

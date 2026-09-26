@@ -1,13 +1,23 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject var authStore: AuthStore
+    @StateObject private var timeoutIndicator = BiometricTimeoutIndicatorService.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
             if authStore.isAuthenticated {
-                VaultListView()
+                ZStack(alignment: .top) {
+                    VaultListView()
+
+                    // Biometric timeout indicator
+                    if timeoutIndicator.isActive && timeoutIndicator.totalTimeoutSeconds < Int.max {
+                        BiometricTimeoutIndicatorView(indicator: timeoutIndicator)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
             } else {
                 AuthView()
             }
@@ -34,6 +44,9 @@ struct RootView: View {
                 NotificationService.shared.retryPendingPushTokenRegistrationIfNeeded()
             }
         }
+        .sheet(isPresented: $authStore.showPINSetup) {
+            PINSetupView()
+        }
     }
 }
 
@@ -47,6 +60,7 @@ private struct PrivacyOverlayView: View {
         }
         .ignoresSafeArea()
         .transition(.opacity)
+        .respectsReduceMotion()
     }
 }
 
@@ -54,42 +68,166 @@ private struct LockScreenView: View {
     @EnvironmentObject var authStore: AuthStore
     @State private var error: String?
     @State private var isUnlocking = false
+    @State private var showPINInput = false
+    @State private var pinInput = ""
+    @State private var pinError: String?
 
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
             VStack(spacing: 24) {
-                Image(systemName: "faceid")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.blue)
-                Text("Ethos-Protocol Locked").font(.title.bold())
-                if let error {
-                    Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+                if showPINInput {
+                    pinInputView
+                } else {
+                    biometricView
                 }
-                Button(action: unlock) {
-                    Label(isUnlocking ? "Unlocking…" : "Unlock", systemImage: "faceid")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isUnlocking)
             }
             .padding(32)
         }
-        .onAppear(perform: unlock)
+        .onAppear(perform: attemptBiometricUnlock)
     }
 
-    private func unlock() {
+    private var biometricView: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "faceid")
+                .font(.system(size: 64))
+                .foregroundStyle(.blue)
+            Text("Ethos-Protocol Locked").font(.title.bold())
+            if let error {
+                Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+            }
+            Button(action: attemptBiometricUnlock) {
+                Label(isUnlocking ? "Unlocking…" : "Unlock", systemImage: "faceid")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isUnlocking)
+            if PINAuthenticationService.shared.isPINSetup() {
+                Button(action: { showPINInput = true }) {
+                    Text("Use PIN Instead")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var pinInputView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(.blue)
+            Text("Ethos-Protocol Locked").font(.title.bold())
+            Text("Enter your 6-digit PIN").font(.subheadline).foregroundStyle(.secondary)
+            SecureField("PIN", text: $pinInput)
+                .textContentType(.oneTimeCode)
+                .keyboardType(.numberPad)
+                .font(.system(size: 20, weight: .medium, design: .monospaced))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 150)
+                .padding(12)
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+                .disabled(isUnlocking)
+            if let error = pinError {
+                Text(error).foregroundStyle(.red).font(.caption).multilineTextAlignment(.center)
+            }
+            Button(action: verifyPIN) {
+                Label(isUnlocking ? "Verifying…" : "Unlock", systemImage: "checkmark")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isUnlocking || pinInput.count != 6)
+            Button(action: { showPINInput = false; pinInput = ""; pinError = nil }) {
+                Text("Back to Biometric")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private func attemptBiometricUnlock() {
         guard !isUnlocking else { return }
         isUnlocking = true
         error = nil
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Unlock Ethos-Protocol")
+                HapticFeedbackService.shared.success()
                 authStore.isLocked = false
             } catch {
+                HapticFeedbackService.shared.error()
                 self.error = error.localizedDescription
+                if PINAuthenticationService.shared.isPINSetup() {
+                    showPINInput = true
+                }
             }
             isUnlocking = false
+        }
+    }
+
+    private func verifyPIN() {
+        guard !isUnlocking else { return }
+        isUnlocking = true
+        pinError = nil
+        do {
+            try PINAuthenticationService.shared.verifyPIN(pinInput)
+            authStore.isLocked = false
+        } catch {
+            pinError = error.localizedDescription
+        }
+        isUnlocking = false
+    }
+}
+
+// MARK: - Biometric Timeout Indicator
+
+struct BiometricTimeoutIndicatorView: View {
+    let indicator: BiometricTimeoutIndicatorService
+
+    var body: some View {
+        VStack {
+            HStack {
+                Image(systemName: "clock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+
+                Text("Session expires in \(formatTime(indicator.remainingSeconds))")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(.systemGray5))
+
+                    // Progress fill
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.orange)
+                        .frame(width: geometry.size.width * indicator.progressFraction)
+                }
+            }
+            .frame(height: 4)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+        .background(Color(.systemBackground))
+        .border(Color(.systemGray4), width: 0.5)
+    }
+
+    private func formatTime(_ seconds: Int) -> String {
+        let minutes = seconds / 60
+        let secs = seconds % 60
+        if minutes > 0 {
+            return "\(minutes)m \(secs)s"
+        } else {
+            return "\(secs)s"
         }
     }
 }
@@ -216,7 +354,7 @@ struct AuthView: View {
                     .font(.footnote)
             }
             .padding(32)
-            .overlay { if authStore.isLoading { ProgressView() } }
+            .overlay { if authStore.isLoading { ProgressView().respectsReduceMotion() } }
             .sheet(isPresented: $showRegister) { RegisterView() }
             .sheet(isPresented: $showRecovery) { RecoverAccessView() }
         }
@@ -334,6 +472,7 @@ struct VaultListView: View {
     @State private var showCreate = false
     @State private var showDeepLinkSheet = false
     @State private var showSettings = false
+    @State private var showFilterMenu = false
     // #118: Non-blocking jailbreak/root warning. Dismissed by the user; does not
     // block access to the app, consistent with the "secure digital inheritance" posture.
     @State private var showIntegrityWarning = IntegrityService.shared.isJailbroken
@@ -346,19 +485,96 @@ struct VaultListView: View {
                         .padding()
                 }
                 if vaultStore.isLoading && vaultStore.vaults.isEmpty {
-                    ProgressView("Loading vaults…")
+                    ProgressView("Loading vaults…").respectsReduceMotion()
                 } else if vaultStore.vaults.isEmpty {
                     ContentUnavailableView("No Vaults", systemImage: "lock.open", description: Text("Create your first vault to get started."))
                 } else {
-                    List {
-                        ForEach(vaultStore.vaults) { vault in
-                            NavigationLink(destination: VaultDetailView(vault: vault)) {
-                                VaultRowView(vault: vault)
+                    VStack(spacing: 12) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Search vaults", text: $vaultStore.searchText)
+                                .textFieldStyle(.roundedBorder)
+                            if !vaultStore.searchText.isEmpty {
+                                Button(action: { vaultStore.searchText = "" }) {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
-                        if vaultStore.hasMorePages {
-                            LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
-                                Task { await vaultStore.loadMore() }
+                        .padding(.horizontal)
+
+                        HStack(spacing: 12) {
+                            Menu {
+                                Picker("Status", selection: $vaultStore.statusFilter) {
+                                    ForEach(VaultStatusFilter.allCases, id: \.self) { filter in
+                                        Text(filter.rawValue).tag(filter)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "line.3.horizontal.decrease.circle")
+                                    Text(vaultStore.statusFilter.rawValue)
+                                        .font(.caption2)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(6)
+                            }
+
+                            Menu {
+                                Picker("Sort", selection: $vaultStore.sortOption) {
+                                    ForEach(VaultSortOption.allCases, id: \.self) { option in
+                                        Text(option.rawValue).tag(option)
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.up.arrow.down")
+                                    Text(vaultStore.sortOption.rawValue)
+                                        .font(.caption2)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(6)
+                            }
+
+                            Spacer()
+                        }
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                    }
+                    .padding(.vertical, 8)
+                    .background(Color(.systemBackground))
+
+                    List {
+                        if let lastSync = vaultStore.lastSyncTime {
+                            HStack {
+                                Label("Last sync: \(Self.formatSyncTime(lastSync))", systemImage: "clock.badge.checkmark.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets())
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+                        }
+                        if vaultStore.filteredAndSortedVaults.isEmpty && !vaultStore.searchText.isEmpty {
+                            ContentUnavailableView("No Results", systemImage: "magnifyingglass", description: Text("No vaults match your search."))
+                                .listRowSeparator(.hidden)
+                        } else {
+                            ForEach(vaultStore.filteredAndSortedVaults) { vault in
+                                NavigationLink(destination: VaultDetailView(vault: vault)) {
+                                    VaultRowView(vault: vault)
+                                }
+                            }
+                            if vaultStore.hasMorePages && vaultStore.filteredAndSortedVaults.count == vaultStore.vaults.count {
+                                LoadMoreRow(isLoading: vaultStore.isLoadingMore) {
+                                    Task { await vaultStore.loadMore() }
+                                }
                             }
                         }
                     }
@@ -426,6 +642,27 @@ struct VaultListView: View {
         formatter.unitsStyle = .full
         return formatter.localizedString(fromTimeInterval: -interval)
     }
+
+    private static func formatSyncTime(_ date: Date) -> String {
+        let now = Date()
+        let interval = now.timeIntervalSince(date)
+
+        switch interval {
+        case 0..<60:
+            return "just now"
+        case 60..<3_600:
+            let minutes = Int(interval) / 60
+            return minutes == 1 ? "1 min ago" : "\(minutes) mins ago"
+        case 3_600..<86_400:
+            let hours = Int(interval) / 3_600
+            return hours == 1 ? "1 hour ago" : "\(hours) hours ago"
+        default:
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+            return formatter.string(from: date)
+        }
+    }
 }
 
 struct StatusBannerView: View {
@@ -454,7 +691,7 @@ struct LoadMoreRow: View {
         HStack {
             Spacer()
             if isLoading {
-                ProgressView()
+                ProgressView().respectsReduceMotion()
             } else {
                 Button("Load More", action: action)
                     .font(.subheadline)
@@ -467,6 +704,8 @@ struct LoadMoreRow: View {
 
 struct VaultRowView: View {
     let vault: Vault
+    @EnvironmentObject var vaultStore: VaultStore
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -489,6 +728,56 @@ struct VaultRowView: View {
             }
         }
         .padding(.vertical, 4)
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button(action: { performCheckIn() }) {
+                Label("Check In", systemImage: "checkmark.circle.fill")
+            }
+            .tint(.green)
+
+            Button(action: { performRefresh() }) {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            }
+            .tint(.blue)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive, action: { showDeleteConfirmation = true }) {
+                Label("Delete", systemImage: "trash.fill")
+            }
+        }
+        .alert("Delete Vault", isPresented: $showDeleteConfirmation) {
+            Button("Delete", role: .destructive) { performDelete() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to delete this vault? This action cannot be undone.")
+        }
+    }
+
+    private func performCheckIn() {
+        triggerHaptic()
+        Task {
+            await vaultStore.checkIn(vault: vault)
+        }
+    }
+
+    private func performRefresh() {
+        triggerHaptic()
+        Task {
+            await vaultStore.load()
+        }
+    }
+
+    private func performDelete() {
+        triggerHaptic()
+        Task {
+            ifNotCancelled {
+                vaultStore.error = ErrorPresentation(message: "Vault deletion is not yet implemented")
+            }
+        }
+    }
+
+    private func triggerHaptic() {
+        let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
+        impactFeedback.impactOccurred()
     }
 }
 
@@ -532,6 +821,7 @@ struct VaultDetailView: View {
     @State private var showDeposit = false
     @State private var showWithdraw = false
     @State private var showManageBeneficiary = false
+    @State private var showNotificationPreferences = false
     /// Server-anchored TTL baseline, reconciled on every poll and `vault_updated`
     /// push (#221, #223); the server value always wins on conflict.
     @State private var ttlCountdown: TTLCountdown? = nil
@@ -585,6 +875,7 @@ struct VaultDetailView: View {
                     }
                 } else {
                     ProgressView()
+                        .respectsReduceMotion()
                         .task { await load2FAStatus() }
                 }
             }
@@ -617,6 +908,12 @@ struct VaultDetailView: View {
             Section {
                 Button(action: { showManageBeneficiary = true }) {
                     Label("Manage Beneficiary", systemImage: "person.2.fill")
+                }
+            }
+
+            Section {
+                Button(action: { showNotificationPreferences = true }) {
+                    Label("Expiry Notifications", systemImage: "bell.fill")
                 }
             }
         }
@@ -677,6 +974,9 @@ struct VaultDetailView: View {
         }
         .sheet(isPresented: $showManageBeneficiary) {
             NavigationStack { ManageBeneficiaryView(vault: vault) }
+        }
+        .sheet(isPresented: $showNotificationPreferences) {
+            NavigationStack { VaultNotificationPreferencesView(vaultID: vault.id) }
         }
     }
 
@@ -758,26 +1058,22 @@ struct VaultDetailView: View {
         Task {
             do {
                 try await BiometricService.shared.authenticate(reason: "Confirm vault check-in")
-                if !Task.isCancelled { await vaultStore.checkIn(vault: vault) }
+                if !Task.isCancelled {
+                    await vaultStore.checkIn(vault: vault)
+                    HapticFeedbackService.shared.success()
+                }
             } catch {
-                ifNotCancelled { biometricError = error.localizedDescription }
+                ifNotCancelled {
+                    HapticFeedbackService.shared.error()
+                    biometricError = error.localizedDescription
+                }
             }
             ifNotCancelled { isCheckingIn = false }
         }
     }
 
     private func formatDuration(_ seconds: UInt64) -> String {
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let minutes = (seconds % 3_600) / 60
-        let secs = seconds % 60
-        if days > 0 { return "\(days)d \(hours)h" }
-        if hours > 0 { return "\(hours)h \(minutes)m" }
-        // Below an hour, show seconds so the per-second local tick (#221) is
-        // actually visible rather than appearing frozen at "0h". Cast to Int:
-        // %d expects a 32-bit-sized argument, and these UInt64 values are
-        // always small (< 3600) so the cast is lossless.
-        return String(format: "%d:%02d", Int(minutes), Int(secs))
+        DateTimeFormatter.shared.formatDurationInSeconds(seconds)
     }
 }
 
@@ -879,7 +1175,7 @@ struct DepositView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .overlay { if isDepositing { ProgressView() } }
+            .overlay { if isDepositing { ProgressView().respectsReduceMotion() } }
         }
     }
 
@@ -940,7 +1236,7 @@ struct WithdrawView: View {
                 Button("Cancel") { dismiss() }
             }
         }
-        .overlay { if isWithdrawing { ProgressView() } }
+        .overlay { if isWithdrawing { ProgressView().respectsReduceMotion() } }
     }
 
     private func withdraw() {
@@ -1179,7 +1475,7 @@ struct TwoFactorSetupView: View {
                         Button("Cancel") { dismiss() }
                     }
                 }
-                .overlay { if isSettingUp { ProgressView() } }
+                .overlay { if isSettingUp { ProgressView().respectsReduceMotion() } }
                 .onAppear {
                     // #227: Default to first available method if totp is unavailable.
                     if !availableMethods.contains(selectedMethod), let first = availableMethods.first {
@@ -1353,7 +1649,7 @@ struct TwoFactorVerifyView: View {
                 .multilineTextAlignment(.center)
                 .font(.callout)
             if isGeneratingBackupCodes {
-                ProgressView("Generating codes…")
+                ProgressView("Generating codes…").respectsReduceMotion()
             } else {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     ForEach(backupCodes, id: \.self) { code in
@@ -1515,6 +1811,7 @@ struct VaultActionDeepLinkView: View {
         Group {
             if isLoading && vault == nil {
                 ProgressView("Loading vault…")
+                    .respectsReduceMotion()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 switch action {
@@ -1683,5 +1980,115 @@ struct BeneficiaryAcceptanceView: View {
             }
             isAccepting = false
         }
+    }
+}
+
+// MARK: - PIN Setup
+
+struct PINSetupView: View {
+    @EnvironmentObject var authStore: AuthStore
+    @Environment(\.dismiss) var dismiss
+    @State private var pinInput = ""
+    @State private var pinConfirm = ""
+    @State private var error: String?
+    @State private var isSetupInProgress = false
+
+    var pinsMatch: Bool {
+        !pinInput.isEmpty && pinInput == pinConfirm
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 48))
+                        .foregroundStyle(.blue)
+                    Text("Set up Your PIN").font(.title.bold())
+                    Text("This 6-digit PIN will be used if biometric authentication is unavailable")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.vertical, 16)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Enter 6-digit PIN").font(.caption.bold()).foregroundStyle(.secondary)
+                        SecureField("PIN", text: $pinInput)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 150)
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                            .disabled(isSetupInProgress)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Confirm PIN").font(.caption.bold()).foregroundStyle(.secondary)
+                        SecureField("Confirm PIN", text: $pinConfirm)
+                            .textContentType(.oneTimeCode)
+                            .keyboardType(.numberPad)
+                            .font(.system(size: 18, weight: .medium, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 150)
+                            .padding(12)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                            .disabled(isSetupInProgress)
+                    }
+
+                    if let error {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    if !pinInput.isEmpty && !pinConfirm.isEmpty && pinInput != pinConfirm {
+                        Text("PINs do not match")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Spacer()
+
+                VStack(spacing: 12) {
+                    Button(action: setupPIN) {
+                        Label(isSetupInProgress ? "Setting up…" : "Continue", systemImage: "checkmark")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!pinsMatch || isSetupInProgress)
+
+                    Button(action: { dismiss() }) {
+                        Text("Skip for Now")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isSetupInProgress)
+                }
+            }
+            .padding(32)
+        }
+    }
+
+    private func setupPIN() {
+        guard !isSetupInProgress else { return }
+        isSetupInProgress = true
+        error = nil
+
+        do {
+            try PINAuthenticationService.shared.setupPIN(pinInput)
+            authStore.showPINSetup = false
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isSetupInProgress = false
     }
 }

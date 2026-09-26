@@ -132,4 +132,72 @@ class OfflineCacheTest {
         val result = cache.load("/vaults")
         assertNotNull("cache should have an entry after concurrent writes", result)
     }
+
+    @Test
+    fun `returns null when cache exceeds maxAgeMs`() {
+        val cache = newCache()
+        cache.maxAgeMs = 100 // 100ms TTL
+
+        cache.save("/vaults", "{}")
+        assertNotNull("fresh cache should be available immediately", cache.load("/vaults"))
+
+        Thread.sleep(150) // Wait for cache to expire
+
+        assertNull("expired cache should be refused", cache.load("/vaults"))
+    }
+
+    @Test
+    fun `respects aggressiveTtlMs when set`() {
+        val cache = newCache()
+        cache.maxAgeMs = 10_000 // 10 seconds
+        cache.aggressiveTtlMs = 100 // 100ms aggressive TTL
+
+        cache.save("/vaults", "{}")
+        assertNotNull("fresh cache should be available immediately", cache.load("/vaults"))
+
+        Thread.sleep(150) // Wait for aggressive TTL to expire
+
+        assertNull("cache expired by aggressive TTL should be refused", cache.load("/vaults"))
+    }
+
+    @Test
+    fun `cleanupExpiredEntries removes stale cache on startup`() {
+        val cache = newCache()
+        cache.maxAgeMs = 100
+
+        cache.save("/old", "{}")
+        Thread.sleep(150) // Make entry expire
+
+        // Create a new cache instance (simulating app startup)
+        val newCache = newCache().apply { maxAgeMs = 100 }
+
+        // Expired entry should have been cleaned up during init
+        assertNull("expired entry should be cleaned up on startup", newCache.load("/old"))
+    }
+
+    @Test
+    fun `invalidate removes cache entry for manual refresh`() {
+        val cache = newCache()
+
+        cache.save("/vaults", "{\"list\":[]}")
+        assertNotNull("cache should exist before invalidation", cache.load("/vaults"))
+
+        cache.invalidate("/vaults")
+
+        assertNull("cache should be removed after invalidation", cache.load("/vaults"))
+    }
+
+    @Test
+    fun `isCachedAtStale returns true only when entry exceeds both TTLs`() {
+        val cache = newCache()
+        cache.maxAgeMs = 10_000
+        cache.aggressiveTtlMs = 100
+
+        val now = System.currentTimeMillis()
+        val twoHoursAgo = now - (2 * 60 * 60 * 1000)
+
+        assertTrue("entry older than aggressiveTtlMs should be stale", cache.isCachedAtStale(now - 150))
+        assertTrue("entry older than maxAgeMs should be stale", cache.isCachedAtStale(now - 11_000))
+        assertFalse("entry younger than both TTLs should not be stale", cache.isCachedAtStale(now - 50))
+    }
 }

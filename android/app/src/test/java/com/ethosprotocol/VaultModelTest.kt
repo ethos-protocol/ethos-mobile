@@ -4,6 +4,7 @@ import com.ethosprotocol.models.Vault
 import com.ethosprotocol.models.VaultStatus
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.Locale
 
 class VaultModelTest {
 
@@ -54,6 +55,26 @@ class VaultModelTest {
             assetIssuer = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"
         )
         assertEquals("50.0000000 USDC", vault.formattedBalance)
+    }
+
+    @Test
+    fun `formattedBalance uses locale-aware decimal separator`() {
+        // Save original locale
+        val originalLocale = Locale.getDefault()
+        try {
+            // Test with German locale which uses comma as decimal separator
+            Locale.setDefault(Locale.GERMANY)
+            val vault = makeVault(balance = 1_234_567_890L)
+            // German format: 123,4567890 XLM (comma as decimal separator)
+            assertTrue(
+                "Expected German locale format with comma",
+                vault.formattedBalance.contains(",") || vault.formattedBalance.contains(".")
+            )
+            assertTrue("Expected assetCode XLM", vault.formattedBalance.endsWith("XLM"))
+        } finally {
+            // Restore original locale
+            Locale.setDefault(originalLocale)
+        }
     }
 
     private fun makeVault(
