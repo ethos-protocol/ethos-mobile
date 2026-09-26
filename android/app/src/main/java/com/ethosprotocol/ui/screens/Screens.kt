@@ -309,7 +309,9 @@ fun VaultListScreen(
                         onRefresh = { vm.load() },
                         modifier = Modifier.fillMaxSize().testTag("vaultListPullToRefresh")
                     ) {
-                        LazyColumn {
+                        LazyColumn(
+                            contentPadding = WindowInsets.navigationBars.asPaddingValues()
+                        ) {
                             if (state.isOffline) item {
                                 OfflineBanner()
                             }
