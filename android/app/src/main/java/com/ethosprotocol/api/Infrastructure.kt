@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import android.util.Base64
+import android.util.Log
 import java.io.File
 import java.security.MessageDigest
 import java.time.Duration
@@ -27,6 +28,92 @@ class NetworkMonitor @Inject constructor(@ApplicationContext private val context
             val caps = cm.getNetworkCapabilities(network) ?: return false
             return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         }
+}
+
+/**
+ * Validates security-relevant HTTP response headers so the app can detect header-stripping
+ * attacks (e.g. a proxy or MITM silently dropping hardening headers). Missing or invalid
+ * headers are logged via [SecurityHeaderTelemetry] and surfaced to callers as a report.
+ */
+object SecurityHeaderValidator {
+    private const val TAG = "SecurityHeaders"
+
+    const val X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options"
+    const val STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security"
+    const val X_FRAME_OPTIONS = "X-Frame-Options"
+
+    private val VALID_FRAME_OPTIONS = setOf("DENY", "SAMEORIGIN")
+
+    /** Result of validating a single security header. */
+    data class HeaderResult(val name: String, val valid: Boolean, val reason: String?)
+
+    /** Aggregate report for a response's security headers. */
+    data class Report(val results: List<HeaderResult>) {
+        val isValid: Boolean get() = results.all { it.valid }
+        val invalidHeaders: List<HeaderResult> get() = results.filter { !it.valid }
+    }
+
+    /**
+     * Validates the security headers on [headers]. Header lookup is case-insensitive since HTTP
+     * header names are not case-sensitive. Every missing/invalid header is logged.
+     */
+    fun validate(headers: Map<String, String>): Report {
+        val normalized = headers.entries.associate { it.key.lowercase() to it.value }
+        val results = listOf(
+            validateContentTypeOptions(normalized),
+            validateStrictTransportSecurity(normalized),
+            validateFrameOptions(normalized)
+        )
+        results.filter { !it.valid }.forEach { result ->
+            Log.w(TAG, "Invalid security header ${result.name}: ${result.reason}")
+            SecurityHeaderTelemetry.recordInvalid(result.name)
+        }
+        return Report(results)
+    }
+
+    private fun validateContentTypeOptions(headers: Map<String, String>): HeaderResult {
+        val value = headers[X_CONTENT_TYPE_OPTIONS.lowercase()]
+        return when {
+            value == null -> HeaderResult(X_CONTENT_TYPE_OPTIONS, false, "missing")
+            value.trim().equals("nosniff", ignoreCase = true) -> HeaderResult(X_CONTENT_TYPE_OPTIONS, true, null)
+            else -> HeaderResult(X_CONTENT_TYPE_OPTIONS, false, "expected 'nosniff' but was '$value'")
+        }
+    }
+
+    private fun validateStrictTransportSecurity(headers: Map<String, String>): HeaderResult {
+        val value = headers[STRICT_TRANSPORT_SECURITY.lowercase()]
+        if (value == null) return HeaderResult(STRICT_TRANSPORT_SECURITY, false, "missing")
+        val maxAge = Regex("max-age\\s*=\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .find(value)?.groupValues?.get(1)?.toLongOrNull()
+            ?: return HeaderResult(STRICT_TRANSPORT_SECURITY, false, "missing or invalid max-age")
+        return if (maxAge > 0) {
+            HeaderResult(STRICT_TRANSPORT_SECURITY, true, null)
+        } else {
+            HeaderResult(STRICT_TRANSPORT_SECURITY, false, "max-age must be greater than 0")
+        }
+    }
+
+    private fun validateFrameOptions(headers: Map<String, String>): HeaderResult {
+        val value = headers[X_FRAME_OPTIONS.lowercase()]
+        return when {
+            value == null -> HeaderResult(X_FRAME_OPTIONS, false, "missing")
+            value.trim().uppercase() in VALID_FRAME_OPTIONS -> HeaderResult(X_FRAME_OPTIONS, true, null)
+            else -> HeaderResult(X_FRAME_OPTIONS, false, "expected DENY or SAMEORIGIN but was '$value'")
+        }
+    }
+}
+
+/** Tracks counts of invalid/missing security headers for debug/support diagnostics. */
+object SecurityHeaderTelemetry {
+    private val _invalidCounts = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    fun recordInvalid(headerName: String) {
+        _invalidCounts.getOrPut(headerName) { java.util.concurrent.atomic.AtomicLong(0) }.incrementAndGet()
+    }
+
+    fun invalidCount(headerName: String): Long = _invalidCounts[headerName]?.get() ?: 0L
+
+    fun snapshot(): Map<String, Long> = _invalidCounts.mapValues { it.value.get() }
 }
 
 // Wraps a cached response with the wall-clock time it was written, so callers can tell how
@@ -193,130 +280,12 @@ object CacheTelemetry {
     fun recordHit() { _hits.incrementAndGet() }
     fun recordMiss() { _misses.incrementAndGet() }
     fun recordStaleServed() { _staleServed.incrementAndGet() }
-    fun recordWrite(bytes: Long) { _bytesWritten.addAndGet(bytes.coerceAtLeast(0L)) }
+    fun recordWrite(bytes: Long) { _bytesWritten.addAndGet(bytes) }
 
-    fun reset() { _hits.set(0); _misses.set(0); _staleServed.set(0); _bytesWritten.set(0) }
-
-    fun snapshot() = CacheTelemetrySnapshot(hits, misses, staleServed, bytesWritten)
-}
-
-data class CacheTelemetrySnapshot(val hits: Long, val misses: Long, val staleServed: Long, val bytesWritten: Long)
-
-/**
- * Abstracted so PasskeyServiceTest can supply an in-memory fake without a real
- * Android Context / EncryptedSharedPreferences. [pushToken], [setSession], and
- * [isNearExpiry] get harmless defaults so a minimal fake only needs to implement
- * [token] and [clear] — see [EncryptedTokenProvider] for the real, persisted behavior.
- */
-interface TokenProvider {
-    var token: String?
-    var pushToken: String?
-        get() = null
-        set(_) {}
-    // #234: a push token seen (via onNewToken) but not yet confirmed registered
-    // with the server — set when registration fails after retrying, cleared
-    // once it succeeds. See PushService's retry-on-foreground.
-    var pendingPushToken: String?
-        get() = null
-        set(_) {}
-    fun setSession(authToken: AuthToken) { token = authToken.token }
-    fun isNearExpiry(threshold: Duration = Duration.ofSeconds(60)): Boolean = false
-    fun clear()
-}
-
-@Singleton
-class EncryptedTokenProvider @Inject constructor(
-    @ApplicationContext private val context: Context
-) : TokenProvider {
-    // ---------------------------------------------------------------------------
-    // Android token-storage accessibility review (task #122) — mirrors the
-    // documented rationale in iOS KeychainService.swift (saveToken).
-    //
-    // Which components need token access and under what conditions?
-    //
-    //   1. ApiClient (foreground)       — always running while the UI is visible;
-    //                                     device is unlocked. Any protection level works.
-    //   2. PendingActionSyncWorker (background) — WorkManager task that can run while the
-    //                                     device screen is off but the device is NOT
-    //                                     locked (WorkManager constraints use CONNECTED
-    //                                     only). The device must be unlocked for
-    //                                     EncryptedSharedPreferences backed by
-    //                                     AES256_GCM (hardware-backed key) to succeed.
-    //   3. VaultStatusWidget (AppWidget) — AppWidget update callbacks run on the main
-    //                                     process, always while the device is unlocked
-    //                                     (AppWidgets are not invoked on a locked screen
-    //                                     on Android). The token is only needed here for
-    //                                     optional authenticated refresh calls.
-    //
-    // Conclusion: unlike iOS (where BackgroundRefreshService and TTLWidget can run
-    // while the device is still locked, requiring AfterFirstUnlock), no Android
-    // component in this app needs token access while the device is locked.
-    // EncryptedSharedPreferences with AES256_GCM uses a hardware-backed key that
-    // is only available after the user has unlocked the device (equivalent to
-    // kSecAttrAccessibleWhenUnlockedThisDeviceOnly on iOS). This IS the least-
-    // privileged option that still satisfies all access requirements above — no
-    // relaxation (analogous to AfterFirstUnlock) is needed on Android.
-    //
-    // If a future component (e.g. a background sync that must run while locked)
-    // is added, revisit this decision and document the new requirement here.
-    // ---------------------------------------------------------------------------
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "ttl_auth_secure",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
-
-    override var token: String?
-        get() = prefs.getString("token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("token", value) else remove("token")
-        }.apply()
-
-    // The last FCM token this device registered with the backend, so it can be
-    // unregistered on sign-out even if Firebase doesn't hand out a fresh token then.
-    override var pushToken: String?
-        get() = prefs.getString("push_token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("push_token", value) else remove("push_token")
-        }.apply()
-
-    override var pendingPushToken: String?
-        get() = prefs.getString("pending_push_token", null)
-        set(value) = prefs.edit().apply {
-            if (value != null) putString("pending_push_token", value) else remove("pending_push_token")
-        }.apply()
-
-    private var expiresAtEpochMillis: Long?
-        get() = prefs.getLong(KEY_EXPIRES_AT, -1L).takeIf { it >= 0 }
-        set(value) = prefs.edit().apply {
-            if (value != null) putLong(KEY_EXPIRES_AT, value) else remove(KEY_EXPIRES_AT)
-        }.apply()
-
-    // Stores both the bearer token and its expiry from an auth response, so ApiClient can
-    // proactively refresh before the backend would reject the token with a 401 — previously
-    // AuthToken.expiresAt was parsed off the wire and then never read anywhere.
-    override fun setSession(authToken: AuthToken) {
-        token = authToken.token
-        expiresAtEpochMillis = runCatching { Instant.parse(authToken.expiresAt).toEpochMilli() }.getOrNull()
-    }
-
-    override fun isNearExpiry(threshold: Duration): Boolean {
-        val expiry = expiresAtEpochMillis ?: return false
-        return Instant.now().plus(threshold).toEpochMilli() >= expiry
-    }
-
-    override fun clear() {
-        token = null
-        expiresAtEpochMillis = null
-    }
-
-    private companion object {
-        const val KEY_EXPIRES_AT = "expires_at_epoch_millis"
+    fun reset() {
+        _hits.set(0)
+        _misses.set(0)
+        _staleServed.set(0)
+        _bytesWritten.set(0)
     }
 }
