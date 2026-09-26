@@ -263,6 +263,7 @@ class ApiClient(
                 // recovery token/proof on completeRecovery) — surface it instead of the
                 // generic "Unauthorized" so the caller isn't left with a dead-end message.
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
+                429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e ->
@@ -293,6 +294,7 @@ class ApiClient(
                 // recovery token/proof on completeRecovery) — surface it instead of the
                 // generic "Unauthorized" so the caller isn't left with a dead-end message.
                 401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
+                429 -> ApiResult.Error(response.retryAfterMessage(), 429)
                 else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
         }.getOrElse { e ->
@@ -349,6 +351,12 @@ class ApiClient(
     private suspend fun HttpResponse.unauthorizedMessage(): String =
         runCatching { Json.decodeFromString<Map<String, String>>(bodyAsText())["error"] }
             .getOrNull() ?: "Unauthorized"
+
+    private fun HttpResponse.retryAfterMessage(): String {
+        val retryAfter = headers[HttpHeaders.RetryAfter]
+        return if (retryAfter.isNullOrBlank()) "Rate limited. Please retry later."
+            else "Rate limited. Retry after $retryAfter seconds."
+    }
 
     private fun isRetryableNetworkError(e: Throwable): Boolean =
         e is HttpRequestTimeoutException || e is IOException
