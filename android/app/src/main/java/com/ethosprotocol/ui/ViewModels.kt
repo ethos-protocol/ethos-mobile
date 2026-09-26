@@ -3,6 +3,8 @@ package com.ethosprotocol.ui
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -46,6 +48,7 @@ import javax.inject.Inject
 
 // --- Auth ViewModel ---
 
+@Immutable
 data class AuthUiState(
     val isAuthenticated: Boolean = false,
     val isLocked: Boolean = false,
@@ -253,6 +256,7 @@ class AuthViewModel @Inject constructor(
 
 // --- Sessions ViewModel (#208) ---
 
+@Immutable
 data class SessionsUiState(
     val sessions: List<Session> = emptyList(),
     val isLoading: Boolean = false,
@@ -297,6 +301,7 @@ class SessionsViewModel @Inject constructor(
 
 // --- TwoFactor ViewModel ---
 
+@Immutable
 data class TwoFactorUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
@@ -556,6 +561,7 @@ class TwoFactorViewModel @Inject constructor(
 
 // --- Vault ViewModel ---
 
+@Immutable
 data class VaultUiState(
     val vaults: List<Vault> = emptyList(),
     val isLoading: Boolean = false,
@@ -580,17 +586,23 @@ class VaultViewModel @Inject constructor(
     private val notificationHelper: NotificationHelper,
     private val pendingActionDao: PendingActionDao,
     private val vaultEventSocket: VaultEventSocket,
+    private val expiringVaultsManager: com.ethosprotocol.services.ExpiringVaultsManager,
+    private val offlineCache: com.ethosprotocol.api.OfflineCache,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(VaultUiState())
     val state = _state.asStateFlow()
 
+    val expiringVaultsState = expiringVaultsManager.bannerState
+
     private var nextCursor: String? = null
     private val eventJobs = mutableMapOf<String, Job>()
 
     fun load() = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null) }
+        // Invalidate cache on manual refresh to ensure fresh data
+        offlineCache.invalidate("/vaults")
         when (val result = apiClient.listVaults(limit = PAGE_SIZE)) {
             is ApiResult.Success -> {
                 nextCursor = result.data.nextCursor
@@ -602,6 +614,7 @@ class VaultViewModel @Inject constructor(
                         hasMore = result.data.hasMore
                     )
                 }
+                expiringVaultsManager.updateVaults(result.data.vaults)
                 subscribeToEvents(result.data.vaults.map { it.id })
             }
             ApiResult.NetworkUnavailable -> {
@@ -625,13 +638,15 @@ class VaultViewModel @Inject constructor(
             when (val result = apiClient.listVaults(limit = PAGE_SIZE, after = cursor)) {
                 is ApiResult.Success -> {
                     nextCursor = result.data.nextCursor
+                    val allVaults = _state.value.vaults + result.data.vaults
                     _state.update {
                         it.copy(
-                            vaults = it.vaults + result.data.vaults,
+                            vaults = allVaults,
                             isLoadingMore = false,
                             hasMore = result.data.hasMore
                         )
                     }
+                    expiringVaultsManager.updateVaults(allVaults)
                     subscribeToEvents(result.data.vaults.map { it.id })
                 }
                 ApiResult.NetworkUnavailable -> {
@@ -659,6 +674,7 @@ class VaultViewModel @Inject constructor(
                     cursor = result.data.nextCursor
                     if (!result.data.hasMore) {
                         _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+                        expiringVaultsManager.updateVaults(accumulated)
                         return@launch
                     }
                 }
@@ -673,6 +689,11 @@ class VaultViewModel @Inject constructor(
             }
         } while (cursor != null)
         _state.update { it.copy(vaults = accumulated, isLoading = false, isOffline = false) }
+        expiringVaultsManager.updateVaults(accumulated)
+    }
+
+    fun dismissExpiringVaultsBanner() {
+        expiringVaultsManager.dismissBanner()
     }
 
     // Keeps one VaultEventSocket subscription per vault currently in [_state], so
@@ -731,19 +752,24 @@ class VaultViewModel @Inject constructor(
     // Shared merge point for both a poll response (refreshSingle) and a `vault_updated`
     // push (subscribeToEvents) — see the "Reconciling a poll/push disagreement" rule in
     // api-contract.md (#223): whichever is received last always overwrites in place.
+    // Only updates if the vault is actually different to minimize Compose recomposition churn.
     private fun updateVaultInPlace(vault: Vault) {
-        _state.update { state -> state.copy(vaults = state.vaults.map { if (it.id == vault.id) vault else it }) }
+        _state.update { state ->
+            val updated = state.vaults.map { if (it.id == vault.id) vault else it }
+            if (updated === state.vaults) state else state.copy(vaults = updated)
+        }
     }
 
-    /// Update the beneficiary for a vault (owner-only). On success the vault list is
-    /// refreshed so the UI reflects the new beneficiary immediately — matching the
+    /// Update the beneficiary for a vault (owner-only). On success the vault is
+    /// refreshed in place so the UI reflects the new beneficiary immediately — matching the
     /// same pattern used by checkIn(). Mirrors iOS VaultStore.updateBeneficiary.
+    /// Uses refreshSingle() instead of load() to avoid redundant full-list fetches (#320).
     fun updateBeneficiary(vaultId: String, newBeneficiary: String) = viewModelScope.launch {
         _state.update { it.copy(isLoading = true, error = null, beneficiaryUpdated = false) }
         when (val result = apiClient.updateBeneficiary(vaultId, newBeneficiary)) {
             is ApiResult.Success -> {
                 _state.update { it.copy(isLoading = false, beneficiaryUpdated = true) }
-                load()
+                refreshSingle(vaultId)
             }
             is ApiResult.Error -> _state.update { it.copy(isLoading = false, error = result.message) }
             ApiResult.NetworkUnavailable -> _state.update { it.copy(isLoading = false, error = "No network") }
@@ -794,6 +820,7 @@ class VaultViewModel @Inject constructor(
 
 // --- Acceptance ViewModel ---
 
+@Immutable
 data class AcceptanceUiState(
     val isLoading: Boolean = false,
     val isAccepted: Boolean = false,
@@ -821,6 +848,7 @@ class AcceptanceViewModel @Inject constructor(
 
 // --- Deposit ViewModel ---
 
+@Immutable
 data class DepositUiState(
     val isLoading: Boolean = false,
     val isSuccess: Boolean = false,
@@ -870,6 +898,7 @@ class DepositViewModel @Inject constructor(
 
 // --- Withdraw ViewModel ---
 
+@Immutable
 data class WithdrawUiState(
     val isLoading: Boolean = false,
     val isSuccess: Boolean = false,

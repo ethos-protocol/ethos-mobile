@@ -17,7 +17,8 @@
         android:textColor="#FFFFFFFF"
         android:text="—"
         android:maxLines="1"
-        android:ellipsize="end" />
+        android:ellipsize="end"
+        android:contentDescription="@string/widget_vault_name_description" />
 
     <TextView
         android:id="@+id/widget_ttl"
@@ -26,7 +27,8 @@
         android:textSize="12sp"
         android:textColor="#FFEBEBF5"
         android:layout_marginTop="4dp"
-        android:text="TTL: —" />
+        android:text="TTL: —"
+        android:contentDescription="@string/widget_ttl_description" />
 
     <!-- Stub views so RemoteViews.setTextViewText calls from updateWidget are safe
          on small layouts even though these fields are not displayed here. -->

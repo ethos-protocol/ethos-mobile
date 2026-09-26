@@ -282,6 +282,8 @@ dependencies {
     // checks) in CI.
     androidTestImplementation("androidx.test.espresso:espresso-accessibility:3.6.1")
     androidTestImplementation("com.google.android.apps.common.testing.accessibility.framework:accessibility-test-framework:4.0.0")
+    // Macrobenchmark library for startup performance profiling (#322)
+    androidTestImplementation(libs.benchmark.macro)
 }
 
 // JaCoCo code coverage configuration

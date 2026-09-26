@@ -25,9 +25,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import android.util.Base64
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 import javax.net.ssl.SSLContext
@@ -81,7 +84,12 @@ class ApiClient(
 ) {
     companion object {
         private const val TAG = "ApiClient"
+        private const val API_VERSION = "2026-09-24"
+        private val USER_AGENT = "EthosProtocol/${BuildConfig.VERSION_NAME} (Android)"
     }
+
+    private val requestDedupMutex = Mutex()
+    private val inFlightGetRequests = mutableMapOf<String, CompletableDeferred<ApiResult<Any?>>>()
 
     // internal (not private): VaultEventSocket reuses this same client/connection pool
     // to open the `/ws` connection documented in shared/api-contract.md, rather than
@@ -220,29 +228,15 @@ class ApiClient(
         if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = withRetry(retryPolicy, ::isRetryableNetworkError) {
-                client.get("$baseUrl$path") { bearerAuth() }
-            }
-            ApiResponseDecompressionMetrics.record(response)
-            circuitBreaker.recordSuccess()
-            when (response.status.value) {
-                in 200..299 -> {
-                    val body: T = response.body()
-                    offlineCache.save(path, Json.encodeToString(kotlinx.serialization.serializer(), body))
-                    ApiResult.Success(body)
+                singleFlightGet(path) {
+                    client.get("$baseUrl$path") {
+                        standardHeaders()
+                        bearerAuth()
+                    }.toApiResult(path)
                 }
-                // The token the server rejected is no longer valid — clear it locally so it
-                // isn't kept being sent, and so the UI correctly routes back to AuthScreen.
-                // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
-                // recovery token/proof on completeRecovery) — surface it instead of the
-                // generic "Unauthorized" so the caller isn't left with a dead-end message.
-                401 -> { tokenProvider.clear(); ApiResult.Error(response.unauthorizedMessage(), 401) }
-                404 -> ApiResult.Error("Not found", 404)
-                else -> ApiResult.Error("Server error ${response.status.value}", response.status.value)
             }
-        }.getOrElse { e ->
-            circuitBreaker.recordFailure()
-            ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) }
-        }
+            response
+        }.getOrElse { e -> ApiErrorMapper.toApiResult(e) { if (BuildConfig.DEBUG) Log.w(TAG, "$path failed", it) } }
     }
 
     private suspend inline fun <reified B, reified T> post(
@@ -256,13 +250,13 @@ class ApiClient(
         if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = client.post("$baseUrl$path") {
+                standardHeaders()
                 bearerAuth()
                 antiReplayHeaders(idempotencyKey)
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
-            ApiResponseDecompressionMetrics.record(response)
-            circuitBreaker.recordSuccess()
+            ApiCompressionMetrics.record(response)
             when (response.status.value) {
                 in 200..299 -> ApiResult.Success(if (T::class == Unit::class) Unit as T else response.body())
                 // #211: a 401 can carry a human-readable reason in its body (e.g. an expired
@@ -283,13 +277,13 @@ class ApiClient(
         if (!circuitBreaker.allowRequest()) return ApiResult.Error("API temporarily unavailable", 503)
         return runCatching {
             val response = client.delete("$baseUrl$path") {
+                standardHeaders()
                 bearerAuth()
                 antiReplayHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(body)
             }
-            ApiResponseDecompressionMetrics.record(response)
-            circuitBreaker.recordSuccess()
+            ApiCompressionMetrics.record(response)
             // Ktor does not throw on non-2xx responses by default, so the status must be
             // checked explicitly here (as get()/post() already do) — otherwise a failed
             // deletion (401/500/etc.) is silently reported back to callers as success.
@@ -363,6 +357,52 @@ class ApiClient(
         tokenProvider.token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
     }
 
+    private fun HttpRequestBuilder.standardHeaders() {
+        header(HttpHeaders.UserAgent, USER_AGENT)
+        header("X-API-Version", API_VERSION)
+    }
+
+    private suspend inline fun <reified T> HttpResponse.toApiResult(path: String): ApiResult<T> {
+        ApiCompressionMetrics.record(this)
+        return when (status.value) {
+            in 200..299 -> {
+                val body: T = body()
+                offlineCache.save(path, Json.encodeToString(kotlinx.serialization.serializer(), body))
+                ApiResult.Success(body)
+            }
+            401 -> { tokenProvider.clear(); ApiResult.Error(unauthorizedMessage(), 401) }
+            404 -> ApiResult.Error("Not found", 404)
+            else -> ApiResult.Error("Server error ${status.value}", status.value)
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun <T> singleFlightGet(
+        path: String,
+        block: suspend () -> ApiResult<T>
+    ): ApiResult<T> {
+        val key = "GET:$path"
+        val (deferred, isLeader) = requestDedupMutex.withLock {
+            inFlightGetRequests[key]?.let { it to false } ?: run {
+                val created = CompletableDeferred<ApiResult<Any?>>()
+                inFlightGetRequests[key] = created
+                created to true
+            }
+        }
+        if (!isLeader) return deferred.await() as ApiResult<T>
+
+        try {
+            val result = block()
+            deferred.complete(result as ApiResult<Any?>)
+            return result
+        } catch (e: Throwable) {
+            deferred.completeExceptionally(e)
+            throw e
+        } finally {
+            requestDedupMutex.withLock { inFlightGetRequests.remove(key) }
+        }
+    }
+
     // Anti-replay headers (task #121, see shared/api-contract.md).
     // Applied to every mutating request (POST / DELETE). GET requests are
     // idempotent and do not require replay protection.
@@ -387,7 +427,55 @@ class ApiClient(
         val timestamp = System.currentTimeMillis() / 1_000L
         header("X-Nonce", nonce)
         header("X-Timestamp", timestamp.toString())
+        requestSignature(nonce, timestamp, idempotencyKey)?.let { header("X-Request-Signature", it) }
         if (idempotencyKey != null) header("X-Idempotency-Key", idempotencyKey)
+    }
+
+    private fun requestSignature(nonce: String, timestamp: Long, idempotencyKey: String?): String? {
+        val token = tokenProvider.token ?: return null
+        val canonical = listOf(nonce, timestamp.toString(), idempotencyKey.orEmpty()).joinToString(":")
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(token.toByteArray(), "HmacSHA256"))
+        return Base64.encodeToString(mac.doFinal(canonical.toByteArray()), Base64.NO_WRAP)
+    }
+}
+
+object HpkpTelemetry {
+    private val _pinHeadersSeen = AtomicLong(0)
+    private val _reportOnlyHeadersSeen = AtomicLong(0)
+
+    val pinHeadersSeen: Long get() = _pinHeadersSeen.get()
+    val reportOnlyHeadersSeen: Long get() = _reportOnlyHeadersSeen.get()
+
+    fun record(response: HttpResponse) {
+        if (response.headers["Public-Key-Pins"] != null) _pinHeadersSeen.incrementAndGet()
+        if (response.headers["Public-Key-Pins-Report-Only"] != null) _reportOnlyHeadersSeen.incrementAndGet()
+    }
+}
+
+object ApiCompressionMetrics {
+    private val _compressedResponses = AtomicLong(0)
+    private val _uncompressedResponses = AtomicLong(0)
+    private val _compressedBytes = AtomicLong(0)
+
+    val compressedResponses: Long get() = _compressedResponses.get()
+    val uncompressedResponses: Long get() = _uncompressedResponses.get()
+    val compressedBytes: Long get() = _compressedBytes.get()
+
+    fun record(response: HttpResponse) {
+        val encoding = response.headers[HttpHeaders.ContentEncoding]
+        if (encoding != null && !encoding.equals("identity", ignoreCase = true)) {
+            _compressedResponses.incrementAndGet()
+            response.headers[HttpHeaders.ContentLength]?.toLongOrNull()?.let { _compressedBytes.addAndGet(it) }
+        } else {
+            _uncompressedResponses.incrementAndGet()
+        }
+    }
+
+    fun reset() {
+        _compressedResponses.set(0)
+        _uncompressedResponses.set(0)
+        _compressedBytes.set(0)
     }
 }
 

@@ -17,7 +17,8 @@
         android:textColor="#FFFFFFFF"
         android:text="—"
         android:maxLines="1"
-        android:ellipsize="end" />
+        android:ellipsize="end"
+        android:contentDescription="@string/widget_vault_name_description" />
 
     <TextView
         android:id="@+id/widget_ttl"
@@ -26,7 +27,8 @@
         android:textSize="12sp"
         android:textColor="#FFEBEBF5"
         android:layout_marginTop="4dp"
-        android:text="TTL: —" />
+        android:text="TTL: —"
+        android:contentDescription="@string/widget_ttl_description" />
 
     <TextView
         android:id="@+id/widget_balance"
@@ -35,7 +37,8 @@
         android:textSize="12sp"
         android:textColor="#FFEBEBF5"
         android:layout_marginTop="4dp"
-        android:text="Balance: —" />
+        android:text="Balance: —"
+        android:contentDescription="@string/widget_balance_description" />
 
     <!-- Stub view so RemoteViews.setTextViewText for beneficiary is safe on this layout. -->
     <TextView
