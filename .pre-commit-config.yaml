@@ -1,0 +1,46 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with gitleaks
+        entry: gitleaks protect --verbose --redact --staged
+        language: golang
+        stages: [commit]
+        pass_filenames: false
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        entry: detect-secrets scan
+        language: python
+        stages: [commit]
+        pass_filenames: false
+        exclude: |
+          (?x)^(
+            android/app/google-services\.json|
+            ios/.*GoogleService-Info\.plist|
+            \.gradle/gradle\.properties
+          )$
+
+  - repo: local
+    hooks:
+      - id: check-sensitive-files
+        name: Check for sensitive files
+        entry: python3 scripts/check_sensitive_files.py
+        language: python
+        stages: [commit]
+        pass_filenames: false
+        files: |
+          (?x)^(
+            .*gradle\.properties|
+            .*google-services\.json|
+            .*GoogleService-Info\.plist|
+            .*\.keystore|
+            .*\.jks|
+            .*\.p8|
+            .*\.p12|
+            .*\.mobileprovision
+          )$

@@ -2,6 +2,8 @@ package com.ethosprotocol.models
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.text.NumberFormat
+import java.util.Locale
 
 @Serializable
 data class Vault(
@@ -26,7 +28,16 @@ data class Vault(
 
     // Assumes the 7-decimal stroop scale that applies to every Stellar classic
     // asset regardless of code — only the unit label varies (#222).
-    val formattedBalance: String get() = "%.7f %s".format(balance / 10_000_000.0, assetCode)
+    // Uses device locale for decimal separator and digit grouping.
+    val formattedBalance: String
+        get() {
+            val amountInAsset = balance / 10_000_000.0
+            val formatter = NumberFormat.getInstance(Locale.getDefault())
+            formatter.minimumFractionDigits = 7
+            formatter.maximumFractionDigits = 7
+            formatter.isGroupingUsed = true
+            return "${formatter.format(amountInAsset)} $assetCode"
+        }
 }
 
 // A single real-time event delivered over the `wss://.../ws?vault_id={id}` socket

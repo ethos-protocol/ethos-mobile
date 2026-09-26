@@ -15,12 +15,14 @@ final class BiometricService: BiometricAuthenticating {
         case authenticationFailed
         case userCancelled
         case notAvailable
+        case biometricUnavailable
 
         var errorDescription: String? {
             switch self {
             case .authenticationFailed: return "Biometric authentication failed. Please try again."
             case .userCancelled:        return "Authentication was cancelled."
             case .notAvailable:         return "No authentication method is available on this device."
+            case .biometricUnavailable: return "Biometric authentication is not available. Please use PIN."
             }
         }
     }

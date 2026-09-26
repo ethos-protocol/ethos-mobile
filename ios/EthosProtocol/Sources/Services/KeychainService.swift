@@ -1,5 +1,6 @@
 import Security
 import Foundation
+import CommonCrypto
 
 final class KeychainService {
     static let shared = KeychainService()
@@ -13,6 +14,8 @@ final class KeychainService {
     /// with the server — set when registration fails after retrying, cleared
     /// once it succeeds. See NotificationService's retry-on-foreground (#234).
     private let pendingPushTokenKey = "com.ethosprotocol.pending_push_token"
+    private let pinKey = "com.ethosprotocol.biometric_fallback_pin"
+    private let pinSetupKey = "com.ethosprotocol.pin_setup_complete"
 
     /// `expiresAt`, when provided, is persisted alongside the token so AuthStore can
     /// schedule a proactive refresh (#3) against `AuthToken.expiresAt` even across an
@@ -83,6 +86,34 @@ final class KeychainService {
 
     func deletePendingPushToken() {
         delete(forKey: pendingPushTokenKey)
+    }
+
+    func savePIN(_ pin: String) {
+        save(hashPIN(pin), forKey: pinKey, accessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+        UserDefaults.standard.set(true, forKey: pinSetupKey)
+    }
+
+    func verifyPIN(_ pin: String) -> Bool {
+        guard let storedHash = load(forKey: pinKey) else { return false }
+        return storedHash == hashPIN(pin)
+    }
+
+    func isPINSetup() -> Bool {
+        UserDefaults.standard.bool(forKey: pinSetupKey)
+    }
+
+    func deletePIN() {
+        delete(forKey: pinKey)
+        UserDefaults.standard.removeObject(forKey: pinSetupKey)
+    }
+
+    private func hashPIN(_ pin: String) -> String {
+        let data = pin.data(using: .utf8) ?? Data()
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        _ = data.withUnsafeBytes { buffer in
+            CC_SHA256(buffer.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func save(_ value: String, forKey key: String, accessible: CFString = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) {

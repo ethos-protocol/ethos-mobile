@@ -64,9 +64,16 @@ public struct Vault: Codable, Identifiable, Equatable {
     /// Formats `balance` (stroops) in `assetCode`. Assumes the 7-decimal stroop
     /// scale that applies to every Stellar classic asset regardless of code —
     /// only the unit label varies (#222).
+    /// Uses device locale for decimal separator and digit grouping.
     public var formattedBalance: String {
         let amount = Double(balance) / 10_000_000
-        return String(format: "%.7f", amount) + " " + assetCode
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 7
+        formatter.maximumFractionDigits = 7
+        formatter.usesGroupingSeparator = true
+        let formattedAmount = formatter.string(from: NSNumber(value: amount)) ?? String(format: "%.7f", amount)
+        return formattedAmount + " " + assetCode
     }
 }
 
