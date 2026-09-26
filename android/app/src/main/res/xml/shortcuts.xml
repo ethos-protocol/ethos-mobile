@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="open_vaults"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_vaults"
+        android:shortcutShortLabel="@string/shortcut_vaults_short"
+        android:shortcutLongLabel="@string/shortcut_vaults_long">
+        <intent
+            android:action="android.intent.action.MAIN"
+            android:targetClass="com.ethosprotocol.ui.MainActivity"
+            android:targetPackage="com.ethosprotocol" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="check_in"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_check_in"
+        android:shortcutShortLabel="@string/shortcut_check_in_short"
+        android:shortcutLongLabel="@string/shortcut_check_in_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="ethosprotocol://vault/latest/check-in"
+            android:targetClass="com.ethosprotocol.ui.MainActivity"
+            android:targetPackage="com.ethosprotocol" />
+    </shortcut>
+</shortcuts>
