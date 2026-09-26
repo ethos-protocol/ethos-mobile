@@ -12,6 +12,25 @@ import AppIntents
 import EthosProtocol
 #endif
 
+// MARK: - Quick Check-In Intent (#372)
+
+struct QuickCheckInIntent: AppIntent {
+    static let title: LocalizedStringResource = "Quick Check-In"
+    static let description = IntentDescription("Quickly check in a vault from the lock screen without opening the app.")
+
+    @Parameter(title: "Vault ID") var vaultID: String
+
+    func perform() async throws -> some IntentResult {
+        // Perform the check-in via the API
+        do {
+            try await APIClient.shared.checkIn(vaultID: vaultID, idempotencyKey: nil)
+            return .result(value: vaultID)
+        } catch {
+            throw error
+        }
+    }
+}
+
 // MARK: - Vault Selection Intent (#245 / #246)
 //
 // Each widget instance stores its own VaultSelectionIntent automatically via
@@ -54,7 +73,7 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
         VaultEntry(
             date: .now,
             vaultID: "vault-placeholder",
-            vaultName: "My Vault",
+            vaultName: LocalizedStrings.myVault,
             ttlRemaining: 86_400,
             isExpiringSoon: false,
             balance: "1.0000000 XLM",
@@ -66,7 +85,7 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
         VaultEntry(
             date: .now,
             vaultID: "vault-placeholder",
-            vaultName: "My Vault",
+            vaultName: LocalizedStrings.myVault,
             ttlRemaining: 86_400,
             isExpiringSoon: false,
             balance: "1.0000000 XLM",
@@ -93,7 +112,7 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
             entry = VaultEntry(
                 date: .now,
                 vaultID: selected?.id ?? "",
-                vaultName: selected.map { String($0.id.prefix(12)) + "…" } ?? "No Active Vault",
+                vaultName: selected.map { String($0.id.prefix(12)) + "…" } ?? LocalizedStrings.noActiveVault,
                 ttlRemaining: selected?.ttlRemaining,
                 isExpiringSoon: selected?.isExpiringSoon ?? false,
                 balance: selected.map { formatBalance($0.balance) } ?? "—",
@@ -103,7 +122,7 @@ struct TTLTimelineProvider: AppIntentTimelineProvider {
             entry = VaultEntry(
                 date: .now,
                 vaultID: "",
-                vaultName: "Unavailable",
+                vaultName: LocalizedStrings.unavailable,
                 ttlRemaining: nil,
                 isExpiringSoon: false,
                 balance: "—",
@@ -163,140 +182,193 @@ struct TTLWidgetView: View {
     // MARK: .systemSmall — vault name + TTL countdown only
     private var smallView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Ethos-Protocol", systemImage: "lock.shield.fill")
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
                 .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
             if let ttl = entry.ttlRemaining {
                 Text(formatDuration(ttl))
                     .font(.subheadline)
                     .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(formatDuration(ttl))
             } else {
                 Text("—").font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue("Unknown")
             }
             if entry.isExpiringSoon {
-                Label("Expiring soon", systemImage: "exclamationmark.triangle.fill")
+                Label(LocalizedStrings.expiringsoon, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(.orange)
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue("Vault expiring soon")
             }
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: .systemMedium — TTL + balance
+    // MARK: .systemMedium — TTL + balance + quick check-in
     private var mediumView: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("Ethos-Protocol", systemImage: "lock.shield.fill")
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
                 .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
             if let ttl = entry.ttlRemaining {
                 Text(formatDuration(ttl))
                     .font(.subheadline)
                     .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(formatDuration(ttl))
             } else {
                 Text("—").font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue("Unknown")
             }
             HStack {
                 Label(entry.balance, systemImage: "dollarsign.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel("Balance")
+                    .accessibilityValue(entry.balance)
             }
+
             if entry.isExpiringSoon {
-                Label("Expiring soon", systemImage: "exclamationmark.triangle.fill")
+                Label(LocalizedStrings.expiringsoon, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(.orange)
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue("Vault expiring soon")
             }
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: .systemLarge — TTL + balance + beneficiary
+    // MARK: .systemLarge — TTL + balance + beneficiary + quick check-in
     private var largeView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Ethos-Protocol", systemImage: "lock.shield.fill")
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.title3.bold())
                 .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
             Divider()
+                .accessibilityHidden(true)
             if let ttl = entry.ttlRemaining {
-                LabeledContent("TTL") {
+                LabeledContent(LocalizedStrings.ttlLabel) {
                     Text(formatDuration(ttl))
                         .foregroundStyle(entry.isExpiringSoon ? .orange : .primary)
                 }
                 .font(.subheadline)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Time remaining")
+                .accessibilityValue(formatDuration(ttl))
             } else {
-                LabeledContent("TTL") {
+                LabeledContent(LocalizedStrings.ttlLabel) {
                     Text("—").foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Time remaining")
+                .accessibilityValue("Unknown")
             }
-            LabeledContent("Balance") {
+            LabeledContent(LocalizedStrings.balanceLabel) {
                 Text(entry.balance)
                     .foregroundStyle(.secondary)
             }
             .font(.subheadline)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Balance")
+            .accessibilityValue(entry.balance)
             LabeledContent("Beneficiary") {
                 Text(entry.beneficiary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .font(.subheadline)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Beneficiary")
+            .accessibilityValue(entry.beneficiary)
             if entry.isExpiringSoon {
-                Label("Expiring soon", systemImage: "exclamationmark.triangle.fill")
+                Label(LocalizedStrings.expiringsoon, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
                     .padding(.top, 4)
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue("Vault expiring soon")
             }
             Spacer()
+                .accessibilityHidden(true)
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: .accessoryRectangular / .accessoryCircular — compact lock-screen view
+    // MARK: .accessoryRectangular / .accessoryCircular — compact lock-screen view with quick action
     private var compactView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Label("Ethos-Protocol", systemImage: "lock.shield.fill")
+            Label(LocalizedStrings.widgetTitle, systemImage: "lock.shield.fill")
                 .font(.caption2.bold())
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             Text(entry.vaultName)
                 .font(.headline)
                 .lineLimit(1)
+                .accessibilityLabel("Vault name")
+                .accessibilityValue(entry.vaultName)
             if let ttl = entry.ttlRemaining {
                 Text(formatDuration(ttl))
                     .font(.subheadline)
                     .foregroundStyle(entry.isExpiringSoon ? .orange : .secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue(formatDuration(ttl))
             } else {
                 Text("—").font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityLabel("Time remaining")
+                    .accessibilityValue("Unknown")
             }
             if entry.isExpiringSoon {
-                Label("Expiring soon", systemImage: "exclamationmark.triangle.fill")
+                Label(LocalizedStrings.expiringsoon, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2)
                     .foregroundStyle(.orange)
+                    .accessibilityLabel("Warning")
+                    .accessibilityValue("Vault expiring soon")
             }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            .padding(.top, 4)
         }
         .padding()
         .containerBackground(.regularMaterial, for: .widget)
         .widgetURL(URL(string: "ethosprotocol://vault/\(entry.vaultID)/view-details"))
+        .accessibilityElement(children: .combine)
     }
 
     private func formatDuration(_ seconds: UInt64) -> String {
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        if days > 0 { return "\(days)d \(hours)h remaining" }
-        return "\(hours)h remaining"
+        DateTimeFormatter.shared.formatDurationInSeconds(seconds)
     }
 }
 

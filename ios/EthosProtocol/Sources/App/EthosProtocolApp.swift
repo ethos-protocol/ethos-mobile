@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct EthosProtocolApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     @StateObject private var authStore = AuthStore()
     @StateObject private var vaultStore = VaultStore()
     // #276: Session lock service — locks the UI after configurable inactivity.
@@ -13,6 +15,10 @@ struct EthosProtocolApp: App {
         BackgroundRefreshService.shared.registerBackgroundTask()
         CheckInSyncTask.shared.registerBackgroundTask()
         ICloudSyncService.shared.restoreFromICloud()
+
+        if #available(iOS 16.1, *) {
+            AppShortcutsProvider.registerShortcuts()
+        }
 
         NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -35,6 +41,8 @@ struct EthosProtocolApp: App {
                     NotificationService.shared.registerNotificationCategories()
                     await NotificationService.shared.requestPermission()
                     BackgroundRefreshService.shared.scheduleAppRefresh()
+                    // Configure minimum background fetch interval for silent notifications (15 minutes)
+                    UIApplication.shared.setMinimumBackgroundFetchInterval(15 * 60)
                 }
                 .onOpenURL { url in
                     vaultStore.pendingDeepLink = UniversalLinkRouter.shared.parse(url: url)

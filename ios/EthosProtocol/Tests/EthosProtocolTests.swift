@@ -68,6 +68,19 @@ final class VaultModelTests: XCTestCase {
         XCTAssertEqual(vault.formattedBalance, "50.0000000 USDC")
     }
 
+    func test_formattedBalance_usesLocaleAwareFormatting() {
+        // Create a vault with a balance that would show grouping in some locales
+        let vault = makeVault(balance: 1_234_567_890) // 123.4567890 in asset
+        let formatted = vault.formattedBalance
+
+        // Verify it ends with the asset code
+        XCTAssertTrue(formatted.hasSuffix(" XLM"), "Expected format to end with ' XLM'")
+
+        // Verify it contains the correct amount (exact format depends on device locale)
+        XCTAssertTrue(formatted.contains("123") && formatted.contains("4567890"),
+                     "Expected balance to contain '123' and '4567890'")
+    }
+
     func test_vaultDecoding_withAssetCodeAndIssuer() throws {
         let json = """
         {

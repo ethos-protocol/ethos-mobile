@@ -15,10 +15,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ethosprotocol.R
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ethosprotocol.models.Vault
@@ -32,6 +34,7 @@ import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
+import com.ethosprotocol.services.AccessibilityService
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
@@ -39,6 +42,24 @@ import com.ethosprotocol.ui.NotificationDebugViewModel
 import com.ethosprotocol.ui.VaultViewModel
 import com.ethosprotocol.ui.TwoFactorViewModel
 import com.ethosprotocol.services.NotificationDeliveryLog
+
+// MARK: - Accessibility Helpers
+
+/**
+ * Renders a CircularProgressIndicator that respects the user's reduce-motion accessibility setting.
+ * When reduce motion is enabled, shows an empty Box instead of the animated spinner.
+ */
+@Composable
+private fun AccessibleCircularProgressIndicator(modifier: Modifier = Modifier, strokeWidth: Dp = 4.dp) {
+    val context = LocalContext.current
+    val shouldReduceMotion = AccessibilityService.isReduceMotionEnabled(context)
+
+    if (shouldReduceMotion) {
+        Box(modifier = modifier)
+    } else {
+        CircularProgressIndicator(modifier = modifier, strokeWidth = strokeWidth)
+    }
+}
 
 // MARK: - Auth Screen
 
@@ -87,8 +108,8 @@ fun AuthScreenContent(
         Icon(Icons.Default.Lock, contentDescription = "Secure sign-in",
             modifier = Modifier.size(72.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
-        Text("Ethos-Protocol", style = MaterialTheme.typography.headlineLarge)
-        Text("Secure digital inheritance", style = MaterialTheme.typography.bodyMedium,
+        Text(stringResource(R.string.app_title), style = MaterialTheme.typography.headlineLarge)
+        Text(stringResource(R.string.app_tagline), style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(32.dp))
 
@@ -98,7 +119,7 @@ fun AuthScreenContent(
         }
         if (cooldownRemainingSeconds > 0) {
             Text(
-                "Too many failed attempts. Try again in ${cooldownRemainingSeconds}s.",
+                stringResource(R.string.auth_too_many_attempts, cooldownRemainingSeconds),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -111,10 +132,10 @@ fun AuthScreenContent(
             enabled = !isLoading && cooldownRemainingSeconds == 0
         ) {
             if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text("Sign in with Passkey") }
+            else { Icon(Icons.Default.Key, null); Spacer(Modifier.width(8.dp)); Text(stringResource(R.string.sign_in_with_passkey)) }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onRegister) { Text("Create account") }
+        TextButton(onClick = onRegister) { Text(stringResource(R.string.create_account)) }
     }
 }
 
@@ -125,16 +146,15 @@ private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
     val isValid = UsernameValidator.isValid(trimmedUsername)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create Account") },
+        title = { Text(stringResource(R.string.register_title)) },
         text = {
             Column {
                 OutlinedTextField(value = username, onValueChange = { username = it },
-                    label = { Text("Username") }, singleLine = true)
+                    label = { Text(stringResource(R.string.register_username_label)) }, singleLine = true)
                 if (username.isNotBlank() && !isValid) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "${UsernameValidator.MIN_LENGTH}-${UsernameValidator.MAX_LENGTH} characters: " +
-                            "letters, numbers, '.', '_', '-' (must start/end with a letter or number)",
+                        stringResource(R.string.register_username_rules, UsernameValidator.MIN_LENGTH, UsernameValidator.MAX_LENGTH),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -142,9 +162,9 @@ private fun RegisterSheet(onRegister: (String) -> Unit, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = { onRegister(trimmedUsername) }, enabled = isValid) { Text("Register") }
+            TextButton(onClick = { onRegister(trimmedUsername) }, enabled = isValid) { Text(stringResource(R.string.register_button)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
     )
 }
 
@@ -160,24 +180,22 @@ private fun RecoverySheet(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Recover Your Account") },
+        title = { Text(stringResource(R.string.recover_title)) },
         text = {
             Column {
                 if (!codeSent) {
                     Text(
-                        "Enter your username and we'll send a recovery code to your account's " +
-                        "verified email.",
+                        stringResource(R.string.recover_instructions),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(value = username, onValueChange = { username = it },
-                        label = { Text("Username") }, singleLine = true,
+                        label = { Text(stringResource(R.string.register_username_label)) }, singleLine = true,
                         enabled = !state.isLoading, modifier = Modifier.fillMaxWidth())
                 } else {
                     Text(
-                        "Check your email for a confirmation, then tap Continue to link a new " +
-                        "passkey on this device to your account.",
+                        stringResource(R.string.recover_confirmation_instructions),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -193,12 +211,12 @@ private fun RecoverySheet(
                 TextButton(
                     onClick = { onSendCode(username) },
                     enabled = username.isNotBlank() && !state.isLoading
-                ) { Text("Send Code") }
+                ) { Text(stringResource(R.string.recover_send_code)) }
             } else {
-                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text("Continue") }
+                TextButton(onClick = { onFinish(username) }, enabled = !state.isLoading) { Text(stringResource(R.string.action_continue)) }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
     )
 }
 
@@ -211,6 +229,7 @@ fun VaultListScreen(
     vm: VaultViewModel = hiltViewModel()
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val expiringState by vm.expiringVaultsState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showCreate by remember { mutableStateOf(false) }
     var pendingCheckIn by remember { mutableStateOf<Vault?>(null) }
@@ -229,16 +248,14 @@ fun VaultListScreen(
     if (showRootWarning) {
         AlertDialog(
             onDismissRequest = { showRootWarning = false },
-            title = { Text("Security Warning") },
+            title = { Text(stringResource(R.string.security_warning_title)) },
             text = {
                 Text(
-                    "This device appears to be rooted. Your vault data, passkeys, and " +
-                    "2FA secrets may be at greater risk. Consider using a non-rooted " +
-                    "device for maximum security."
+                    stringResource(R.string.security_warning_message)
                 )
             },
             confirmButton = {
-                TextButton(onClick = { showRootWarning = false }) { Text("I Understand") }
+                TextButton(onClick = { showRootWarning = false }) { Text(stringResource(R.string.security_warning_acknowledge)) }
             }
         )
     }
@@ -256,7 +273,7 @@ fun VaultListScreen(
             onConfirm = {
                 pendingCheckIn = null
                 BiometricHelper(context as androidx.fragment.app.FragmentActivity).authenticate(
-                    title = "Confirm Check-In",
+                    title = stringResource(R.string.checkin_title),
                     subtitle = "Vault ${vault.id.take(12)}… will extend by ${formatInterval(vault.checkInInterval)}",
                     onSuccess = { vm.checkIn(vault.id) },
                     onError = { err -> biometricError = err },
@@ -269,23 +286,23 @@ fun VaultListScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("My Vaults") }, actions = {
+            TopAppBar(title = { Text(stringResource(R.string.vault_list_title)) }, actions = {
                 // #235: debug/QA-only entry to the notification delivery log — never
                 // shown in a release build (onDebugLogClick is only non-null when
                 // MainActivity's nav graph wires it in under BuildConfig.DEBUG).
                 onDebugLogClick?.let { onClick ->
-                    IconButton(onClick = onClick) { Icon(Icons.Default.BugReport, "Notification log") }
+                    IconButton(onClick = onClick) { Icon(Icons.Default.BugReport, stringResource(R.string.notification_log_title)) }
                 }
-                IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, "Create vault") }
+                IconButton(onClick = { showCreate = true }) { Icon(Icons.Default.Add, stringResource(R.string.vault_create_button)) }
             })
         }
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
                 state.isLoading && state.vaults.isEmpty() ->
-                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    AccessibleCircularProgressIndicator(Modifier.align(Alignment.Center))
                 state.vaults.isEmpty() ->
-                    Text("No vaults yet. Tap + to create one.",
+                    Text(stringResource(R.string.vault_list_empty),
                         Modifier.align(Alignment.Center),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
@@ -299,6 +316,15 @@ fun VaultListScreen(
                         LazyColumn {
                             if (state.isOffline) item {
                                 OfflineBanner()
+                            }
+                            if (expiringState.expiredVaults.isNotEmpty() && !expiringState.isDismissed) {
+                                item {
+                                    ExpiringVaultsBanner(
+                                        vaults = expiringState.expiredVaults,
+                                        onDismiss = { vm.dismissExpiringVaultsBanner() },
+                                        onCheckIn = { vault -> pendingCheckIn = vault }
+                                    )
+                                }
                             }
                             val errorMsg = biometricError ?: state.error
                             errorMsg?.let { err ->
@@ -317,9 +343,9 @@ fun VaultListScreen(
                             if (state.hasMore) item {
                                 Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
                                     if (state.isLoadingMore) {
-                                        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                                        AccessibleCircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                                     } else {
-                                        OutlinedButton(onClick = { vm.loadMore() }) { Text("Load more") }
+                                        OutlinedButton(onClick = { vm.loadMore() }) { Text(stringResource(R.string.vault_list_load_more)) }
                                     }
                                 }
                             }
@@ -340,25 +366,25 @@ private fun formatInterval(seconds: Long): String {
 private fun CheckInConfirmationDialog(vault: Vault, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Confirm Check-In") },
+        title = { Text(stringResource(R.string.checkin_title)) },
         text = {
             Column {
-                Text("Vault: ${vault.id.take(12)}…",
+                Text(stringResource(R.string.checkin_vault_id, vault.id.take(12)),
                     style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(4.dp))
-                Text("TTL will be extended by ${formatInterval(vault.checkInInterval)}.",
+                Text(stringResource(R.string.checkin_ttl_extension, formatInterval(vault.checkInInterval)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
-                Text("Biometric or PIN confirmation is required.",
+                Text(stringResource(R.string.checkin_requires_auth),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text("Confirm") }
+            TextButton(onClick = onConfirm) { Text(stringResource(R.string.action_confirm)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
 
@@ -415,7 +441,7 @@ fun DestructiveConfirmationDialog(
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
             ) { Text(confirmLabel) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
     )
 }
 
@@ -438,6 +464,48 @@ private fun OfflineBanner(cachedAt: Long? = null) {
             Spacer(Modifier.width(8.dp))
             Text(message, color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ExpiringVaultsBanner(
+    vaults: List<Vault>,
+    onDismiss: () -> Unit,
+    onCheckIn: (Vault) -> Unit
+) {
+    val summary = if (vaults.size == 1) {
+        "1 vault expires in less than 24 hours"
+    } else {
+        "${vaults.size} vaults expire in less than 24 hours"
+    }
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Warning, contentDescription = "Expiring Soon",
+                    tint = MaterialTheme.colorScheme.onErrorContainer)
+                Spacer(Modifier.width(8.dp))
+                Text(summary, color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss, modifier = Modifier.weight(1f)) {
+                    Text("Dismiss", fontSize = MaterialTheme.typography.labelSmall.fontSize)
+                }
+                if (vaults.size == 1) {
+                    Button(onClick = { onCheckIn(vaults[0]) }, modifier = Modifier.weight(1f)) {
+                        Text("Check In", fontSize = MaterialTheme.typography.labelSmall.fontSize)
+                    }
+                }
+            }
         }
     }
 }
@@ -486,7 +554,7 @@ private fun VaultCard(
                     Icon(Icons.Default.Warning, contentDescription = "Warning", tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Expiring soon!", color = MaterialTheme.colorScheme.error,
+                    Text(stringResource(R.string.checkin_expiring_soon), color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
@@ -494,15 +562,15 @@ private fun VaultCard(
             if (vault.status == com.ethosprotocol.models.VaultStatus.active) {
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(onClick = onCheckIn, modifier = Modifier.fillMaxWidth()) {
-                    Text("Check In")
+                    Text(stringResource(R.string.checkin_button))
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onDeposit, modifier = Modifier.weight(1f)) {
-                        Text("Deposit")
+                        Text(stringResource(R.string.vault_deposit))
                     }
                     OutlinedButton(onClick = onWithdraw, modifier = Modifier.weight(1f)) {
-                        Text("Withdraw")
+                        Text(stringResource(R.string.vault_withdraw))
                     }
                 }
             }
@@ -576,7 +644,7 @@ fun BeneficiaryAcceptanceScreenContent(
             tint = MaterialTheme.colorScheme.primary
         )
         Spacer(Modifier.height(16.dp))
-        Text("Beneficiary Acceptance", style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.beneficiary_acceptance_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
             "You have been named as the beneficiary for the following vault:",
@@ -587,7 +655,7 @@ fun BeneficiaryAcceptanceScreenContent(
         OutlinedTextField(
             value = vaultId,
             onValueChange = {},
-            label = { Text("Vault ID") },
+            label = { Text(stringResource(R.string.beneficiary_vault_id_label)) },
             readOnly = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -602,7 +670,7 @@ fun BeneficiaryAcceptanceScreenContent(
             enabled = !isLoading
         ) {
             if (isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text("Accept")
+            else Text(stringResource(R.string.action_accept))
         }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(
@@ -610,7 +678,7 @@ fun BeneficiaryAcceptanceScreenContent(
             modifier = Modifier.fillMaxWidth(),
             enabled = !isLoading
         ) {
-            Text("Decline")
+            Text(stringResource(R.string.action_decline))
         }
     }
 }
@@ -647,9 +715,9 @@ fun ManageBeneficiaryScreen(
         Icon(Icons.Default.Person, contentDescription = null,
             modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(16.dp))
-        Text("Manage Beneficiary", style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.manage_beneficiary_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
-        Text("Current beneficiary:", style = MaterialTheme.typography.bodySmall,
+        Text(stringResource(R.string.manage_beneficiary_current_label), style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(vault.beneficiary,
             style = MaterialTheme.typography.bodyMedium,
@@ -658,15 +726,15 @@ fun ManageBeneficiaryScreen(
 
         if (showConfirmation) {
             // Confirmation step — mirrors iOS ManageBeneficiaryView.confirmationContent
-            Text("Confirm Change", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.manage_beneficiary_change_title), style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
-            Text("From:", style = MaterialTheme.typography.labelSmall,
+            Text(stringResource(R.string.manage_beneficiary_from_label), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(vault.beneficiary,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace)
             Spacer(Modifier.height(4.dp))
-            Text("To:", style = MaterialTheme.typography.labelSmall,
+            Text(stringResource(R.string.manage_beneficiary_to_label), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(newBeneficiary.trim(),
                 style = MaterialTheme.typography.bodySmall,
@@ -683,25 +751,25 @@ fun ManageBeneficiaryScreen(
                 enabled = !state.isLoading
             ) {
                 if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                else Text("Confirm Change")
+                else Text(stringResource(R.string.manage_beneficiary_confirm_change))
             }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(
                 onClick = { showConfirmation = false },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !state.isLoading
-            ) { Text("Back") }
+            ) { Text(stringResource(R.string.action_back)) }
         } else {
             // Input step
             OutlinedTextField(
                 value = newBeneficiary,
                 onValueChange = { newBeneficiary = it },
-                label = { Text("New Beneficiary (Stellar address)") },
+                label = { Text(stringResource(R.string.manage_beneficiary_new_address_label)) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 isError = newBeneficiary.isNotEmpty() && !isAddressValid,
                 supportingText = if (newBeneficiary.isNotEmpty() && !isAddressValid) {
-                    { Text("Enter a non-empty address that differs from the current beneficiary.") }
+                    { Text(stringResource(R.string.manage_beneficiary_error_empty)) }
                 } else null
             )
             state.error?.let {
@@ -881,7 +949,7 @@ fun VaultDeepLinkScreenContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (isLoading) {
             Spacer(Modifier.height(16.dp))
-            CircularProgressIndicator(
+            AccessibleCircularProgressIndicator(
                 Modifier.align(Alignment.CenterHorizontally).testTag("loading")
             )
         }
@@ -1081,7 +1149,7 @@ fun DepositScreenContent(
                 enabled = isAmountValid && !isLoading
             ) {
                 if (isLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    AccessibleCircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 } else {
                     Text("Deposit")
                 }
@@ -1223,7 +1291,7 @@ fun WithdrawScreenContent(
                 enabled = isAmountValid && !isLoading
             ) {
                 if (isLoading) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    AccessibleCircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 } else {
                     Text("Withdraw")
                 }
@@ -1336,7 +1404,7 @@ fun TwoFactorSetupScreen(
                     TwoFactorMethod.email -> email.isNotBlank()
                 }
             ) {
-                if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                if (state.isLoading) AccessibleAccessibleCircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                 else Text("Continue")
             }
         },
@@ -1490,7 +1558,7 @@ private fun TwoFactorVerifyScreen(
             modifier = Modifier.fillMaxWidth(),
             enabled = otp.length == 6 && !state.isLoading && !state.isOtpBlocked
         ) {
-            if (state.isLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            if (state.isLoading) AccessibleAccessibleCircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             else Text("Verify")
         }
     }
@@ -1578,7 +1646,7 @@ fun VaultDetailScreen(
             Spacer(Modifier.height(8.dp))
 
             when {
-                state.isLoading -> CircularProgressIndicator()
+                state.isLoading -> AccessibleCircularProgressIndicator()
                 state.error != null && state.status == null -> {
                     Text(state.error!!, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
@@ -1704,7 +1772,7 @@ fun NotificationDebugScreen(
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(event.vaultId.take(12) + "…", style = MaterialTheme.typography.bodySmall)
                             Text(
-                                java.text.DateFormat.getTimeInstance().format(java.util.Date(event.timestampMillis)),
+                                com.ethosprotocol.utils.DateTimeFormatter.formatTime(event.timestampMillis),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
