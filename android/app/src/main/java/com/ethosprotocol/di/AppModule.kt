@@ -9,6 +9,7 @@ import com.ethosprotocol.api.NetworkMonitor
 import com.ethosprotocol.api.EncryptedTokenProvider
 import com.ethosprotocol.api.OfflineCache
 import com.ethosprotocol.api.TokenProvider
+import com.ethosprotocol.services.AnalyticsTracker
 import com.ethosprotocol.services.AppVersionChecker
 import com.ethosprotocol.services.CrashReporter
 import com.ethosprotocol.services.CredentialManagerFactory
@@ -76,4 +77,14 @@ object AppModule {
     @Provides @Singleton
     fun provideCrashReporter(@ApplicationContext context: Context): CrashReporter =
         CrashReporter(context)
+
+    /**
+     * Provides the [AnalyticsTracker] used to record privacy-respecting session
+     * analytics: session start/end, screen views and user actions (check-in,
+     * search, filter). Events are batched before dispatch to reduce network
+     * chatter and are only collected when the user has opted in.
+     */
+    @Provides @Singleton
+    fun provideAnalyticsTracker(@ApplicationContext context: Context): AnalyticsTracker =
+        AnalyticsTracker(context)
 }

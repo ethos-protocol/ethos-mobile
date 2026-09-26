@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.ethosprotocol.analytics.SessionAnalytics
 import com.ethosprotocol.crash.CrashReporter
 import com.ethosprotocol.utils.AppVersionUpdateChecker
 import com.ethosprotocol.utils.StartupPerformance
@@ -21,6 +22,8 @@ class EthosProtocolApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var crashReporter: CrashReporter
 
+    @Inject lateinit var sessionAnalytics: SessionAnalytics
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
@@ -34,6 +37,11 @@ class EthosProtocolApplication : Application(), Configuration.Provider {
         // during startup is captured with stack traces, device context and
         // release/version tracking (#425).
         crashReporter.initialize(this)
+
+        // Begin privacy-respecting session analytics tracking (#426). The
+        // session start timestamp is recorded here and the session is closed
+        // (with a flush of any batched events) when the app is terminated.
+        sessionAnalytics.startSession()
 
         // Defer non-critical initialization (widget updates) to after first frame
         // to reduce cold-start time (#317). Schedule after ~2 seconds to ensure
@@ -49,5 +57,12 @@ class EthosProtocolApplication : Application(), Configuration.Provider {
         Handler(Looper.getMainLooper()).postDelayed({
             appVersionUpdateChecker.checkForUpdates()
         }, 3000)
+    }
+
+    override fun onTerminate() {
+        // Close the current analytics session and flush any pending batched
+        // events before the process is torn down (#426).
+        sessionAnalytics.endSession()
+        super.onTerminate()
     }
 }
