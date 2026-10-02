@@ -40,3 +40,30 @@ Covers issue #230.
       Confirm TalkBack reads "OTP code field, 3 of 6 digits entered" as digits are typed.
 - [ ] Confirm the field is not split into multiple unlabelled boxes that TalkBack/VoiceOver
       would read without positional context.
+
+## Performance regression pass
+
+Covers issue #459. Budgets and instructions: [performance-guide.md](performance-guide.md).
+Use a physical device and a release build — debug builds and simulators do not produce
+comparable numbers.
+
+- [ ] iOS: cold-launch to first interactive frame, three runs, report the median.
+      Budget: under 3 000 ms. Use Product > Profile (Cmd+I) > System Trace, filtered by
+      subsystem `com.ethosprotocol`.
+- [ ] Android: cold launch three times, report the median. Budget: under 3 000 ms.
+      Use `adb shell am start -W` with a cold-stopped app, or Android Studio Profiler.
+- [ ] iOS: open the vault list with 100+ vaults and scroll to the end. Confirm no
+      dropped frames in Instruments > Animation Hitches.
+- [ ] Android: same list, same scroll path. Confirm no dropped frames in the Profiler's
+      Frame View.
+- [ ] Both: type in the vault search field. Confirm typing stays responsive — a
+      `UserDefaults` write per keystroke is a known issue (see performance-guide.md §8).
+- [ ] Both: background the app, wait for the session lock, return, and confirm the
+      re-lock behaved per the configured timeout.
+- [ ] Both: run a cold start on a captive-portal or offline network and confirm the app
+      surfaces the offline state promptly rather than hanging. iOS has no explicit
+      request timeout today (performance-guide.md §8).
+- [ ] Both: confirm the widget still updates and stays within the interval in
+      [widget-refresh-budget.md](widget-refresh-budget.md).
+- [ ] Confirm the release build size has not grown beyond budget, and record the delta
+      in the release notes.
