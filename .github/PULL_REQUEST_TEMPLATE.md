@@ -51,4 +51,29 @@
 
 ## Related issues
 
+
+## Description
+<!-- What does this PR do and why? -->
+
+## Related Issue
+Closes #
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation
+- [ ] Refactor
+- [ ] Other:
+
+## How Was This Tested?
+<!-- Describe tests run, devices/OS used -->
+
+## Screenshots (if UI changes)
+
+## Checklist
+- [ ] Follows the code style in CONTRIBUTING.md
+- [ ] Lint and tests pass locally
+- [ ] Tests added/updated
+- [ ] Documentation updated
+
 <!-- Closes #... -->
