@@ -312,12 +312,33 @@ Pushing a `vX.Y.Z` tag (matching `MARKETING_VERSION` in `ios/EthosProtocol/proje
 - "What's New" generator: `.github/scripts/generate_release_notes.py`
 - Setup, secrets, and the maintainer checklist: [docs/ios-app-store-release.md](docs/ios-app-store-release.md)
 
+### iOS TestFlight external beta distribution (#461)
+Every push to `main` builds a signed Release IPA and distributes it to external TestFlight
+tester groups automatically. Build notes are generated from conventional commits since the
+last tag. Tester groups and build expiry are configurable via repository variables.
+
+- Workflow: `.github/workflows/ios-beta-distribution.yml`
+- Lane: `ios/EthosProtocol/fastlane/Fastfile` (`beta_distribution`)
+- Build notes: `.github/scripts/generate_release_notes.py`
+- Setup, secrets, tester groups, and expiry: [docs/ios-beta-distribution.md](docs/ios-beta-distribution.md)
+
 ### Android Google Play release automation
 The same `vX.Y.Z` tag (matching `versionName` in `android/app/build.gradle.kts`) builds the signed release bundle (AAB) and uploads it to Google Play's internal testing track via fastlane. Promotion to production is a staged rollout (10% by default). It's opt-in and gated behind approval on the `play-production` environment, and manual runs can increase, complete, or halt the rollout. Manual runs default to a dry run.
 
 - Workflow: `.github/workflows/android-play-store-release.yml`
 - Lanes: `android/fastlane/Fastfile` (`validate`, `internal`, `production`, `rollout`)
 - Setup, secrets, the first-release manual step, and the maintainer checklist: [docs/android-play-store-release.md](docs/android-play-store-release.md)
+
+### Android Firebase App Distribution (#462)
+Every push to `main` builds a debug APK and distributes it to Firebase App Distribution
+tester groups automatically. Build notes are generated from conventional commits. Release
+APK distribution is also supported for gated beta builds requiring signing. Testers receive
+an email notification with a direct download link.
+
+- Workflow: `.github/workflows/android-firebase-distribution.yml`
+- Lanes: `android/fastlane/Fastfile` (`firebase_beta`, `firebase_distribute`)
+- Build notes: `.github/scripts/generate_release_notes.py --platform android`
+- Setup, secrets, tester groups, and Firebase Console steps: [docs/android-firebase-beta.md](docs/android-firebase-beta.md)
 
 ### App Links Verification (Deep Linking & Passkeys)
 
