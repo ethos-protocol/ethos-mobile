@@ -1,1 +1,272 @@
-IyBDSS9DRCBQaXBlbGluZQoKVGhpcyBkb2N1bWVudCBkZXNjcmliZXMgdGhlIGNvbnRpbnVvdXMgaW50ZWdyYXRpb24gYW5kCmNvbnRpbnVvdXMgZGVsaXZlcnkgKENJL0NEKSBwaXBlbGluZSBmb3IgdGhlIEV0aG9zLVByb3RvY29sIG1vYmlsZQphcHBzIChpT1MgKyBBbmRyb2lkKS4gSXQgY292ZXJzIHRoZSB3b3JrZmxvd3MgdGhhdCBydW4gb24gZXZlcnkgcHVsbApyZXF1ZXN0IGFuZCBvbiBgbWFpbmAsIHRoZSBidWlsZCBhcnRpZmFjdHMgdGhleSBwcm9kdWNlLCB0aGUgcmVsZWFzZQpwcm9jZXNzLCBhbmQgdGhlIGRlcGxveW1lbnQgcHJvY2VkdXJlcyBmb3IgZWFjaCBlbnZpcm9ubWVudC4KCi0gW092ZXJ2aWV3XSgjb3ZlcnZpZXcpCi0gW1dvcmtmbG93IG1hcF0oI3dvcmtmbG93LW1hcCkKLSBbUHVsbCByZXF1ZXN0IGdhdGVzXSgjcHVsbC1yZXF1ZXN0LWdhdGVzKQotIFtCdWlsZCBhcnRpZmFjdHNdKCNidWlsZC1hcnRpZmFjdHMpCi0gW1JlbGVhc2UgcHJvY2Vzc10oI3JlbGVhc2UtcHJvY2VzcykKLSBbRGVwbG95bWVudCBwcm9jZWR1cmVzXSgjZGVwbG95bWVudC1wcm9jZWR1cmVzKQotIFtTZWNyZXRzIGFuZCBjb25maWd1cmF0aW9uXSgjc2VjcmV0cy1hbmQtY29uZmlndXJhdGlvbikKLSBbVHJvdWJsZXNob290aW5nXSgjdHJvdWJsZXNob290aW5nKQoKIyMgT3ZlcnZpZXcKCkFsbCBwaXBlbGluZSBsb2dpYyBsaXZlcyBpbiBgLmdpdGh1Yi93b3JrZmxvd3MvYCBhbmQgaXMgZXhlY3V0ZWQgYnkKR2l0SHViIEFjdGlvbnMuIFRoZSBwaXBlbGluZSBpcyBzcGxpdCBpbnRvIHRocmVlIGxheWVyczoKCjEuICoqUGVyLVBsYXRmb3JtIENJKioqIOKAlCBpT1MgYW5kIEFuZHJvaWQgYnVpbGQgYW5kIHRlc3QgaW5kZXBlbmRlbnRseS4KMi4gKipRdWFsaXR5IGFuZCBzZWN1cml0eSBnYXRlcyoqIOKAlCBjb3ZlcmFnZSB1cGxvYWQsIGRlcGVuZGVuY3kgdnVsbmVyYWJpbGl0eQogICBzY2FubmluZywgY2VydGlmaWNhdGUtcGluIGNoZWNrcywgYW5kIEFwcGxlIEFwcCBTaXRlIEFzc29jaWF0aW9uIC8KICAgQXNzZXQgTGlua3MgdmVyaWZpY2F0aW9uLgozLiAqKlN0YWdpbmcgYW5kIHJlbGVhc2UqKiDigJQgYnVpbGRzIGFyZSBwdWJsaXNoZWQgYXMgYXJ0aWZhY3RzIGFuZCB0aGUKICAgc3RhZ2luZyBlbnZpcm9ubWVudCBpcyBleGVyY2lzZWQgYmVmb3JlIGEgcmVsZWFzZSBpcyBjdXQuCgpUaGUgcGlwZWxpbmUgaXMgZGVzaWduZWQgc28gdGhhdCBhbnkgYnJhbmNoIGNhbiBiZSBidWlsdCBhbmQgdGVzdGVkLApidXQgb25seSBg bWFpbmAgcHJvZHVjZXMgc2hpcHBhYmxlIGFydGlmYWN0cy4KCiMjIFdvcmtmbG93IG1hcAoKfCBXb3JrZmxvdyBmaWxlIHwgVHJpZ2dlciB8IFB1cnBvc2UgfAp8LS0tLS0tLS0tLS0tLS0tfC0tLS0tLS0tLXwtLS0tLS0tLS18CnwgYC5naXRodWIvd29ya2Zsb3dzL2lvcy1jaS55bWxgIHwgUFMsIHB1c2ggdG8gYG1haW5gIHwgQnVpbGQgKyB0ZXN0IHRoZSBpT1MgYXBwIGFuZCB0aGUgU1BNIHBhY2thZ2UuIFJ1bnMgdGhlIFJlbGVhc2UgVExTIHBpbiBjaGVjay4gfAp8IGAuZ2l0aHViL3dvcmtmbG93cy9hbmRyb2lkLWNpLnltbGAgfCBQUywgcHVzaCB0byBgbWFpbmAgfCBCdWlsZCArIHRlc3QgdGhlIEFuZHJvaWQgYXBwICh1bml0ICsgY29ubmVjdGVkIHRlc3RzKS4gUnVucyB0aGUgcmVsZWFzZSBjZXJ0aWZpY2F0ZS1waW4gY2hlY2suIHwKfCBgLmdpdGh1Yi93b3JrZmxvd3MvaW9zLWRlcGVuZGVuY3ktY2hlY2sueW1sYCB8IFdlZWtseSwgUFMgb24gYFBhY2thZ2Uuc3dpZnRgIC8gYFBhY2thZ2UucmVzb2x2ZWRgIHwgT1NWIHNjYW4gb2YgcGlubmVkIFNQTSBkZXBlbmRlbmNpZXMuIEZhaWxzIG9uIENWRSBhdCBDVlNTIOKJpSA3LjAuIHwKfCBgLmdpdGh1Yi93b3JrZmxvd3MvYW5kcm9pZC1kZXBlbmRlbmN5LWNoZWNrLnltbGAgfCBXZWVrbHksIFBTIG9uIGdyYWRsZSBkZXBlbmRlbmN5IGNoYW5nZXMgfCBPV0FTUCBkZXBlbmRlbmN5LWNoZWNrIGFnYWluc3QgQW5kcm9pZCBkZXBlbmRlbmNpZXMuIHwKfCBgLmdpdGh1Yi93b3JrZmxvd3MvaW9zLWFwcGxpbmtzLXZlcmlmeS55bWxgIHwgRGFpbHksIFBTIG9uIGBFdGhvc1Byb3RvY29sLmVudGl0bGVtZW50c2AgfCBWZXJpZmllcyB0aGUgQXBwbGUgQXBwIFNpdGUgQXNzb2NpYXRpb24gZmlsZSBpcyBzZXJ2ZWQgY29ycmVjdGx5LiB8CnwgYC5naXRodWIvd29ya2Zsb3dzL2FuZHJvaWQtYXBwbGlua3MtdmVyaWZ5LnltbGAgfCBEYWlseSwgUFMgb24gYEFuZHJvaWRNYW5pZmVzdC54bWxgIHwgVmVyaWZpZXMgdGhlIEFzc2V0IExpbmtzIGZpbGUgaXMgc2VydmVkIGNvcnJlY3RseS4gfAp8IGAuZ2l0aHViL3dvcmtmbG93cy9zdGFnaW5nLWRlcGxveS55bWxgIHwgUHVzaCB0byBgbWFpbmAsIG1hbnVhbCBkaXNwYXRjaCB8IEJ1aWxkcyBzdGFnaW5nIGFydGlmYWN0cyBhbmQgcnVucyB0aGUgc3RhZ2luZyBzbW9rZSB0ZXN0cy4gfAp8IGAuZ2l0aHViL3dvcmtmbG93cy9zdGFnaW5nLXNtb2tlLXRlc3QueW1sYCB8IGB3b3JrZmxvd19jYWxsYCB8IFJldXNhYmxlIHNtb2tlLXRlc3Qgd29ya2Zsb3cgdXNlZCBieSBzdGFnaW5nIGFuZCByZWxlYXNlLiB8CgpXb3JrZmxvd3MgdGhhdCB0b3VjaCBzaGlwcGluZyBjb2RlIGFyZSBwaW5uZWQgdG8gZXhwbGljaXQgcnVubmVyIHZlcnNpb25zCihmb3IgZXhhbXBsZSBgbWFjb3MtMTQtbGFyZ2VgIGZvciBpT1MpIHNvIHRoYXQgYnVpbGQgcmVzdWx0cyBhcmUKcmVwcm9kdWNpYmxlLgoKIyMgUHVsbCByZXF1ZXN0IGdhdGVzCgpFdmVyeSBwdWxsIHJlcXVlc3QgbXVzdCBwYXNzIHRoZSBmb2xsb3dpbmcgY2hlY2tzIGJlZm9yZSBpdCBjYW4gYmUKbWVyZ2VkOgoKLSBgYnVpbGQtYW5kLXRlc3RgIChpT1MpIOKAlCBjb21waWxlcyB0aGUgU1BNIHBhY2thZ2UgYW5kIHRoZSBhcHAgdGFyZ2V0LAogIHRoZW4gcnVucyB0aGUgdGVzdCBzdWl0ZSBvbiBhbiBpT1MgU2ltdWxhdG9yIGRlc3RpbmF0aW9uLgotIGBidWlsZC1hbmQtdGVzdGAgKEFuZHJvaWQpIOKAlCBjb21waWxlcyB0aGUgZGVidWcgdmFyaWFudCwgcnVucyB0aGUKICBKVk0gdW5pdCB0ZXN0cywgYW5kIChvbiB0aGUgY29ubmVjdGVkIGpvYikgcnVucyBpbnN0cnVtZW50ZWQgdGVzdHMuCi0gYGNvdmVyYWdlYCDigJQgdXBsb2FkcyBpT1MgYW5kIEFuZHJvaWQgY292ZXJhZ2UgdG8gQ29kZUNvdiB1bmRlciB0aGUKICBgaW9zYCBhbmQgYGFuZHJvaWRgIGZsYWdzLgotIGBjaGVjay10bHMtcGlubmluZ2Ag4oCUIGZhaWxzIGEgUmVsZWFzZSBidWlsZCBpZiBlaXRoZXIgYFRMU19QVUJMSUNfS0VZX1BJTl9DVVJSRU5UYAogIG9yIGBUbHNfUFVCTElDX0tFWV9QSU5fQkFDS1VQYCBpcyBtaXNzaW5nIG9yIGVtcHR5LgotIGBWZXJpZnkgcmVsZWFzZSBjZXJ0aWZpY2F0ZSBwaW5zIGFyZSBub3QgcGxhY2Vob2xkZXJzYCDigJQgcmVwb3J0cyBhbgogIHVuY29uZmlndXJlZCByZWxlYXNlIGJ1aWxkIGFuZCBmYWlscyBvbmNlIHBpbnMgYXJlIGNvbmZpZ3VyZWQgYnV0IHdyb25nLAogIG9yIG9uY2UgcmVsZWFzZSBzaWduaW5nIGlzIGNvbmZpZ3VyZWQuCi0gYGRlcGVuZGVuY3ktY2hlY2tgIOKAlCBydW5zIG9uIGNoYW5nZXMgdG8gZ3JhZGxlIGRlcGVuZGVuY3kgZmlsZXMgYW5kCiAgd2Vla2x5IG9uIGEgc2NoZWR1bGUuCi0gYHNwbS12dWxuZXJhYmlsaXR5LXNjYW5gIOKAlCBydW5zIG9uIGNoYW5nZXMgdG8gYFBhY2thZ2Uuc3dpZnRgIC8KICBgUGFja2FnZS5yZXNvbHZlZGAgYW5kIHdlZWtseSBvbiBhIHNjaGVkdWxlLgoKQSBQUiB0aGF0IGZhaWxzIGFueSBvZiB0aGVzZSBnYXRlcyBjYW5ub3QgYmUgbWVyZ2VkLiBUaGUgYnJhbmNoCnByb3RlY3Rpb24gcnVsZSBvbiBgbWFpbmAgcmVxdWlyZXMgdGhlIGBidWlsZC1hbmQtdGVzdGAgam9icyBmcm9tIGJvdGgKcGxhdGZvcm1zLgoKIyMgQnVpbGQgYXJ0aWZhY3RzCgpFYWNoIHdvcmtmbG93IHVwbG9hZHMgYSB3ZWxsLWRlZmluZWQgc2V0IG9mIGFydGlmYWN0cy4gVGhlc2UgYXJlIHRoZQpmaWxlcyB5b3Ugc2hvdWxkIGV4cGVjdCB0byBmaW5kIGF0dGFjaGVkIHRvIGEgcnVuIGluIHRoZSBHaXRIdWIgQWN0aW9ucwpVSS4KCiMjIyBpT1MKCnwgQXJ0aWZhY3QgfCBDb250ZW50cyB8IFJldGVudGlvbiB8CnwtLS0tLS0tLS0tfC0tLS0tLS0tLS18LS0tLS0tLS0tLS18CnwgYGlvcy1idWlsZC1sb2dzYCB8IGB4Y29kZWJ1aWxkYCBsb2dzIGFuZCB0aGUgYC54Y3Jlc3VsdGAgYnVuZGxlIGZyb20gdGhlIHRlc3QgcnVuIHwgMTQgZGF5cyB8CnwgYGlvcy1jb3ZlcmFnZWAgfIFRoZSBgLnhjY292ZXJhZ2VgIGZpbGUgdXBsb2FkZWQgdG8gQ29kZUNvdiB1bmRlciB0aGUgYGlvc2AgZmxhZyB8IDE0IGRheXMgfAp8IGBpb3Mtc3RhZ2luZy1hcHBgIHwgVGhlIFN0YWdpbmcgYC5hcHBgIGJ1bmRsZSBidWlsdCBieSBgc3RhZ2luZy1kZXBsb3kueW1sYCB8IDcgZGF5cyB8CgpUaGUgaU9TIGJ1aWxkIGFydGlmYWN0IGlzIGFuIHVuc2lnbmVkIGAuYXBwYCBidW5kbGUuIFNpZ25pbmcgaGFwcGVucwpvdXRzaWRlIHRoZSBwaXBlbGluZSB1c2luZyB0aGUgQXBwbGUgRGV2ZWxvcGVyIFRlYW0gY29uZmlndXJlZCBpbiB0aGUKcmVsZWFzZSBqb2IuCgojIyMgQW5kcm9pZAoKfCBBcnRpZmFjdCB8IENvbnRlbnRzIHwgUmV0ZW50aW9uIHwKfC0tLS0tLS0tLS18LS0tLS0tLS0tLXwtLS0tLS0tLS0tLXwKfCBgYW5kcm9pZC1kZWJ1Zy1hcGtgIHwgYGFwcC1kZWJ1Zy5hcGtgIGZyb20gdGhlIGRlYnVnIGJ1aWxkIHwgMTQgZGF5cyB8CnwgYGFuZHJvaWQtc3RhZ2luZy1hcGtgIHwgYGFwcC1zdGFnaW5nLmFwa2AgZnJvbSB0aGUgc3RhZ2luZyBidWlsZCB8IDcgZGF5cyB8CnwgYGFuZHJvaWQtdGVzdC1yZXBvcnRzYCB8IEpVTml0IGFuZCBpbnN0cnVtZW50ZWQgdGVzdCByZXBvcnRzIChIVE1MICsgWE1MKSB8IDE0IGRheXMgfAp8IGBhbmRyb2lkLWNvdmVyYWdlYCB8IEphY29jbyBjb3ZlcmFnZSByZXBvcnQgdXBsb2FkZWQgdG8gQ29kZUNvdiB1bmRlciB0aGUgYGFuZHJvaWRgIGZsYWcgfCAxNCBkYXlzIHwKCkFuZHJvaWQgYXJ0aWZhY3RzIGFyZSBidWlsdCB3aXRoIHRoZSBkZWJ1ZyBrZXlzdG9yZSB1bmxlc3MgcmVsZWFzZQpzaWduaW5nIGlzIGNvbmZpZ3VyZWQgaW4gdGhlIHJlcG9zaXRvcnkgc2VjcmV0cy4gVGhlIHN0YWdpbmcgQVBLIGlzCmJ1aWx0IHdpdGggdGhlIGBzdGFnaW5nYCBmbGF2b3IgYW5kIGJha2VzIGBTVEFHSU5HX0FQSV9CQVNFX1VSTGAgaW50bwpCdWlsZENvbmZpZyBhdCBjb21waWxlIHRpbWUuCgojIyBSZWxlYXNlIHByb2Nlc3MKClJlbGVhc2VzIGFyZSBjdXQgZnJvbSBgbWFpbmAgb25seS4gVGhlIHByb2Nlc3MgaXM6CgoxLiAqKlZlcnNpb24gYnVtcCoqIOKAlCB1cGRhdGUgdGhlIHZlcnNpb24gaW4gYGlvcy9FdGhvc1Byb3RvY29sL3Byb2plY3QueW1sYAogICAoYENVUlJFTlRfUFJPSkVDVF9WRVJTSU9OYCBhbmQgYE1BUktFVElOR19WRVJTSU9OYCkgYW5kIGluCiAgIGBhbmRyb2lkL2FwcC9idWlsZC5ncmFkaW5LdHNgIChgdmVyc2lvbk5hbWVgIC8gYHZlcnNpb25Db2RlYCkuCjIuICoqU3RhZ2luZyB2YWxpZGF0aW9uKiog4oCUIHB1c2ggdG8gYG1haW5gIGFuZCB3YWl0IGZvciBgU3RhZ2luZyBEZXBsb3lgCiAgIHRvIGdyZWVuLiBUaGlzIGJ1aWxkcyB0aGUgc3RhZ2luZyBhcnRpZmFjdHMgYW5kIHJ1bnMgdGhlIHNtb2tlIHRlc3QKICAgc3VpdGUgYWdhaW5zdCB0aGUgbGl2ZSBzdGFnaW5nIEFQSS4KMy4gKipUYWcqKiDigJQgY3JlYXRlIGFuIGFubm90YXRlZCB0YWcgb2YgdGhlIGZvcm0gYHY8bWFqb3I+LjxtaW5vcj4uPHBhdGNoPmAKICAgKGUuZy4gYHYxLjQuMGApIGFuZCBwdXNoIGl0LiBUaGUgdGFnIGlzIHRoZSB0cmlnZ2VyIGZvciB0aGUKICAgcmVsZWFzZSB3b3JrZmxvdy4KNC4gKipSZWxlYXNlIGJ1aWxkKiog4oCUIHRoZSByZWxlYXNlIHdvcmtmbG93IGJ1aWxkcyB0aGUgc2lnbmVkIGlPUwogICBhcmNoaXZlIGFuZCB0aGUgc2lnbmVkIEFuZHJvaWQgQnVuZGxlIChgLmFhYmApLgo1LiAqKlN0b3JlIHVwbG9hZCoqIOKAlCB0aGUgYEFwcCBTdG9yZSBDb25uZWN0YCBhbmQgYEdvb2dsZSBQbGF5YAogICB1cGxvYWQgc3RlcHMgYXJlIG1hbnVhbCBhbmQgcmVxdWlyZSB0aGUgcmVsZWFzZSBtYW5hZ2VyIHRvIGFwcHJvdmUKICAgdGhlIGJ1aWxkIGluIHRoZSByZXNwZWN0aXZlIGNvbnNvbGUuCjYuICoqVGFnIG5vdGVzKiog4oCUIGFkZCB0aGUgcmVsZWFzZSBub3RlcyB0byB0aGUgR2l0SHViIFJlbGVhc2UKICAgY3JlYXRlZCBmcm9tIHRoZSB0YWcuCgpUaGUgcmVsZWFzZSB3b3JrZmxvdyBkZXBlbmRzIG9uIHRoZSBzdGFnaW5nIHNtb2tlIHRlc3Qgd29ya2Zsb3cgdmlhCmB3b3JrZmxvd19jYWxsYCwgc28gYSBmYWlsaW5nIHNtb2tlIHRlc3QgYmxvY2tzIHRoZSByZWxlYXNlOgoKYGBgeWFtbApqb2JzOgogIHN0YWdpbmctc21va2U6CiAgICB1c2VzOiAuLy5naXRodWIvd29ya2Zsb3dzL3N0YWdpbmctc21va2UtdGVzdC55bWwKICAgIHNlY3JldHM6IGluaGVyaXQKICByZWxlYXNlOgogICAgbmVlZHM6IHN0YWdpbmctc21va2UKICAgIC4uLgpgYGAKCiMjIERlcGxveW1lbnQgcHJvY2VkdXJlcwoKIyMjIFN0YWdpbmcKClN0YWdpbmcgaXMgZGVwbG95ZWQgYXV0b21hdGljYWxseSBvbiBldmVyeSBwdXNoIHRvIGBtYWluYCB2aWEKYC5naXRodWIvd29ya2Zsb3dzL3N0YWdpbmctZGVwbG95LnltbGAuIFRoZSB3b3JrZmxvdzoKCjEuIEJ1aWxkcyB0aGUgQW5kcm9pZCBzdGFnaW5nIEFQSyAoYGFzc2VtYmxlU3RhZ2luZ2ApLgoyLiBCdWlsZHMgdGhlIGlPUyBTdGFnaW5nIGFwcCAoYHhjb2RlYnVpbGQgLWNvbmZpZ3VyYXRpb24gU3RhZ2luZ2ApLgozLiBSdW5zIGBzY3JpcHRzL3Ntb2tlX3Rlc3Rfc3RhZ2luZy5zaGAgYWdhaW5zdCB0aGUgbGl2ZSBzdGFnaW5nIEFQSS4KCk5vIG1hbnVhbCBzdGVwIGlzIHJlcXVpcmVkLiBUaGUgYnVpbGRzIGFyZSBhdHRhY2hlZCB0byB0aGUgd29ya2Zsb3cgcnVuCmFuZCB0aGUgc21va2UgdGVzdCByZXN1bHRzIGFyZSB2aXNpYmxlIGluIHRoZSBqb2IgbG9ncy4gU2VlCltkb2NzL3N0YWdpbmctZW52aXJvbm1lbnQubWRdKHN0YWdpbmctZW52aXJvbm1lbnQubWQpIGZvciB0aGUgZnVsbCBzdGFnaW5nCnNldHVwIGFuZCB0aGUgbWFudWFsIHRlc3RpbmcgY2hlY2tsaXN0LgoKIyMjIFByb2R1Y3Rpb24KCkN1cnJlbnRseSwgcHJvZHVjdGlvbiBkZXBsb3ltZW50IGlzIG1hbnVhbC4gVGhlIHJlbGVhc2UgbWFuYWdlcjoKCjEuIFJ1bnMgdGhlIHJlbGVhc2Ugd29ya2Zsb3cgZnJvbSB0aGUgdGFnLgoyLiBEb3dubG9hZHMgdGhlIHNpZ25lZCBhcnRpZmFjdHMgZnJvbSB0aGUgd29ya2Zsb3cgcnVuLgozLiBVcGxvYWRzIHRoZSBpT1MgYXJjaGl2ZSB0byBBcHAgU3RvcmUgQ29ubmVjdCB1c2luZyBUcmFuc3BvcnRlcgoKICAgYGBgYmFzaAogICAgeGNydW5jaCBhbHQvb29sIC0tYXBwbGUtaWQgPHVzZXJuYW1lPiAtLWFwcC1zcGVjaWZpYy1wYXNzd29yZCA8cGFzc3dvcmQ+IFwKICAgICAgLS1hcHBsZS1pZCA8dGVhbS1pZD4gLS11cGxvYWQtcGFja2FnZSBwYXRoL3RvL0V0aG9zUHJvdG9jb2wuaXBhCiAgICBgYGAKCjQuIFVwbG9hZHMgdGhlIEFuZHJvaWQgQnVuZGxlIHRvIHRoZSBQbGF5IENvbnNvbGUgdXNpbmcgdGhlIFBsYXkKICAgQ29uc29sZSBVSSBvciBgYnVuZGxldG9vbGA6CgogICBgYGBiYXNoCiAgIGJ1bmRsZXRvb2wgdXBsb2FkLWJ1bmRsZSBcCiAgICAgLS1idW5kbGUgYXBwL2J1aWxkL291dHB1dHMvYnVuZGxlL3JlbGVhc2UvYXBwLXJlbGVhc2UuYWFiIFwKICAgICAtLXNvdXJjZS1kaXIgYXBwL3NyYy9tYWluL2phdmEgXAogICAgIC0ta2V5c3RvcmUgPHBhdGgtdG8ta2V5c3RvcmU+IFwKICAgICAtLWtleXN0b3JlLXBhc3N3b3JkIDxwYXNzd29yZD4gXAogICAgIC0ta2V5LWFsaWFzIDxhbGlhcz4gXAogICAgIC0ta2V5LXBhc3N3b3JkIDxwYXNzd29yZD4KICAgYGBgCgo1LiBQcm9tb3RlcyB0aGUgYnVpbGQgdG8gdGhlIGRlc2lyZWQgdHJhY2sgKGludGVybmFsIOKGkiBiZXRhIOKGkgpwcm9kdWN0aW9uKSBpbiB0aGUgUGxheSBDb25zb2xlLgo2LiBDcmVhdGVzIHRoZSBHaXRIdWIgUmVsZWFzZSB3aXRoIHRoZSB0YWcgbm90ZXMuCgpUaGUgcHJvZHVjdGlvbiBkZXBsb3ltZW50IGlzIGRlbGliZXJhdGVseSBtYW51YWwgc28gdGhhdCBhIGh1bWFuIGNhbgpyZXZpZXcgdGhlIHN0YWdpbmcgc21va2UgcmVzdWx0cyBhbmQgdGhlIHJlbGVhc2Ugbm90ZXMgYmVmb3JlIHNoaXBwaW5nLgoKIyMjIFJvbGxiYWNrCgpJZiBhIHJlbGVhc2UgaXMgYnJva2VuOgoKLSBpT1M6IHVzZSBBcHAgU3RvcmUgQ29ubmVjdCdzICJQaGFzZWQgUmVsZWFzZSIgcGF1c2UsIG9yIHB1bGwgdGhlCiAgYnVpbGQgZnJvbSB0aGUgc3RvcmUuCi0gQW5kcm9pZDogdXNlIHRoZSBQbGF5IENvbnNvbGUncyAiaGFsdCByb2xsb3V0IiBvciB1cGxvYWQgdGhlIHByZXZpb3VzCiAgYnVuZGxlIGFzIGEgbmV3IHJlbGVhc2UuCi0gQm90aDogY3JlYXRlIGEgaG90Zml4IGJyYW5jaCBmcm9tIHRoZSBsYXN0IGdvb2QgdGFnLCBidW1wIHRoZSBwYXRjaAogIHZlcnNpb24sIGFuZCByZXBlYXQgdGhlIHJlbGVhc2UgcHJvY2Vzcy4KCiMjIFNlY3JldHMgYW5kIGNvbmZpZ3VyYXRpb24KClRoZSBwaXBlbGluZSByZWxpZXMgb24gR2l0SHViIHJlcG9zaXRvcnkgc2VjcmV0cy4gVGhlIGZvbGxvd2luZyBhcmUKcmVxdWlyZWQgZm9yIHRoZSBzdGFnaW5nIGFuZCByZWxlYXNlIHdvcmtmbG93czoKCnwgU2VjcmV0IHwgVXNlZCBieSB8IERlc2NyaXB0aW9uIHwKfC0tLS0tLS0tfC0tLS0tLS0tLXwtLS0tLS0tLS0tLS0tfAp8IGBTVEFHSU5HX0FQSV9CQVNFX1VSTGAgfCBzdGFnaW5nLWRlcGxveSB8IFN0YWdpbmcgQVBJIHJvb3QsIGUuZy4gYGh0dHBzOi8vc3RhZ2luZy1hcGkuZXRob3MtcHJvdG9jb2wuYXBwL3YxYCB8CnwgYFNUQUdJTkdfU01PS0VfVE9LRU5gIHwgc3RhZ2luZy1kZXBsb3kgfCBMb25nLWxpdmVkIEpXVCBmb3IgdGhlIGRlZGljYXRlZCBzbW9rZS10ZXN0IGFjY291bnQgfAp8IGBTVEFHSU5HX1NNT0tFX1ZBVUxUX0lEYCB8IHN0YWdpbmctZGVwbG95IHwgVmF1bHQgSUQgb3duZWQgYnkgdGhlIHNtb2tlLXRlc3QgYWNjb3VudCB8CnwgYEVUSEPTX1NUQUdJTkdfQ0VSVF9QSU5TYCB8IHN0YWdpbmctZGVwbG95IHwgT3B0aW9uYWwuIENvbW1hLXNlcGFyYXRlZCBCYXNlNjQgU1BLSSBTSEEtMjU2IGhhc2hlcyBmb3IgdGhlIHN0YWdpbmcgVExTIGNlcnRpZmljYXRlIHwKfCBgU1RBR0lOR19TTU9LRV9QVVNIX1RPS0VOYCB8IHN0YWdpbmctZGVwbG95IHwgT3B0aW9uYWwuIFB1c2ggdG9rZW4gZm9yIHRoZSBub3RpZmljYXRpb24gcmVnaXN0cmF0aW9uIHNtb2tlIHRlc3QgfAoKUmVsZWFzZSBzaWduaW5nIHNlY3JldHMgKEFwcGxlIERldmVsb3BlciBUZWFtLCBpT1MgZGlzdHJpYnV0aW9uCmNlcnRpZmljYXRlLCBBbmRyb2lkIGtleXN0b3JlKSBhcmUgbWFuYWdlZCBzZXBhcmF0ZWx5IGFuZCBhcmUgbm90CmNvbW1pdHRlZCB0byB0aGUgcmVwb3NpdG9yeS4gU2VlIGBTRUNVUklUWS5tZGAgZm9yIHRoZSBzZWNyZXRzIHBvbGljeQphbmQgYC5wcmUtY29tbWl0LWNvbmZpZy55YW1sYCBmb3IgdGhlIGxvY2FsIHNjYW5uaW5nIGhvb2tzLgoKIyMgVHJvdWJsZXNob290aW5nCgoqKkBTdGFnaW5nIERlcGxveSBmYWlscyBhdCB0aGUgc21va2UgdGVzdCBzdGVwOioqClRoZSBzdGFnaW5nIGJhY2tlbmQgbWF5IGJlIGRvd24gb3IgdW5yZWFjaGFibGUuIENoZWNrIHRoYXQKYFNUQUdJTkdfQVBJX0JBU0VfVVJMYCBpcyBjb3JyZWN0IGFuZCB0aGUgc3RhZ2luZyBzZXJ2ZXIgaXMgaGVhbHRoeS4gU2VlCltkb2NzL3N0YWdpbmctZW52aXJvbm1lbnQubWRdKHN0YWdpbmctZW52aXJvbm1lbnQubWQjIHRyb3VibGVzaG9vdGluZykKZm9yIHRoZSBmdWxsIHRyb3VibGVzaG9vdGluZyBndWlkZS4KCioqaU9TIGJ1aWxkIGZhaWxzIHdpdGggInVuYWJsZSB0byBmaW5kIEluZm8ucGxpc3QiOioqClRoZSBTdGFnaW5nIGNvbmZpZ3VyYXRpb24gd2FzIGFkZGVkIHRvIGBwcm9qZWN0LnltbGAgYWZ0ZXIgeW91IGxhc3QgcmFuCmB4Y29kZWdlbmAuIFJlLXJ1bjoKYGBgYmFzaApjZCBpb3MvRXRob3NQcm90b2NvbCAmJiBta2RpciAtcCBYY29kZSAmJiB4Y29kZWdlbiBnZW5lcmF0ZSAtLXByb2plY3QgWGNvZGUKYGBgCgoqKkFuZHJvaWQgc3RhZ2luZyBBUEsgcG9pbnRzIGF0IHRoZSBwcm9kdWN0aW9uIFVSTDoqKgpDb25maXJtIGBTVEFHSU5HX0FQSV9CQVNFX1VSTGAgaXMgc2V0IGluIHRoZSBlbnZpcm9ubWVudCB3aGVuIHJ1bm5pbmcKYGFzc2VtYmxlU3RhZ2luZ2AsIG9yIGluIGB+Ly5ncmFkbGUvZ3JhZGxlLnByb3BlcnRpZXNgIGxvY2FsbHkuIFRoZSB2YWx1ZSBpcwpiYWtlZCBpbnRvIGBCdWlsZENvbmZpZy5BUElfQkFTRV9VUkxgIGF0IGNvbXBpbGUgdGltZTsgaW5zdGFsbGluZyB0aGUgQVBLIHdpdGhvdXQKcmVidWlsZGluZyB3aWxsIGtlZXAgdGhlIG9sZCBVUkwuCgoqKlJlbGVhc2UgYnVpbGQgZmFpbHMgdGhlIFRMUyBwaW4gY2hlY2s6KioKU2V0IGJvdGggYFRMU19QVUJMSUNfS0VZX1BJTl9DVVJSRU5UYCBhbmQgYFRMU19QVUJMSUNfS0VZX1BJTl9CQUNLVVBgIHRvCkJhc2U2NC1lbmNvZGVkIFNQS0kgU0hBLTI1NiBoYXNoZXMuIFNlZSB0aGUgUkVBRE1FJ3MgU2V0dXAg4oaSIGlPUyBzZWN0aW9uCmZvciB0aGUgY29tbWFuZCB0byBjb21wdXRlIGEgcGluLgo=
+# CI/CD Pipeline
+
+This document describes the continuous integration and continuous delivery (CI/CD)
+pipeline for the Ethos-Protocol mobile apps (iOS + Android). It covers the workflows
+that run on every pull request and on `main`, the build artifacts they produce, the
+release process, and the deployment procedures for each environment.
+
+- [Overview](#overview)
+- [Workflow map](#workflow-map)
+- [Pull request gates](#pull-request-gates)
+- [Build artifacts](#build-artifacts)
+- [Artifact storage and versioning](#artifact-storage-and-versioning)
+- [Release process](#release-process)
+- [Deployment procedures](#deployment-procedures)
+- [Secrets and configuration](#secrets-and-configuration)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+All pipeline logic lives in `.github/workflows/` and is executed by GitHub Actions.
+The pipeline is split into three layers:
+
+1. **Per-Platform CI** — iOS and Android build and test independently.
+2. **Quality and security gates** — coverage upload, dependency vulnerability
+   scanning, certificate-pin checks, and Apple App Site Association / Asset Links
+   verification.
+3. **Staging and release** — builds are published as artifacts and the staging
+   environment is exercised before a release is cut.
+
+The pipeline is designed so that any branch can be built and tested, but only
+`main` produces shippable artifacts.
+
+## Workflow map
+
+| Workflow file | Trigger | Purpose |
+|---------------|---------|---------|
+| `.github/workflows/ios-ci.yml` | PR, push to `main` | Build + test the iOS app and the SPM package. Runs the Release TLS pin check. |
+| `.github/workflows/android-ci.yml` | PR, push to `main` | Build + test the Android app (unit + connected tests). Runs the release certificate-pin check. |
+| `.github/workflows/ios-dependency-check.yml` | Weekly, PR on `Package.swift` / `Package.resolved` | OSV scan of pinned SPM dependencies. Fails on CVE at CVSS ≥ 7.0. |
+| `.github/workflows/android-dependency-check.yml` | Weekly, PR on gradle dependency changes | OWASP dependency-check against Android dependencies. |
+| `.github/workflows/ios-applinks-verify.yml` | Daily, PR on `EthosProtocol.entitlements` | Verifies the Apple App Site Association file is served correctly. |
+| `.github/workflows/android-applinks-verify.yml` | Daily, PR on `AndroidManifest.xml` | Verifies the Asset Links file is served correctly. |
+| `.github/workflows/staging-deploy.yml` | Push to `main`, manual dispatch | Builds staging artifacts and runs the staging smoke tests. |
+| `.github/workflows/staging-smoke-test.yml` | `workflow_call` | Reusable smoke-test workflow used by staging and release. |
+| `.github/workflows/ios-app-store-release.yml` | Tag `vX.Y.Z`, manual dispatch | Builds signed iOS archive and uploads to TestFlight. |
+| `.github/workflows/android-play-store-release.yml` | Tag `vX.Y.Z`, manual dispatch | Builds signed Android AAB and uploads to Google Play internal track. |
+| `.github/workflows/artifact-storage.yml` | Tag `vX.Y.Z`, push to `main`, manual dispatch | Archives signed `.ipa`, `.aab`, `.apk`, and R8 mappings to S3 with versioning. See [docs/artifact-storage.md](artifact-storage.md). |
+| `.github/workflows/cert-pin-expiry-monitor.yml` | Scheduled | Monitors TLS certificate expiry and alerts if pins need rotation. |
+| `.github/workflows/release-notes-parity-check.yml` | PR, push to `main` | Validates release notes stay aligned with `PARITY.md`. |
+
+Workflows that touch shipping code are pinned to explicit runner versions so that
+build results are reproducible.
+
+## Pull request gates
+
+Every pull request must pass the following checks before it can be merged:
+
+- `build-and-test` (iOS) — compiles the SPM package and the app target, then runs
+  the test suite on an iOS Simulator destination.
+- `build-and-test` (Android) — compiles the debug variant, runs the JVM unit tests,
+  and (on the connected job) runs instrumented tests.
+- `coverage` — uploads iOS and Android coverage to CodeCov under the `ios` and
+  `android` flags.
+- `check-tls-pinning` — fails a Release build if either `TLS_PUBLIC_KEY_PIN_CURRENT`
+  or `TLS_PUBLIC_KEY_PIN_BACKUP` is missing or empty.
+- `Verify release certificate pins are not placeholders` — reports an unconfigured
+  release build and fails once pins are configured but wrong, or once release signing
+  is configured.
+- `dependency-check` — runs on changes to gradle dependency files and weekly on a
+  schedule.
+- `spm-vulnerability-scan` — runs on changes to `Package.swift` / `Package.resolved`
+  and weekly on a schedule.
+
+A PR that fails any of these gates cannot be merged. The branch protection rule on
+`main` requires the `build-and-test` jobs from both platforms.
+
+## Build artifacts
+
+Each workflow uploads a well-defined set of artifacts.
+
+### iOS
+
+| Artifact | Contents | Retention |
+|----------|----------|-----------|
+| `ios-build-logs` | `xcodebuild` logs and the `.xcresult` bundle from the test run | 14 days |
+| `ios-coverage` | The `.xccoverage` file uploaded to CodeCov under the `ios` flag | 14 days |
+| `ios-staging-app` | The Staging `.app` bundle built by `staging-deploy.yml` | 7 days |
+| `ios-ipa-<version>` | Signed `.ipa` and SHA-256 checksum — fallback copy of the S3 upload | 14 days |
+
+The iOS build artifact is an unsigned `.app` bundle during CI. Signing happens in the
+release job (fastlane match). The shippable `.ipa` is archived to S3 by
+`artifact-storage.yml` with a 180-day retention window.
+
+### Android
+
+| Artifact | Contents | Retention |
+|----------|----------|-----------|
+| `android-debug-apk` | `app-debug.apk` from the debug build | 14 days |
+| `android-staging-apk` | `app-staging.apk` from the staging build | 7 days |
+| `android-unit-test-reports` | JUnit test reports (HTML + XML) | 14 days |
+| `android-coverage-report` | JaCoCo coverage report uploaded to CodeCov under the `android` flag | 14 days |
+| `android-r8-mapping` | R8 mapping file from the release build | 14 days |
+| `android-release-<version>` | Signed `.aab` + `.apk` and SHA-256 checksums — fallback copy of S3 upload | 14 days |
+
+Android artifacts are built with the debug keystore unless release signing is
+configured in the repository secrets. The staging APK bakes `STAGING_API_BASE_URL`
+into BuildConfig at compile time.
+
+## Artifact storage and versioning
+
+Release artifacts are archived to Amazon S3 for durable, rollback-friendly storage.
+GitHub Actions artifacts serve as a 14-day fallback and inspection copy.
+
+**Workflow**: `.github/workflows/artifact-storage.yml`
+
+**Versioning scheme**
+
+| Build type | Version label | S3 path pattern |
+|------------|---------------|-----------------|
+| Release tag `vX.Y.Z` | `vX.Y.Z` | `<platform>/releases/vX.Y.Z/` |
+| Push to `main` | `main-YYYYMMDD-<sha7>` | `<platform>/snapshots/main/YYYYMMDD-<sha7>/` |
+| Other branch | `<branch>-YYYYMMDD-<sha7>` | `<platform>/snapshots/<branch>/YYYYMMDD-<sha7>/` |
+
+**Retention policy** (managed by `scripts/manage_artifact_retention.py`)
+
+| Prefix | Default | Override variable |
+|--------|---------|-------------------|
+| `*/releases/` and `r8-mappings/` | 180 days | `ARTIFACT_RELEASE_RETENTION_DAYS` |
+| `*/snapshots/` | 30 days | `ARTIFACT_SNAPSHOT_RETENTION_DAYS` |
+
+For full setup instructions, download procedures, rollback steps, and
+troubleshooting, see **[docs/artifact-storage.md](artifact-storage.md)**.
+
+## Release process
+
+Releases are cut from `main` only. The process is:
+
+1. **Version bump** — update the version in `ios/EthosProtocol/project.yml`
+   (`CURRENT_PROJECT_VERSION` and `MARKETING_VERSION`) and in
+   `android/app/build.gradle.kts` (`versionName` / `versionCode`).
+2. **Staging validation** — push to `main` and wait for `Staging Deploy` to green.
+   This builds the staging artifacts and runs the smoke test suite against the live
+   staging API.
+3. **Tag** — create an annotated tag of the form `v<major>.<minor>.<patch>`
+   (e.g. `v1.4.0`) and push it. The tag triggers the release and artifact-storage
+   workflows simultaneously.
+4. **Release build** — the release workflows build the signed iOS archive and the
+   signed Android Bundle (`.aab`).
+5. **Artifact archive** — `artifact-storage.yml` uploads the signed artifacts to
+   `s3://<ARTIFACT_BUCKET>/ios/releases/vX.Y.Z/` and
+   `s3://<ARTIFACT_BUCKET>/android/releases/vX.Y.Z/`.
+6. **Store upload** — the `App Store Connect` and `Google Play` upload steps promote
+   the builds to their respective stores.
+7. **Tag notes** — add the release notes to the GitHub Release created from the tag.
+
+The release workflow depends on the staging smoke test workflow via `workflow_call`,
+so a failing smoke test blocks the release:
+
+```yaml
+jobs:
+  staging-smoke:
+    uses: ./.github/workflows/staging-smoke-test.yml
+    secrets: inherit
+  release:
+    needs: staging-smoke
+    ...
+```
+
+## Deployment procedures
+
+### Staging
+
+Staging is deployed automatically on every push to `main` via
+`.github/workflows/staging-deploy.yml`. The workflow:
+
+1. Builds the Android staging APK (`assembleStagingRelease`).
+2. Builds the iOS Staging app (`xcodebuild -configuration Staging`).
+3. Runs `scripts/smoke_test_staging.sh` against the live staging API.
+
+No manual step is required. The builds are attached to the workflow run and the smoke
+test results are visible in the job logs. See
+[docs/staging-environment.md](staging-environment.md) for the full staging setup and
+the manual testing checklist.
+
+### Production
+
+Currently, production deployment is manual. The release manager:
+
+1. Runs the release workflow from the tag.
+2. Downloads the signed artifacts from S3 using `scripts/manage_artifact_retention.py
+   --show-current` to find the version, then:
+   ```bash
+   aws s3 cp s3://<ARTIFACT_BUCKET>/ios/releases/vX.Y.Z/EthosProtocol-vX.Y.Z.ipa .
+   aws s3 cp s3://<ARTIFACT_BUCKET>/android/releases/vX.Y.Z/app-release-vX.Y.Z.aab .
+   ```
+3. Verifies the SHA-256 checksums.
+4. Uploads the iOS archive to App Store Connect using Transporter.
+5. Uploads the Android Bundle to the Play Console.
+6. Promotes the build to the desired track (internal → beta → production) in the
+   Play Console.
+7. Creates the GitHub Release with the tag notes.
+
+The production deployment is deliberately manual so that a human can review the
+staging smoke results and the release notes before shipping.
+
+### Rollback
+
+If a release is broken:
+
+- **iOS**: use App Store Connect's "Phased Release" pause, or download and re-submit
+  the previous signed `.ipa` from S3:
+  ```bash
+  aws s3 cp s3://<ARTIFACT_BUCKET>/ios/releases/v1.3.0/EthosProtocol-v1.3.0.ipa .
+  ```
+- **Android**: use the Play Console's "halt rollout" or download and re-upload the
+  previous `.aab` from S3:
+  ```bash
+  aws s3 cp s3://<ARTIFACT_BUCKET>/android/releases/v1.3.0/app-release-v1.3.0.aab .
+  ```
+- **Both**: create a hotfix branch from the last good tag, bump the patch version, and
+  repeat the release process.
+
+See [docs/artifact-storage.md](artifact-storage.md) for detailed download and
+rollback instructions.
+
+## Secrets and configuration
+
+The pipeline relies on GitHub repository secrets. The following are required for the
+staging and release workflows:
+
+| Secret | Used by | Description |
+|--------|---------|-------------|
+| `STAGING_API_BASE_URL` | staging-deploy | Staging API root, e.g. `https://staging-api.ethos-protocol.app/v1` |
+| `STAGING_SMOKE_TOKEN` | staging-deploy | Long-lived JWT for the dedicated smoke-test account |
+| `STAGING_SMOKE_VAULT_ID` | staging-deploy | Vault ID owned by the smoke-test account |
+| `AWS_ARTIFACT_ACCESS_KEY_ID` | artifact-storage | IAM access key for the artifact uploader |
+| `AWS_ARTIFACT_SECRET_ACCESS_KEY` | artifact-storage | Paired IAM secret access key |
+| `ARTIFACT_BUCKET` | artifact-storage | S3 bucket name (e.g. `ethos-protocol-artifacts`) |
+
+Release signing secrets (Apple Developer Team, iOS distribution certificate, Android
+keystore) are managed separately and are not committed to the repository. See
+`SECURITY.md` for the secrets policy and `.pre-commit-config.yaml` for the local
+scanning hooks.
+
+## Troubleshooting
+
+**Staging Deploy fails at the smoke test step:**
+The staging backend may be down or unreachable. Check that `STAGING_API_BASE_URL` is
+correct and the staging server is healthy. See
+[docs/staging-environment.md](staging-environment.md#troubleshooting) for the full
+troubleshooting guide.
+
+**iOS build fails with "unable to find Info.plist":**
+The Staging configuration was added to `project.yml` after you last ran `xcodegen`.
+Re-run:
+```bash
+cd ios/EthosProtocol && mkdir -p Xcode && xcodegen generate --project Xcode
+```
+
+**Android staging APK points at the production URL:**
+Confirm `STAGING_API_BASE_URL` is set in the environment when running
+`assembleStagingRelease`, or in `~/.gradle/gradle.properties` locally. The value is
+baked into `BuildConfig.API_BASE_URL` at compile time; installing the APK without
+rebuilding will keep the old URL.
+
+**Release build fails the TLS pin check:**
+Set both `TLS_PUBLIC_KEY_PIN_CURRENT` and `TLS_PUBLIC_KEY_PIN_BACKUP` to
+Base64-encoded SPKI SHA-256 hashes. See the README's Setup → iOS section for the
+command to compute a pin.
+
+**Artifact upload fails with "AccessDenied" or "NoSuchBucket":**
+See [docs/artifact-storage.md#troubleshooting](artifact-storage.md#troubleshooting).
