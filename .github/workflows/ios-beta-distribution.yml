@@ -1,0 +1,169 @@
+name: iOS Beta Distribution (TestFlight)
+
+# Automated external beta distribution for iOS via TestFlight (#461).
+# Builds a signed Release IPA, uploads it to TestFlight, notifies the
+# configured tester groups, and sets build notes from commit history.
+#
+# Setup, secrets and the maintainer checklist: docs/ios-beta-distribution.md
+#
+# Triggers:
+#   - Push to `main`: real build and upload to TestFlight external beta groups.
+#   - Manual dispatch: dry run by default; all options are overridable.
+#
+# Deliberately NOT triggered on pull_request: fork PRs get no secrets, and
+# nothing that uploads to App Store Connect may run from unreviewed code.
+#
+# Required secrets:  ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64,
+#                    MATCH_GIT_URL, MATCH_PASSWORD,
+#                    MATCH_GIT_BASIC_AUTHORIZATION (when MATCH_GIT_URL is https),
+#                    ETHOS_CERT_PINS
+# Required variable: APPLE_TEAM_IDENTIFIER
+# Optional secrets:  BETA_FEEDBACK_EMAIL (address testers send feedback to)
+# Optional variables: TESTFLIGHT_BETA_GROUPS (comma-separated; default: beta-testers),
+#                     BETA_EXPIRY_DAYS (1-90; default: 30)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: validate and build unsigned, upload nothing"
+        type: boolean
+        default: true
+      groups:
+        description: "Comma-separated TestFlight group names (overrides TESTFLIGHT_BETA_GROUPS)"
+        type: string
+        default: ""
+      expiry_days:
+        description: "Days before this beta build expires (1-90; default: 30)"
+        type: string
+        default: "30"
+      release_notes:
+        description: "Override build notes for all locales (empty = generate from commits)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One beta build at a time; a second push waits instead of racing.
+concurrency:
+  group: ios-beta-distribution
+  cancel-in-progress: false
+
+env:
+  XCODE_VERSION: "26.6"
+  FASTLANE_SKIP_UPDATE_CHECK: "1"
+  FASTLANE_HIDE_CHANGELOG: "1"
+  FASTLANE_OPT_OUT_USAGE: "1"
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+
+jobs:
+  beta-distribution:
+    name: Build and distribute to TestFlight external beta
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    outputs:
+      version: ${{ steps.beta_dist.outputs.version }}
+      build_number: ${{ steps.beta_dist.outputs.build_number }}
+      tester_groups: ${{ steps.beta_dist.outputs.tester_groups }}
+      expiry_days: ${{ steps.beta_dist.outputs.expiry_days }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags: release notes are generated from commits since
+          # the previous vX.Y.Z tag.
+          fetch-depth: 0
+
+      - name: Resolve beta options
+        id: options
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_GROUPS: ${{ inputs.groups }}
+          INPUT_EXPIRY: ${{ inputs.expiry_days }}
+          DEFAULT_GROUPS: ${{ vars.TESTFLIGHT_BETA_GROUPS }}
+          DEFAULT_EXPIRY: ${{ vars.BETA_EXPIRY_DAYS }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            dry_run=false
+            groups="${DEFAULT_GROUPS:-beta-testers}"
+            expiry="${DEFAULT_EXPIRY:-30}"
+          else
+            dry_run=${INPUT_DRY_RUN:-true}
+            groups="${INPUT_GROUPS:-${DEFAULT_GROUPS:-beta-testers}}"
+            expiry="${INPUT_EXPIRY:-${DEFAULT_EXPIRY:-30}}"
+          fi
+
+          # Uploads run only from main.
+          if [ "$dry_run" != "true" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Beta uploads run only from main (got $REF). Use dry_run for other branches."
+            exit 1
+          fi
+
+          {
+            echo "dry_run=$dry_run"
+            echo "groups=$groups"
+            echo "expiry_days=$expiry"
+          } | tee -a "$GITHUB_OUTPUT"
+
+          {
+            echo "### Beta distribution options"
+            echo "| Option | Value |"
+            echo "| --- | --- |"
+            echo "| Ref | \`$REF\` |"
+            echo "| Dry run | $dry_run |"
+            echo "| Tester groups | $groups |"
+            echo "| Expiry (days) | $expiry |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        run: |
+          XCODE="/Applications/Xcode_${XCODE_VERSION}.app"
+          if [ ! -d "$XCODE" ]; then
+            echo "::error::$XCODE is not on this runner image. Installed:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Set up Ruby and fastlane (cached)
+        uses: ruby/setup-ruby@v1
+        with:
+          # Gemfile, Gemfile.lock and .ruby-version live at the repo root
+          # (shared with the iOS App Store and Android release workflows).
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build and upload to TestFlight (fastlane ios beta_distribution)
+        id: beta_dist
+        env:
+          DRY_RUN: ${{ steps.options.outputs.dry_run }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BETA_RELEASE_NOTES_OVERRIDE: ${{ inputs.release_notes }}
+          TESTFLIGHT_BETA_GROUPS: ${{ steps.options.outputs.groups }}
+          BETA_EXPIRY_DAYS: ${{ steps.options.outputs.expiry_days }}
+          BETA_FEEDBACK_EMAIL: ${{ secrets.BETA_FEEDBACK_EMAIL }}
+          APPLE_TEAM_IDENTIFIER: ${{ vars.APPLE_TEAM_IDENTIFIER }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+        run: |
+          bundle exec fastlane ios beta_distribution \
+            dry_run:"$DRY_RUN" \
+            groups:"$TESTFLIGHT_BETA_GROUPS" \
+            expiry_days:"$BETA_EXPIRY_DAYS"

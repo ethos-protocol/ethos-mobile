@@ -372,16 +372,70 @@ platform :ios do
     step_summary("### TestFlight\nUploaded #{info[:version]} (#{build_number}) for internal testing.")
   end
 
-  desc "Build a signed .ipa for archiving to S3. Used by the artifact-storage workflow (#465)."
-  desc "Options: version_label:<label>  — used only for the output filename."
-  lane :archive do |options|
-    version_label = options[:version_label].to_s.strip
-    info = release_info
-    version_label = info[:version] if version_label.empty?
+  desc "Build, sign and upload to TestFlight for external beta testers (#461)."
+  desc "Tester groups are notified automatically; the build expires after BETA_EXPIRY_DAYS (default: 30)."
+  desc "Options: dry_run:true  groups:\"qa-team,partners\"  expiry_days:30  release_notes_override:\"text\""
+  lane :beta_distribution do |options|
+    dry_run      = truthy?(options[:dry_run])
+    groups_input = options[:groups].to_s.strip
+    expiry_days  = (options[:expiry_days] || ENV["BETA_EXPIRY_DAYS"] || "30").to_i
+    UI.user_error!("expiry_days must be 1-90") unless expiry_days.between?(1, 90)
+
+    # Tester groups: option wins over env, falls back to the project default.
+    tester_groups = if !groups_input.empty?
+                     groups_input.split(",").map(&:strip).reject(&:empty?)
+                   elsif ENV["TESTFLIGHT_BETA_GROUPS"].to_s.strip != ""
+                     ENV["TESTFLIGHT_BETA_GROUPS"].split(",").map(&:strip).reject(&:empty?)
+                   else
+                     ["beta-testers"]
+                   end
+
+    info  = validate
+    notes = info[:release_notes]
+
+    # Allow a one-shot override from the workflow input without touching files.
+    override_text = options[:release_notes_override].to_s.strip
+    override_text = ENV["BETA_RELEASE_NOTES_OVERRIDE"].to_s.strip if override_text.empty?
+    unless override_text.empty?
+      notes = { DEFAULT_LOCALE => override_text }
+      UI.message("Using release notes override (#{override_text.length} chars)")
+    end
+
+    changelog = notes[DEFAULT_LOCALE]
+
+    if dry_run
+      if generate_xcode_project
+        pins = missing_env(BUILD_ENV).empty? ? tls_pins : ["", ""]
+        build_app(
+          project: XCODE_PROJECT, scheme: SCHEME, configuration: "Release",
+          destination: "generic/platform=iOS", skip_codesigning: true, skip_package_ipa: true,
+          archive_path: File.join(OUTPUT_DIR, "#{SCHEME}-beta.xcarchive"), clean: true,
+          xcargs: "-skipMacroValidation MARKETING_VERSION=#{info[:version]} " \
+                  "TLS_PUBLIC_KEY_PIN_CURRENT=#{pins[0]} TLS_PUBLIC_KEY_PIN_BACKUP=#{pins[1]}"
+        )
+        if pins.all?(&:empty?)
+          UI.important("ETHOS_CERT_PINS not set: skipped the Release pinning check for this dry run")
+        else
+          check_built_pins!(lane_context[SharedValues::XCODEBUILD_ARCHIVE])
+        end
+      end
+      UI.important("DRY RUN: stopping before match / signing / TestFlight upload.\n" \
+                   "  Version: #{info[:version]}\n" \
+                   "  Groups:  #{tester_groups.join(', ')}\n" \
+                   "  Expiry:  #{expiry_days} days\n" \
+                   "  Notes:   #{changelog}")
+      github_output(version: info[:version], build_number: "", dry_run: true,
+                    tester_groups: tester_groups.join(","), expiry_days: expiry_days)
+      step_summary("### TestFlight beta distribution (dry run)\n" \
+                   "Validated #{info[:version]}; nothing was uploaded.\n" \
+                   "Would notify groups: #{tester_groups.map { |g| "`#{g}`" }.join(', ')}. " \
+                   "Expiry: #{expiry_days} days.")
+      next
+    end
 
     require_env!(ASC_ENV + SIGNING_ENV + BUILD_ENV)
     api_key = asc_api_key
-    pins = tls_pins
+    pins    = tls_pins
     setup_ci if ENV["CI"]
     generate_xcode_project || UI.user_error!("xcodegen is required to build")
 
@@ -399,15 +453,11 @@ platform :ios do
       latest = latest_testflight_build_number(api_key: api_key, app_identifier: info[:app_id], initial_build_number: 0)
       build_number = (latest.to_i + 1).to_s
     end
-    UI.message("Archiving #{info[:version]} (#{build_number}) as #{version_label}")
+    UI.message("Building #{info[:version]} (#{build_number}) for external beta")
 
-    # Output to a versioned filename so S3 uploads are unambiguous.
-    ipa_name = "EthosProtocol-#{version_label}.ipa"
     ipa = build_app(
       project: XCODE_PROJECT, scheme: SCHEME, configuration: "Release",
-      output_directory: OUTPUT_DIR,
-      output_name: ipa_name,
-      clean: true,
+      output_directory: OUTPUT_DIR, clean: true,
       export_method: "app-store",
       export_options: { provisioningProfiles: profiles, teamID: ENV.fetch("APPLE_TEAM_IDENTIFIER") },
       xcargs: "-skipMacroValidation MARKETING_VERSION=#{info[:version]} CURRENT_PROJECT_VERSION=#{build_number} " \
@@ -415,9 +465,30 @@ platform :ios do
     )
     check_built_pins!(lane_context[SharedValues::XCODEBUILD_ARCHIVE])
 
-    UI.success("IPA ready: #{ipa}")
-    github_output(ipa_path: ipa, version: info[:version], build_number: build_number)
-    step_summary("### iOS Archive\nBuilt #{info[:version]} (#{build_number}) → `#{ipa_name}`")
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: ipa,
+      changelog: changelog,
+      # Distribute to the named external groups and notify them.
+      distribute_external: true,
+      groups: tester_groups,
+      notify_external_testers: true,
+      # expire_previous_builds removes older beta builds from the group to
+      # keep the tester list clean; build expiry is set in App Store Connect
+      # (defaults to 90 days, so BETA_EXPIRY_DAYS caps it on our side).
+      expire_previous_builds: expiry_days < 90,
+      beta_app_feedback_email: ENV["BETA_FEEDBACK_EMAIL"].to_s.strip.then { |e| e.empty? ? nil : e },
+      # Waits only until the build appears so the changelog can be set;
+      # Apple's processing queue handles the rest.
+      skip_waiting_for_build_processing: true
+    )
+
+    github_output(version: info[:version], build_number: build_number, dry_run: false,
+                  tester_groups: tester_groups.join(","), expiry_days: expiry_days)
+    step_summary("### TestFlight beta distribution\n" \
+                 "Uploaded #{info[:version]} (build #{build_number}) to TestFlight.\n" \
+                 "Notified groups: #{tester_groups.map { |g| "`#{g}`" }.join(', ')}. " \
+                 "Expiry: #{expiry_days} days.")
   end
 
   desc "Update the App Store version: release notes, and optionally metadata, screenshots and review submission."
