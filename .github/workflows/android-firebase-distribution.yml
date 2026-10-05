@@ -1,0 +1,189 @@
+name: Android Firebase App Distribution
+
+# Automated beta testing distribution for Android via Firebase App Distribution (#462).
+# Builds a debug (or release) APK with fastlane, distributes it to configured tester
+# groups, and sets build notes generated from commit history.
+#
+# Setup, secrets and the maintainer checklist: docs/android-firebase-beta.md
+#
+# Triggers:
+#   - Push to `main`: real build and upload to Firebase App Distribution.
+#   - Manual dispatch: dry run by default; all options are overridable.
+#
+# Deliberately NOT triggered on pull_request: secrets are not available to fork
+# PRs, and nothing that uploads to Firebase may run from unreviewed code.
+#
+# Required secrets:  FIREBASE_APP_ID   (Project settings > Your apps in Firebase Console)
+#                    FIREBASE_TOKEN     (firebase login:ci output)
+# Optional secrets:  ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+#                    ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+#                    (only needed when build_type=release)
+# Optional variables: FIREBASE_TESTER_GROUPS (comma-separated; default: beta-testers)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: validate configuration, upload nothing"
+        type: boolean
+        default: true
+      build_type:
+        description: "APK build type to distribute"
+        type: choice
+        default: debug
+        options:
+          - debug
+          - release
+      groups:
+        description: "Comma-separated Firebase tester group aliases (overrides FIREBASE_TESTER_GROUPS)"
+        type: string
+        default: ""
+      release_notes:
+        description: "Override build notes for all testers (empty = generate from commits)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One distribution run at a time; a second push waits instead of racing.
+concurrency:
+  group: android-firebase-distribution
+  cancel-in-progress: false
+
+env:
+  FASTLANE_SKIP_UPDATE_CHECK: "1"
+  FASTLANE_HIDE_CHANGELOG: "1"
+  FASTLANE_OPT_OUT_USAGE: "1"
+  LC_ALL: C.UTF-8
+  LANG: C.UTF-8
+
+jobs:
+  firebase-distribute:
+    name: Build and distribute via Firebase App Distribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: android
+    outputs:
+      version: ${{ steps.firebase.outputs.version }}
+      tester_groups: ${{ steps.firebase.outputs.tester_groups }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags: release notes are generated from commits since
+          # the previous vX.Y.Z tag.
+          fetch-depth: 0
+
+      - name: Resolve distribution options
+        id: options
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_BUILD_TYPE: ${{ inputs.build_type }}
+          INPUT_GROUPS: ${{ inputs.groups }}
+          DEFAULT_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS }}
+        run: |
+          if [ "$EVENT" = "push" ]; then
+            dry_run=false
+            build_type=debug
+            groups="${DEFAULT_GROUPS:-beta-testers}"
+          else
+            dry_run=${INPUT_DRY_RUN:-true}
+            build_type="${INPUT_BUILD_TYPE:-debug}"
+            groups="${INPUT_GROUPS:-${DEFAULT_GROUPS:-beta-testers}}"
+          fi
+
+          # Real uploads only from main.
+          if [ "$dry_run" != "true" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Firebase distribution runs only from main (got $REF). Use dry_run for other branches."
+            exit 1
+          fi
+
+          {
+            echo "dry_run=$dry_run"
+            echo "build_type=$build_type"
+            echo "groups=$groups"
+          } | tee -a "$GITHUB_OUTPUT"
+
+          {
+            echo "### Firebase distribution options"
+            echo "| Option | Value |"
+            echo "| --- | --- |"
+            echo "| Ref | \`$REF\` |"
+            echo "| Dry run | $dry_run |"
+            echo "| Build type | $build_type |"
+            echo "| Tester groups | $groups |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle (cached)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Ruby and fastlane (cached)
+        uses: ruby/setup-ruby@v1
+        with:
+          # Gemfile, Gemfile.lock and .ruby-version live at the repo root
+          # (shared with the iOS release and Android Play Store workflows).
+          bundler-cache: true
+
+      # Only needed for release APK signing. Decoded to runner temp dir and
+      # cleaned up in the always() step below.
+      - name: Decode upload keystore (release builds only)
+        if: steps.options.outputs.build_type == 'release' && steps.options.outputs.dry_run != 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is required for release APK signing. See docs/android-firebase-beta.md."
+            exit 1
+          fi
+          KEYSTORE="$RUNNER_TEMP/upload-keystore.jks"
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          echo "ANDROID_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+
+      - name: Build and distribute via Firebase (fastlane android firebase_beta)
+        id: firebase
+        env:
+          DRY_RUN: ${{ steps.options.outputs.dry_run }}
+          BUILD_TYPE: ${{ steps.options.outputs.build_type }}
+          FIREBASE_TESTER_GROUPS: ${{ steps.options.outputs.groups }}
+          BETA_RELEASE_NOTES_OVERRIDE: ${{ inputs.release_notes }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          bundle exec fastlane android firebase_beta \
+            dry_run:"$DRY_RUN" \
+            build_type:"$BUILD_TYPE" \
+            groups:"$FIREBASE_TESTER_GROUPS"
+
+      - name: Remove upload keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload-keystore.jks"
+
+      # Upload the APK as a workflow artifact so it can be inspected if
+      # the Firebase upload fails or for manual sideloading in emergencies.
+      - name: Upload APK artifact
+        if: steps.options.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-apk-${{ steps.options.outputs.build_type }}-${{ github.sha }}
+          path: android/build/fastlane/firebase_beta/*.apk
+          if-no-files-found: ignore
+          retention-days: 14

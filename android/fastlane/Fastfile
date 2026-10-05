@@ -382,4 +382,158 @@ platform :android do
     )
     step_summary("### Google Play rollout\nDone: #{plan}.")
   end
+
+  # ── Firebase App Distribution (#462) ─────────────────────────────────────
+
+  desc "Build a debug APK and distribute it via Firebase App Distribution (#462)."
+  desc "Tester groups are notified automatically; build notes are generated from commits."
+  desc "Options: dry_run:true  groups:\"qa,partners\"  release_notes_override:\"text\""
+  desc "         build_type:debug|release  (default: debug)"
+  lane :firebase_beta do |options|
+    dry_run        = truthy?(options[:dry_run])
+    build_type     = options[:build_type].to_s.strip.downcase
+    build_type     = "debug" if build_type.empty? || !%w[debug release].include?(build_type)
+    groups_input   = options[:groups].to_s.strip
+    firebase_app_id = ENV["FIREBASE_APP_ID"].to_s.strip
+
+    # Tester groups: option > env > default.
+    tester_groups = if !groups_input.empty?
+                     groups_input.split(",").map(&:strip).reject(&:empty?)
+                   elsif ENV["FIREBASE_TESTER_GROUPS"].to_s.strip != ""
+                     ENV["FIREBASE_TESTER_GROUPS"].split(",").map(&:strip).reject(&:empty?)
+                   else
+                     ["beta-testers"]
+                   end
+
+    info = release_info
+    notes_text = if options[:release_notes_override].to_s.strip != ""
+                   options[:release_notes_override].to_s.strip
+                 elsif ENV["BETA_RELEASE_NOTES_OVERRIDE"].to_s.strip != ""
+                   ENV["BETA_RELEASE_NOTES_OVERRIDE"].to_s.strip
+                 else
+                   notes = generate_release_notes(info[:version])
+                   notes[DEFAULT_LOCALE]
+                 end
+
+    # Truncate to Firebase's 16384-char limit.
+    if notes_text.length > 16_384
+      notes_text = notes_text[0, 16_381] + "..."
+      UI.important("Release notes truncated to 16,384 characters for Firebase App Distribution")
+    end
+
+    UI.message("Preparing Firebase beta distribution")
+    UI.message("  App:    #{info[:package_name]} #{info[:version]}")
+    UI.message("  Build:  #{build_type}")
+    UI.message("  Groups: #{tester_groups.join(', ')}")
+    UI.message("  Notes:  #{notes_text[0..120]}#{notes_text.length > 120 ? '…' : ''}")
+
+    if dry_run
+      UI.important("DRY RUN: stopping before build / Firebase upload.\n" \
+                   "  Package: #{info[:package_name]}\n" \
+                   "  Version: #{info[:version]}\n" \
+                   "  Groups:  #{tester_groups.join(', ')}")
+      github_output(version: info[:version], version_code: "", dry_run: true,
+                    tester_groups: tester_groups.join(","))
+      step_summary("### Firebase App Distribution (dry run)\n" \
+                   "Would distribute #{info[:version]} (#{build_type}) to: " \
+                   "#{tester_groups.map { |g| "`#{g}`" }.join(', ')}.")
+      next
+    end
+
+    if firebase_app_id.empty?
+      UI.user_error!("FIREBASE_APP_ID is required. Set it as a repository secret. " \
+                     "Find it in the Firebase Console under Project settings > Your apps.")
+    end
+    require_env!(%w[FIREBASE_TOKEN])
+
+    # Build the APK for the chosen flavour.
+    gradle(
+      task: "assemble",
+      build_type: build_type.capitalize,
+      project_dir: ANDROID_ROOT,
+      gradle_path: File.join(ANDROID_ROOT, "gradlew"),
+      flags: "--no-daemon --console=plain"
+    )
+    apk = lane_context[SharedValues::GRADLE_APK_OUTPUT_PATH]
+    UI.user_error!("assemble#{build_type.capitalize} produced no APK") if apk.nil? || apk.empty?
+
+    # Move the APK to the fastlane output directory so it survives
+    # across potential lane restarts and is easy to find in CI artifacts.
+    dest = File.join(OUTPUT_DIR, "firebase_beta")
+    FileUtils.mkdir_p(dest)
+    apk_dest = File.join(dest, File.basename(apk))
+    FileUtils.cp(apk, apk_dest)
+    UI.success("APK: #{apk_dest}")
+
+    firebase_app_distribution(
+      app: firebase_app_id,
+      apk_path: apk_dest,
+      groups: tester_groups.join(","),
+      release_notes: notes_text,
+      firebase_cli_token: ENV.fetch("FIREBASE_TOKEN"),
+      # Debug output only when ACTIONS_STEP_DEBUG is set.
+      debug: ENV["ACTIONS_STEP_DEBUG"] == "true"
+    )
+
+    github_output(version: info[:version], dry_run: false,
+                  tester_groups: tester_groups.join(","))
+    step_summary("### Firebase App Distribution\n" \
+                 "Distributed #{info[:version]} (#{build_type}) to: " \
+                 "#{tester_groups.map { |g| "`#{g}`" }.join(', ')}.")
+  end
+
+  desc "Distribute an existing APK file via Firebase App Distribution (CI helper)."
+  desc "Skips the build step — useful when the APK was built in a prior CI step."
+  desc "Options: apk_path:/path/to/app.apk  groups:\"qa\"  release_notes_override:\"text\"  dry_run:true"
+  lane :firebase_distribute do |options|
+    dry_run   = truthy?(options[:dry_run])
+    apk_path  = options[:apk_path].to_s.strip
+    groups_input = options[:groups].to_s.strip
+    firebase_app_id = ENV["FIREBASE_APP_ID"].to_s.strip
+
+    UI.user_error!("apk_path is required for the firebase_distribute lane") if apk_path.empty?
+    UI.user_error!("#{apk_path} does not exist") unless File.exist?(apk_path)
+
+    tester_groups = if !groups_input.empty?
+                     groups_input.split(",").map(&:strip).reject(&:empty?)
+                   elsif ENV["FIREBASE_TESTER_GROUPS"].to_s.strip != ""
+                     ENV["FIREBASE_TESTER_GROUPS"].split(",").map(&:strip).reject(&:empty?)
+                   else
+                     ["beta-testers"]
+                   end
+
+    info = release_info
+    notes_text = if options[:release_notes_override].to_s.strip != ""
+                   options[:release_notes_override].to_s.strip
+                 elsif ENV["BETA_RELEASE_NOTES_OVERRIDE"].to_s.strip != ""
+                   ENV["BETA_RELEASE_NOTES_OVERRIDE"].to_s.strip
+                 else
+                   notes = generate_release_notes(info[:version])
+                   notes[DEFAULT_LOCALE]
+                 end
+
+    if dry_run
+      UI.important("DRY RUN: would distribute #{File.basename(apk_path)} to #{tester_groups.join(', ')}.")
+      step_summary("### Firebase App Distribution (dry run)\n" \
+                   "Would distribute `#{File.basename(apk_path)}` to: " \
+                   "#{tester_groups.map { |g| "`#{g}`" }.join(', ')}.")
+      next
+    end
+
+    UI.user_error!("FIREBASE_APP_ID is required") if firebase_app_id.empty?
+    require_env!(%w[FIREBASE_TOKEN])
+
+    firebase_app_distribution(
+      app: firebase_app_id,
+      apk_path: apk_path,
+      groups: tester_groups.join(","),
+      release_notes: notes_text,
+      firebase_cli_token: ENV.fetch("FIREBASE_TOKEN"),
+      debug: ENV["ACTIONS_STEP_DEBUG"] == "true"
+    )
+
+    step_summary("### Firebase App Distribution\n" \
+                 "Distributed `#{File.basename(apk_path)}` to: " \
+                 "#{tester_groups.map { |g| "`#{g}`" }.join(', ')}.")
+  end
 end
