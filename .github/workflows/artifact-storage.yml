@@ -1,0 +1,583 @@
+name: Build Artifact Storage and Versioning
+
+# Archives signed release artifacts (iOS .ipa, Android .aab/.apk) to S3 with
+# structured versioning. Enables rollbacks by preserving every release artifact
+# in a durable, queryable store outside of GitHub's ephemeral action artifacts.
+#
+# Versioning scheme
+# -----------------
+#   Tag builds  : <platform>/releases/vX.Y.Z/<artifact>
+#   Branch builds: <platform>/snapshots/<branch>/<YYYYMMDD>-<sha7>/<artifact>
+#
+# S3 bucket structure
+# -------------------
+#   s3://<ARTIFACT_BUCKET>/
+#     ios/
+#       releases/
+#         v1.4.0/
+#           EthosProtocol-v1.4.0.ipa
+#           EthosProtocol-v1.4.0.ipa.sha256
+#           metadata.json
+#       snapshots/
+#         main/
+#           20261005-abc1234/
+#             EthosProtocol-main-20261005-abc1234.ipa
+#             ...
+#     android/
+#       releases/
+#         v1.4.0/
+#           app-release.aab
+#           app-release.apk          (split APK for sideloading / QA)
+#           app-release.aab.sha256
+#           app-release.apk.sha256
+#           metadata.json
+#       snapshots/
+#         main/
+#           20261005-abc1234/
+#             ...
+#     r8-mappings/
+#       v1.4.0/
+#         mapping.txt
+#
+# Retention policies (managed by scripts/manage_artifact_retention.py)
+# --------------------------------------------------------------------
+#   releases/  — 180 days (configurable via ARTIFACT_RELEASE_RETENTION_DAYS)
+#   snapshots/ — 30  days (configurable via ARTIFACT_SNAPSHOT_RETENTION_DAYS)
+#
+# Triggers
+# --------
+#   - vX.Y.Z tag push  (after both store-release workflows succeed)
+#   - Push to main     (snapshot of every main commit)
+#   - Manual dispatch  (select platform and/or override the version label)
+#
+# Required secrets
+# ----------------
+#   AWS_ARTIFACT_ACCESS_KEY_ID     — IAM key with s3:PutObject on the bucket
+#   AWS_ARTIFACT_SECRET_ACCESS_KEY — paired secret key
+#   ARTIFACT_BUCKET                — bucket name (e.g. ethos-protocol-artifacts)
+# Optional secrets / variables
+# ----------------------------
+#   ARTIFACT_BUCKET_REGION         — AWS region, defaults to us-east-1
+#   ARTIFACT_RELEASE_RETENTION_DAYS — override release retention (default 180)
+#   ARTIFACT_SNAPSHOT_RETENTION_DAYS — override snapshot retention (default 30)
+#
+# For the iOS job:
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64
+#   MATCH_GIT_URL, MATCH_PASSWORD, MATCH_GIT_BASIC_AUTHORIZATION
+#   APPLE_TEAM_IDENTIFIER, ETHOS_CERT_PINS
+#
+# For the Android job:
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD, ETHOS_CERT_PINS
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to archive (ios / android / both)"
+        type: choice
+        default: both
+        options:
+          - both
+          - ios
+          - android
+      version_override:
+        description: "Override the version label (leave blank to derive from tag / branch+SHA)"
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry run: build and compute checksums, but do not upload to S3"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Only one archive job runs per ref at a time; newer pushes cancel in-flight
+# snapshot runs but never cancel a tag (release) run.
+concurrency:
+  group: artifact-storage-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.ARTIFACT_BUCKET_REGION || 'us-east-1' }}
+  ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
+  RELEASE_RETENTION_DAYS: ${{ vars.ARTIFACT_RELEASE_RETENTION_DAYS || '180' }}
+  SNAPSHOT_RETENTION_DAYS: ${{ vars.ARTIFACT_SNAPSHOT_RETENTION_DAYS || '30' }}
+  FASTLANE_SKIP_UPDATE_CHECK: "1"
+  FASTLANE_HIDE_CHANGELOG: "1"
+  FASTLANE_OPT_OUT_USAGE: "1"
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared version-label computation
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  version:
+    name: Compute artifact version label
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.label.outputs.label }}
+      s3_prefix_ios: ${{ steps.label.outputs.s3_prefix_ios }}
+      s3_prefix_android: ${{ steps.label.outputs.s3_prefix_android }}
+      s3_prefix_mappings: ${{ steps.label.outputs.s3_prefix_mappings }}
+      is_release: ${{ steps.label.outputs.is_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version label and S3 key prefixes
+        id: label
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          OVERRIDE: ${{ inputs.version_override }}
+        run: |
+          SHORT_SHA="${SHA:0:7}"
+          DATE=$(date -u +%Y%m%d)
+
+          if [ -n "$OVERRIDE" ]; then
+            LABEL="$OVERRIDE"
+            IS_RELEASE="false"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            LABEL="$REF_NAME"          # e.g. v1.4.0
+            IS_RELEASE="true"
+          else
+            # Sanitise branch name: replace / and non-alphanumeric with -
+            BRANCH=$(echo "$REF_NAME" | tr '/' '-' | tr -cs 'a-zA-Z0-9-' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+            LABEL="${BRANCH}-${DATE}-${SHORT_SHA}"
+            IS_RELEASE="false"
+          fi
+
+          if [ "$IS_RELEASE" = "true" ]; then
+            PREFIX_IOS="ios/releases/${LABEL}"
+            PREFIX_ANDROID="android/releases/${LABEL}"
+            PREFIX_MAPPINGS="r8-mappings/${LABEL}"
+          else
+            # Derive the branch segment from the label (strip the date-sha suffix for display)
+            if [ "$REF_TYPE" = "tag" ]; then
+              BRANCH_SEG="tags"
+            else
+              BRANCH=$(echo "$REF_NAME" | tr '/' '-' | tr -cs 'a-zA-Z0-9-' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+              BRANCH_SEG="$BRANCH"
+            fi
+            PREFIX_IOS="ios/snapshots/${BRANCH_SEG}/${DATE}-${SHORT_SHA}"
+            PREFIX_ANDROID="android/snapshots/${BRANCH_SEG}/${DATE}-${SHORT_SHA}"
+            PREFIX_MAPPINGS="r8-mappings/snapshots/${BRANCH_SEG}/${DATE}-${SHORT_SHA}"
+          fi
+
+          echo "label=${LABEL}"                        >> "$GITHUB_OUTPUT"
+          echo "s3_prefix_ios=${PREFIX_IOS}"           >> "$GITHUB_OUTPUT"
+          echo "s3_prefix_android=${PREFIX_ANDROID}"   >> "$GITHUB_OUTPUT"
+          echo "s3_prefix_mappings=${PREFIX_MAPPINGS}" >> "$GITHUB_OUTPUT"
+          echo "is_release=${IS_RELEASE}"              >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Artifact version"
+            echo "| Key | Value |"
+            echo "| --- | --- |"
+            echo "| Label | \`${LABEL}\` |"
+            echo "| Is release | ${IS_RELEASE} |"
+            echo "| iOS S3 prefix | \`${PREFIX_IOS}\` |"
+            echo "| Android S3 prefix | \`${PREFIX_ANDROID}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # iOS: build signed .ipa and upload to S3
+  # ───────────────────────────────────────────────────────────────────────────
+  ios-archive:
+    name: Archive iOS .ipa
+    needs: version
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      inputs.platform == 'both' ||
+      inputs.platform == 'ios'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ios/EthosProtocol
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Set up Ruby and fastlane (cached)
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          mkdir -p Xcode
+          xcodegen generate --project Xcode
+
+      # Build a signed .ipa when signing secrets are present; fall back to an
+      # unsigned .app archive for snapshot builds where secrets are absent.
+      - name: Build and export .ipa (fastlane ios archive)
+        id: build_ipa
+        env:
+          VERSION_LABEL: ${{ needs.version.outputs.label }}
+          IS_RELEASE: ${{ needs.version.outputs.is_release }}
+          APPLE_TEAM_IDENTIFIER: ${{ vars.APPLE_TEAM_IDENTIFIER }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+        run: |
+          # Determine whether we have signing credentials
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$MATCH_GIT_URL" ]; then
+            echo "Signing credentials present — building signed .ipa"
+            bundle exec fastlane ios archive version_label:"$VERSION_LABEL"
+            IPA_PATH=$(find . -name "*.ipa" | head -1)
+          else
+            echo "Signing credentials absent — building unsigned .app archive for snapshot"
+            mkdir -p artifacts
+            xcodebuild archive \
+              -project Xcode/EthosProtocol.xcodeproj \
+              -scheme EthosProtocol \
+              -destination 'generic/platform=iOS' \
+              -archivePath "artifacts/EthosProtocol-${VERSION_LABEL}.xcarchive" \
+              CODE_SIGNING_ALLOWED=NO \
+              -skipMacroValidation
+            # Package the archive as a zip so it can be uploaded as a single file
+            cd artifacts
+            zip -r "EthosProtocol-${VERSION_LABEL}.xcarchive.zip" \
+              "EthosProtocol-${VERSION_LABEL}.xcarchive"
+            cd ..
+            IPA_PATH="artifacts/EthosProtocol-${VERSION_LABEL}.xcarchive.zip"
+          fi
+          echo "ipa_path=$IPA_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA-256 checksum
+        id: checksum_ios
+        run: |
+          IPA="${{ steps.build_ipa.outputs.ipa_path }}"
+          SHA=$(shasum -a 256 "$IPA" | awk '{print $1}')
+          echo "$SHA  $(basename $IPA)" > "${IPA}.sha256"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha256_file=${IPA}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Write metadata manifest
+        run: |
+          IPA="${{ steps.build_ipa.outputs.ipa_path }}"
+          python3 - <<'EOF'
+          import json, os, subprocess
+          sha = os.environ["SHA256"]
+          ipa_path = os.environ["IPA_PATH"]
+          label = os.environ["LABEL"]
+          sha_long = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                              cwd=os.environ["GITHUB_WORKSPACE"]).decode().strip()
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          run_id = os.environ.get("GITHUB_RUN_ID", "")
+          run_url = f"https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}/actions/runs/{run_id}"
+          meta = {
+            "version": label,
+            "platform": "ios",
+            "artifact": os.path.basename(ipa_path),
+            "sha256": sha,
+            "git_ref": ref,
+            "git_sha": sha_long,
+            "github_run_id": run_id,
+            "github_run_url": run_url,
+          }
+          with open("artifacts/metadata.json", "w") as f:
+            json.dump(meta, f, indent=2)
+          print(json.dumps(meta, indent=2))
+          EOF
+        env:
+          SHA256: ${{ steps.checksum_ios.outputs.sha256 }}
+          IPA_PATH: ${{ steps.build_ipa.outputs.ipa_path }}
+          LABEL: ${{ needs.version.outputs.label }}
+
+      - name: Upload .ipa to S3
+        if: ${{ inputs.dry_run != true }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ARTIFACT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_ARTIFACT_SECRET_ACCESS_KEY }}
+          S3_PREFIX: ${{ needs.version.outputs.s3_prefix_ios }}
+        run: |
+          IPA="${{ steps.build_ipa.outputs.ipa_path }}"
+          SHA_FILE="${{ steps.checksum_ios.outputs.sha256_file }}"
+          S3_URI="s3://${ARTIFACT_BUCKET}/${S3_PREFIX}"
+
+          echo "Uploading to ${S3_URI}"
+          aws s3 cp "$IPA" "${S3_URI}/$(basename $IPA)"
+          aws s3 cp "$SHA_FILE" "${S3_URI}/$(basename $SHA_FILE)"
+          aws s3 cp "artifacts/metadata.json" "${S3_URI}/metadata.json"
+
+          echo "✓ iOS artifact uploaded to ${S3_URI}"
+          echo "SHA-256: ${{ steps.checksum_ios.outputs.sha256 }}"
+
+      - name: Summarise (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "### Dry run — iOS artifact NOT uploaded" >> "$GITHUB_STEP_SUMMARY"
+          echo "Would upload to: s3://\${ARTIFACT_BUCKET}/${{ needs.version.outputs.s3_prefix_ios }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA-256: ${{ steps.checksum_ios.outputs.sha256 }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload .ipa as GitHub Actions artifact (fallback / inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-${{ needs.version.outputs.label }}
+          path: |
+            ${{ steps.build_ipa.outputs.ipa_path }}
+            ${{ steps.checksum_ios.outputs.sha256_file }}
+            ios/EthosProtocol/artifacts/metadata.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Android: build signed .aab + .apk and upload to S3
+  # ───────────────────────────────────────────────────────────────────────────
+  android-archive:
+    name: Archive Android .aab / .apk
+    needs: version
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      inputs.platform == 'both' ||
+      inputs.platform == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Decode keystore when signing credentials are present; unsigned otherwise.
+      - name: Decode upload keystore
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            KEYSTORE="$RUNNER_TEMP/upload-keystore.jks"
+            umask 077
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+            echo "ANDROID_KEYSTORE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signing credentials absent — producing unsigned release artifacts"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Assemble release AAB and APK
+        env:
+          ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew bundleRelease assembleRelease
+
+      - name: Collect artifact paths
+        id: paths
+        env:
+          VERSION_LABEL: ${{ needs.version.outputs.label }}
+        run: |
+          AAB=$(find app/build/outputs/bundle/release -name "*.aab" | head -1)
+          APK=$(find app/build/outputs/apk/release    -name "*.apk" | head -1)
+          MAPPING="app/build/outputs/mapping/release/mapping.txt"
+
+          if [ -z "$AAB" ]; then
+            echo "::error::No .aab found — bundleRelease may have failed."
+            exit 1
+          fi
+          if [ -z "$APK" ]; then
+            echo "::warning::No .apk found — assembleRelease may have failed."
+          fi
+
+          # Rename to include the version label for clarity in S3
+          AAB_DEST="artifacts/app-release-${VERSION_LABEL}.aab"
+          APK_DEST="artifacts/app-release-${VERSION_LABEL}.apk"
+          mkdir -p artifacts
+          cp "$AAB" "$AAB_DEST"
+          [ -f "$APK" ] && cp "$APK" "$APK_DEST" || APK_DEST=""
+          [ -f "$MAPPING" ] && cp "$MAPPING" "artifacts/mapping-${VERSION_LABEL}.txt" || true
+
+          echo "aab_path=$AAB_DEST"  >> "$GITHUB_OUTPUT"
+          echo "apk_path=$APK_DEST"  >> "$GITHUB_OUTPUT"
+
+      - name: Compute SHA-256 checksums
+        id: checksum_android
+        run: |
+          AAB="${{ steps.paths.outputs.aab_path }}"
+          APK="${{ steps.paths.outputs.apk_path }}"
+
+          AAB_SHA=$(sha256sum "$AAB" | awk '{print $1}')
+          echo "$AAB_SHA  $(basename $AAB)" > "${AAB}.sha256"
+          echo "aab_sha256=$AAB_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$APK" ] && [ -f "$APK" ]; then
+            APK_SHA=$(sha256sum "$APK" | awk '{print $1}')
+            echo "$APK_SHA  $(basename $APK)" > "${APK}.sha256"
+            echo "apk_sha256=$APK_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write metadata manifest
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess
+          aab_sha = os.environ["AAB_SHA256"]
+          apk_sha = os.environ.get("APK_SHA256", "")
+          label = os.environ["LABEL"]
+          sha_long = subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                              cwd=os.environ["GITHUB_WORKSPACE"]).decode().strip()
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          run_id = os.environ.get("GITHUB_RUN_ID", "")
+          run_url = f"https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}/actions/runs/{run_id}"
+          signed = os.environ.get("SIGNED", "false") == "true"
+          meta = {
+            "version": label,
+            "platform": "android",
+            "artifacts": {
+              "aab": {
+                "file": os.path.basename(os.environ["AAB_PATH"]),
+                "sha256": aab_sha,
+              },
+              **({"apk": {
+                "file": os.path.basename(os.environ["APK_PATH"]),
+                "sha256": apk_sha,
+              }} if apk_sha else {}),
+            },
+            "signed": signed,
+            "git_ref": ref,
+            "git_sha": sha_long,
+            "github_run_id": run_id,
+            "github_run_url": run_url,
+          }
+          with open("artifacts/metadata.json", "w") as f:
+            json.dump(meta, f, indent=2)
+          print(json.dumps(meta, indent=2))
+          EOF
+        env:
+          AAB_SHA256: ${{ steps.checksum_android.outputs.aab_sha256 }}
+          APK_SHA256: ${{ steps.checksum_android.outputs.apk_sha256 }}
+          AAB_PATH: ${{ steps.paths.outputs.aab_path }}
+          APK_PATH: ${{ steps.paths.outputs.apk_path }}
+          LABEL: ${{ needs.version.outputs.label }}
+          SIGNED: ${{ steps.keystore.outputs.signed }}
+
+      - name: Upload artifacts to S3
+        if: ${{ inputs.dry_run != true }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ARTIFACT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_ARTIFACT_SECRET_ACCESS_KEY }}
+          S3_PREFIX: ${{ needs.version.outputs.s3_prefix_android }}
+          S3_MAPPING_PREFIX: ${{ needs.version.outputs.s3_prefix_mappings }}
+          AAB_PATH: ${{ steps.paths.outputs.aab_path }}
+          APK_PATH: ${{ steps.paths.outputs.apk_path }}
+          VERSION_LABEL: ${{ needs.version.outputs.label }}
+        run: |
+          S3_URI="s3://${ARTIFACT_BUCKET}/${S3_PREFIX}"
+          echo "Uploading Android artifacts to ${S3_URI}"
+
+          aws s3 cp "$AAB_PATH" "${S3_URI}/$(basename $AAB_PATH)"
+          aws s3 cp "${AAB_PATH}.sha256" "${S3_URI}/$(basename $AAB_PATH).sha256"
+
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            aws s3 cp "$APK_PATH" "${S3_URI}/$(basename $APK_PATH)"
+            aws s3 cp "${APK_PATH}.sha256" "${S3_URI}/$(basename $APK_PATH).sha256"
+          fi
+
+          aws s3 cp "artifacts/metadata.json" "${S3_URI}/metadata.json"
+
+          # Archive R8 mapping alongside the release artifacts
+          MAPPING="artifacts/mapping-${VERSION_LABEL}.txt"
+          if [ -f "$MAPPING" ]; then
+            aws s3 cp "$MAPPING" \
+              "s3://${ARTIFACT_BUCKET}/${S3_MAPPING_PREFIX}/mapping-${VERSION_LABEL}.txt"
+          fi
+
+          echo "✓ Android artifacts uploaded to ${S3_URI}"
+
+      - name: Summarise (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "### Dry run — Android artifacts NOT uploaded" >> "$GITHUB_STEP_SUMMARY"
+          echo "Would upload to: s3://\${ARTIFACT_BUCKET}/${{ needs.version.outputs.s3_prefix_android }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "AAB SHA-256: ${{ steps.checksum_android.outputs.aab_sha256 }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove upload keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload-keystore.jks"
+
+      - name: Upload Android artifacts as GitHub Actions artifact (fallback / inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-${{ needs.version.outputs.label }}
+          path: |
+            android/artifacts/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Apply S3 lifecycle / retention policy
+  # ───────────────────────────────────────────────────────────────────────────
+  apply-retention-policy:
+    name: Apply S3 retention lifecycle policy
+    needs: [version, ios-archive, android-archive]
+    # Only update the policy after a successful tag (release) archive run,
+    # or on manual dispatch against the main branch, so routine snapshot runs
+    # don't incur unnecessary PutBucketLifecycleConfiguration API calls.
+    if: |
+      always() &&
+      (needs.version.outputs.is_release == 'true' ||
+       github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply lifecycle rules to S3 bucket
+        if: ${{ inputs.dry_run != true }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ARTIFACT_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_ARTIFACT_SECRET_ACCESS_KEY }}
+        run: |
+          python3 scripts/manage_artifact_retention.py \
+            --bucket "$ARTIFACT_BUCKET" \
+            --release-days "$RELEASE_RETENTION_DAYS" \
+            --snapshot-days "$SNAPSHOT_RETENTION_DAYS"
+
+      - name: Summarise (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "### Dry run — retention policy NOT applied" >> "$GITHUB_STEP_SUMMARY"
+          echo "Would apply: releases → ${RELEASE_RETENTION_DAYS} days, snapshots → ${SNAPSHOT_RETENTION_DAYS} days" >> "$GITHUB_STEP_SUMMARY"
