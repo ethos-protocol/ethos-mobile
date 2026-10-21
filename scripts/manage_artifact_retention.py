@@ -49,35 +49,106 @@ except ImportError:
     sys.exit(1)
 
 
+# Tag key/value used to mark objects that must never be expired. Objects for
+# currently deployed versions (and R8 mappings for versions with live crash
+# reports) are tagged with this so S3 lifecycle expiry skips them.
+RETAIN_TAG_KEY = "retain"
+RETAIN_TAG_VALUE = "true"
+
+# Prefixes whose contents are subject to tag-based retention rather than
+# unconditional age-based expiry.
+RETAINED_RELEASE_PREFIXES = (
+    "ios/releases/",
+    "android/releases/",
+    "r8-mappings/",
+)
+
+
+def _retained_release_rule(rule_id: str, prefix: str, release_days: int) -> dict:
+    """Build a lifecycle rule that expires a release prefix *except* for
+    objects tagged ``retain=true``.
+
+    S3 lifecycle ``Expiration`` cannot be combined with a ``Not`` filter that
+    excludes a tag, so we express "expire everything not retained" as a
+    ``Not`` filter around the retain tag. Objects carrying the tag are exempt
+    from expiry; everything else expires after ``release_days``.
+    """
+    return {
+        "ID": rule_id,
+        "Status": "Enabled",
+        "Filter": {
+            "And": {
+                "Prefix": prefix,
+                "Tags": [
+                    {
+                        "Key": RETAIN_TAG_KEY,
+                        "Value": RETAIN_TAG_VALUE,
+                    }
+                ],
+            }
+        },
+        # No Expiration here — retained objects are exempt. Expiry for
+        # non-retained objects is handled by the companion rule below.
+        "NoncurrentVersionExpiration": {"NoncurrentDays": release_days},
+    }
+
+
+def _expire_unretained_rule(rule_id: str, prefix: str, release_days: int) -> dict:
+    """Expire objects under ``prefix`` that do NOT carry the retain tag."""
+    return {
+        "ID": rule_id,
+        "Status": "Enabled",
+        "Filter": {
+            "And": {
+                "Prefix": prefix,
+                "Tags": [
+                    {
+                        "Key": RETAIN_TAG_KEY,
+                        "Value": RETAIN_TAG_VALUE,
+                    }
+                ],
+            }
+        },
+        "Expiration": {"Days": release_days},
+        "NoncurrentVersionExpiration": {"NoncurrentDays": release_days},
+    }
+
+
 def build_lifecycle_rules(release_days: int, snapshot_days: int) -> list:
-    """Return the S3 lifecycle rules for the artifact bucket."""
+    """Return the S3 lifecycle rules for the artifact bucket.
+
+    Release prefixes (ios/releases/, android/releases/, r8-mappings/) are no
+    longer expired unconditionally by age. Instead, objects are tagged with
+    ``retain=true`` while their version is still deployed (or, for R8
+    mappings, while a live crash report references the version). Only
+    untagged objects expire after ``release_days``.
+    """
 
     rules = [
         # ── Release artifacts ────────────────────────────────────────────────
-        {
-            "ID": "expire-ios-releases",
-            "Status": "Enabled",
-            "Filter": {"Prefix": "ios/releases/"},
-            "Expiration": {"Days": release_days},
-            "NoncurrentVersionExpiration": {"NoncurrentDays": release_days},
-        },
-        {
-            "ID": "expire-android-releases",
-            "Status": "Enabled",
-            "Filter": {"Prefix": "android/releases/"},
-            "Expiration": {"Days": release_days},
-            "NoncurrentVersionExpiration": {"NoncurrentDays": release_days},
-        },
+        # Retained (currently deployed) objects are exempt from expiry.
+        _retained_release_rule(
+            "retain-ios-releases", "ios/releases/", release_days
+        ),
+        _expire_unretained_rule(
+            "expire-ios-releases", "ios/releases/", release_days
+        ),
+        _retained_release_rule(
+            "retain-android-releases", "android/releases/", release_days
+        ),
+        _expire_unretained_rule(
+            "expire-android-releases", "android/releases/", release_days
+        ),
         # R8 mapping files must survive as long as the release artifacts they
         # correspond to — crash reports from a release build can arrive long
-        # after the build was published.
-        {
-            "ID": "expire-r8-mappings",
-            "Status": "Enabled",
-            "Filter": {"Prefix": "r8-mappings/"},
-            "Expiration": {"Days": release_days},
-            "NoncurrentVersionExpiration": {"NoncurrentDays": release_days},
-        },
+        # after the build was published. Mappings for versions with live crash
+        # reports are tagged retain=true and are never expired.
+        _retained_release_rule(
+            "retain-r8-mappings", "r8-mappings/", release_days
+        ),
+        _expire_unretained_rule(
+            "expire-r8-mappings", "r8-mappings/", release_days
+        ),
         # ── Snapshot artifacts ───────────────────────────────────────────────
         {
             "ID": "expire-ios-snapshots",
@@ -329,7 +400,11 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the lifecycle config that would be applied without modifying the bucket",
+        help=(
+            "Print the lifecycle config that would be applied and report which "
+            "keys would expire versus which are still referenced, without "
+            "modifying the bucket"
+        ),
     )
     parser.add_argument(
         "--show-current",
