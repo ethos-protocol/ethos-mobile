@@ -15,6 +15,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
  */
 object SessionLockManager {
 
+    enum class RefreshResult {
+        SUCCESS,
+        AUTHENTICATION_FAILED,
+        TEMPORARY_FAILURE
+    }
+
     /** Inactivity timeout in milliseconds. Default is 5 minutes. */
     var timeoutMs: Long = 5 * 60 * 1_000L
 
@@ -44,12 +50,11 @@ object SessionLockManager {
     val isLocked: MutableStateFlow<Boolean> = MutableStateFlow(false)
 
     /**
-     * Invoked when a sliding-window refresh is due. Implementations should
-     * perform the actual token refresh and return `true` on success. Returning
-     * `false` (or throwing) is treated as a refresh failure and locks the
-     * session so the user must re-authenticate.
+        * Invoked when a sliding-window refresh is due. Implementations should
+        * perform the actual token refresh and return an explicit result. Only an
+        * authentication rejection locks the session; transient failures can retry.
      */
-    var refreshHandler: (() -> Boolean)? = null
+    var refreshHandler: (() -> RefreshResult)? = null
 
     // -------------------------------------------------------------------------
     // Public API
@@ -82,26 +87,29 @@ object SessionLockManager {
 
     /**
      * Attempts a token refresh via [refreshHandler]. On success the refresh
-     * timestamp is advanced, extending the sliding window. On failure the
-     * session is locked so the user must re-authenticate.
+     * timestamp is advanced, extending the sliding window. Only an explicit
+     * authentication failure locks the session; network and other transient
+     * failures leave it unlocked for a later retry.
      *
      * @return `true` if the refresh succeeded, `false` otherwise.
      */
     fun refreshToken(): Boolean {
         val handler = refreshHandler ?: return false
-        val success = try {
+        val result = try {
             handler()
         } catch (_: Exception) {
-            false
+            RefreshResult.TEMPORARY_FAILURE
         }
-        if (success) {
-            lastRefreshTime = System.currentTimeMillis()
-            recordActivity()
-        } else {
-            // Refresh token expired or refresh failed — force re-authentication.
-            isLocked.value = true
+        when (result) {
+            RefreshResult.SUCCESS -> {
+                lastRefreshTime = System.currentTimeMillis()
+                recordActivity()
+                return true
+            }
+            RefreshResult.AUTHENTICATION_FAILED -> isLocked.value = true
+            RefreshResult.TEMPORARY_FAILURE -> Unit
         }
-        return success
+        return false
     }
 
     /**

@@ -73,6 +73,67 @@ final class NotificationServiceHostedTests: XCTestCase {
         )
     }
 
+    func test_scheduleCheckInReminder_1DayInterval_schedulesWithScaledLeadTime() {
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "1day-vault",
+                vaultName: "Test",
+                ttlRemaining: 172_800,
+                checkInInterval: 86_400
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_7DayInterval_schedulesWithScaledLeadTime() {
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "7day-vault",
+                vaultName: "Test",
+                ttlRemaining: 1_209_600,
+                checkInInterval: 604_800
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_365DayInterval_capsLeadTimeAt24Hours() {
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "year-vault",
+                vaultName: "Test",
+                ttlRemaining: 63_072_000,
+                checkInInterval: 31_536_000
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_shortInterval_schedulesSecondaryReminder() {
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "short-vault",
+                vaultName: "Test",
+                ttlRemaining: 86_400,
+                checkInInterval: 43_200
+            )
+        )
+    }
+
+    func test_scheduleCheckInReminder_removesExistingNotifications_beforeAddingNew() {
+        NotificationService.shared.scheduleCheckInReminder(
+            vaultID: "dup-vault",
+            vaultName: "Test",
+            ttlRemaining: 172_800,
+            checkInInterval: 86_400
+        )
+        XCTAssertNoThrow(
+            NotificationService.shared.scheduleCheckInReminder(
+                vaultID: "dup-vault",
+                vaultName: "Test",
+                ttlRemaining: 86_400,
+                checkInInterval: 86_400
+            )
+        )
+    }
+
     func test_scheduleTTLWarning_verifyPendingNotificationRequests() async throws {
         // A simulator never actually grants notification authorization (no user to tap
         // Allow), and `xcrun simctl privacy grant notifications` fails outright on the CI

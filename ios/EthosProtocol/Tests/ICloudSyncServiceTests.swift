@@ -1,10 +1,17 @@
 import XCTest
 @testable import EthosProtocol
 
+private final class InMemoryICloudKeyValueStore: ICloudKeyValueStore {
+    private var values: [String: Any] = [:]
+
+    func bool(forKey key: String) -> Bool { values[key] as? Bool ?? false }
+    func data(forKey key: String) -> Data? { values[key] as? Data }
+    func setBool(_ value: Bool, forKey key: String) { values[key] = value }
+    func setData(_ value: Data, forKey key: String) { values[key] = value }
+    func synchronize() -> Bool { true }
+}
+
 // MARK: - Manual QA Checklist for iCloud Sync
-// NOTE: The following test (`test_toggle_enablesSync`) is skipped in CI because
-// NSUbiquitousKeyValueStore requires an iCloud entitlement and a signed-in iCloud account,
-// unavailable in the bare, unsigned SPM test bundle on CI.
 //
 // Manual testing on a real device should verify:
 // 1. Enable iCloud sync toggle on device (Settings > iCloud > Keychain)
@@ -19,134 +26,127 @@ import XCTest
 
 final class ICloudSyncServiceTests: XCTestCase {
 
+    private var service: ICloudSyncService!
+    private var remoteStore: InMemoryICloudKeyValueStore!
+    private var userDefaults: UserDefaults!
+
     override func setUp() {
         super.setUp()
-        // Reset state before each test
-        ICloudSyncService.shared.isSyncEnabled = false
-        UserDefaults.standard.removeObject(forKey: "com.ethosprotocol.vault_associations")
+        let suiteName = "ICloudSyncServiceTests-\(UUID().uuidString)"
+        userDefaults = UserDefaults(suiteName: suiteName)!
+        userDefaults.removePersistentDomain(forName: suiteName)
+        remoteStore = InMemoryICloudKeyValueStore()
+        service = ICloudSyncService(remoteStore: remoteStore, userDefaults: userDefaults)
     }
 
-    func test_toggle_enablesSync() throws {
-        // NSUbiquitousKeyValueStore silently no-ops without an iCloud entitlement
-        // and a signed-in iCloud account — neither is available in the bare,
-        // unsigned SPM test bundle this runs in on CI (every read then just
-        // returns the default `false`, regardless of what was set).
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
-        ICloudSyncService.shared.isSyncEnabled = true
-        XCTAssertTrue(ICloudSyncService.shared.isSyncEnabled)
+    func test_toggle_enablesSync() {
+        service.isSyncEnabled = true
+        XCTAssertTrue(service.isSyncEnabled)
     }
 
     func test_toggle_disablesSync() {
-        ICloudSyncService.shared.isSyncEnabled = true
-        ICloudSyncService.shared.isSyncEnabled = false
-        XCTAssertFalse(ICloudSyncService.shared.isSyncEnabled)
+        service.isSyncEnabled = true
+        service.isSyncEnabled = false
+        XCTAssertFalse(service.isSyncEnabled)
     }
 
     func test_saveAndRetrieve_credentialForVault() {
-        ICloudSyncService.shared.save(vaultID: "vault-abc", credentialID: "cred-xyz")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-abc"), "cred-xyz")
+        service.save(vaultID: "vault-abc", credentialID: "cred-xyz")
+        XCTAssertEqual(service.credentialID(for: "vault-abc"), "cred-xyz")
     }
 
     func test_missingVault_returnsNil() {
-        XCTAssertNil(ICloudSyncService.shared.credentialID(for: "nonexistent-\(UUID())"))
+        XCTAssertNil(service.credentialID(for: "nonexistent-\(UUID())"))
     }
 
     // MARK: - #10 Clear Local State on Sign-Out
 
     func test_clearLocalAssociations_removesLocallySavedAssociation() {
-        ICloudSyncService.shared.save(vaultID: "vault-to-clear", credentialID: "cred-to-clear")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-to-clear"), "cred-to-clear")
+        service.save(vaultID: "vault-to-clear", credentialID: "cred-to-clear")
+        XCTAssertEqual(service.credentialID(for: "vault-to-clear"), "cred-to-clear")
 
-        ICloudSyncService.shared.clearLocalAssociations()
+        service.clearLocalAssociations()
 
-        XCTAssertNil(ICloudSyncService.shared.credentialID(for: "vault-to-clear"))
+        XCTAssertNil(service.credentialID(for: "vault-to-clear"))
     }
 
     func test_restoreFromICloud_mergesIntoLocal() {
         // Pre-populate local storage
-        ICloudSyncService.shared.save(vaultID: "local-vault", credentialID: "local-cred")
+        service.save(vaultID: "local-vault", credentialID: "local-cred")
         // Enable sync so restore reads remote (will be empty in unit test, but merge must not wipe local)
-        ICloudSyncService.shared.isSyncEnabled = true
-        ICloudSyncService.shared.restoreFromICloud()
+        service.isSyncEnabled = true
+        service.restoreFromICloud()
         // Local entry must survive the merge
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "local-vault"), "local-cred")
+        XCTAssertEqual(service.credentialID(for: "local-vault"), "local-cred")
     }
 
     func test_restoreFromICloud_doesNothingWhenSyncDisabled() {
         // Pre-populate local storage
-        ICloudSyncService.shared.save(vaultID: "vault-1", credentialID: "cred-1")
+        service.save(vaultID: "vault-1", credentialID: "cred-1")
         // Don't enable sync
-        ICloudSyncService.shared.isSyncEnabled = false
-        // Restore should be a no-op
-        ICloudSyncService.shared.restoreFromICloud()
-        // Entry must remain unchanged
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-1"), "cred-1")
+        service.isSyncEnabled = false
+        service.restoreFromICloud()
+        XCTAssertEqual(service.credentialID(for: "vault-1"), "cred-1")
     }
 
-    func test_credentialID_prefers_remoteWhenSyncEnabled() {
-        // This tests the logic that remoteAssociations take precedence when sync is on.
-        // First, save locally only
-        ICloudSyncService.shared.save(vaultID: "shared-vault", credentialID: "local-version")
-        // Enable sync (in a real scenario, remote would have been populated)
-        ICloudSyncService.shared.isSyncEnabled = true
-        // The test here is that the getter checks remote first; since remote is empty
-        // in CI (no iCloud), it will fall back to local. This documents the precedence.
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "shared-vault"), "local-version")
+    func test_credentialID_prefers_remoteWhenSyncEnabled() throws {
+        let remoteAssociation = ICloudSyncService.VaultAssociation(
+            credentialID: "remote-version",
+            timestamp: Date().timeIntervalSince1970 + 100
+        )
+        let remoteData = try JSONEncoder().encode(["shared-vault": remoteAssociation])
+        remoteStore.setData(remoteData, forKey: "com.ethosprotocol.vault_associations")
+
+        service.save(vaultID: "shared-vault", credentialID: "local-version")
+        service.isSyncEnabled = true
+        XCTAssertEqual(service.credentialID(for: "shared-vault"), "remote-version")
     }
 
     func test_associationMerge_multipleVaults() {
         // Test that multiple vault associations can be saved and retrieved
-        ICloudSyncService.shared.save(vaultID: "vault-a", credentialID: "cred-a")
-        ICloudSyncService.shared.save(vaultID: "vault-b", credentialID: "cred-b")
-        ICloudSyncService.shared.save(vaultID: "vault-c", credentialID: "cred-c")
+        service.save(vaultID: "vault-a", credentialID: "cred-a")
+        service.save(vaultID: "vault-b", credentialID: "cred-b")
+        service.save(vaultID: "vault-c", credentialID: "cred-c")
 
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-a"), "cred-a")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-b"), "cred-b")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-c"), "cred-c")
+        XCTAssertEqual(service.credentialID(for: "vault-a"), "cred-a")
+        XCTAssertEqual(service.credentialID(for: "vault-b"), "cred-b")
+        XCTAssertEqual(service.credentialID(for: "vault-c"), "cred-c")
     }
 
     func test_multipleAssociations_allRetrievable() {
-        ICloudSyncService.shared.save(vaultID: "v1", credentialID: "c1")
-        ICloudSyncService.shared.save(vaultID: "v2", credentialID: "c2")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "v1"), "c1")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "v2"), "c2")
+        service.save(vaultID: "v1", credentialID: "c1")
+        service.save(vaultID: "v2", credentialID: "c2")
+        XCTAssertEqual(service.credentialID(for: "v1"), "c1")
+        XCTAssertEqual(service.credentialID(for: "v2"), "c2")
     }
 
     func test_overwrite_updatesCredential() {
-        ICloudSyncService.shared.save(vaultID: "v1", credentialID: "old-cred")
-        ICloudSyncService.shared.save(vaultID: "v1", credentialID: "new-cred")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "v1"), "new-cred")
+        service.save(vaultID: "v1", credentialID: "old-cred")
+        service.save(vaultID: "v1", credentialID: "new-cred")
+        XCTAssertEqual(service.credentialID(for: "v1"), "new-cred")
     }
 
     func test_conflictResolution_mostRecentWriteWins() throws {
-        // NSUbiquitousKeyValueStore silently no-ops without an iCloud entitlement
-        // and a signed-in iCloud account — neither is available in the bare,
-        // unsigned SPM test bundle this runs in on CI, so the manually-seeded
-        // "remote" value below is never actually readable back.
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
         // Simulate a conflict where an older local write is present
-        let oldTimestamp = Date().timeIntervalSince1970 - 100
-        let newTimestamp = Date().timeIntervalSince1970
+        let newTimestamp = Date().timeIntervalSince1970 + 100
 
         // Save old value locally
-        ICloudSyncService.shared.save(vaultID: "vault-conflict", credentialID: "old-cred")
+        service.save(vaultID: "vault-conflict", credentialID: "old-cred")
 
         // Manually simulate a newer remote value by manually encoding and setting it
         let remoteAssoc = ICloudSyncService.VaultAssociation(credentialID: "new-cred", timestamp: newTimestamp)
         var remoteData: [String: ICloudSyncService.VaultAssociation] = ["vault-conflict": remoteAssoc]
         if let data = try? JSONEncoder().encode(remoteData) {
-            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
-            NSUbiquitousKeyValueStore.default.synchronize()
+            remoteStore.setData(data, forKey: "com.ethosprotocol.vault_associations")
+            remoteStore.synchronize()
         }
 
         // Enable sync and restore
-        ICloudSyncService.shared.isSyncEnabled = true
-        ICloudSyncService.shared.restoreFromICloud()
+        service.isSyncEnabled = true
+        service.restoreFromICloud()
 
         // Newer remote value should win
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-conflict"), "new-cred")
+        XCTAssertEqual(service.credentialID(for: "vault-conflict"), "new-cred")
     }
 
     func test_conflictResolution_localNeverWriteWins() {
@@ -157,19 +157,19 @@ final class ICloudSyncServiceTests: XCTestCase {
         let remoteAssoc = ICloudSyncService.VaultAssociation(credentialID: "old-remote-cred", timestamp: oldRemoteTimestamp)
         var remoteData: [String: ICloudSyncService.VaultAssociation] = ["vault-conflict-2": remoteAssoc]
         if let data = try? JSONEncoder().encode(remoteData) {
-            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
-            NSUbiquitousKeyValueStore.default.synchronize()
+            remoteStore.setData(data, forKey: "com.ethosprotocol.vault_associations")
+            remoteStore.synchronize()
         }
 
         // Now save a newer local value
-        ICloudSyncService.shared.save(vaultID: "vault-conflict-2", credentialID: "new-local-cred")
+        service.save(vaultID: "vault-conflict-2", credentialID: "new-local-cred")
 
         // Enable sync and restore
-        ICloudSyncService.shared.isSyncEnabled = true
-        ICloudSyncService.shared.restoreFromICloud()
+        service.isSyncEnabled = true
+        service.restoreFromICloud()
 
         // Newer local value should win
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-conflict-2"), "new-local-cred")
+        XCTAssertEqual(service.credentialID(for: "vault-conflict-2"), "new-local-cred")
     }
 
     // MARK: - #205 Simultaneous Multi-Device Check-In Conflict Resolution
@@ -210,18 +210,16 @@ final class ICloudSyncServiceTests: XCTestCase {
         // Simulates the double check-in race end-to-end: Device A pushes its local state
         // (which knows nothing about vault-2) after Device B already pushed a newer entry
         // for vault-2. Device A's push must not delete vault-2's association from iCloud.
-        try? XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "NSUbiquitousKeyValueStore requires an iCloud entitlement + signed-in account, unavailable in CI")
         let deviceBAssoc = ICloudSyncService.VaultAssociation(credentialID: "device-b-cred", timestamp: Date().timeIntervalSince1970)
         if let data = try? JSONEncoder().encode(["vault-2": deviceBAssoc]) {
-            NSUbiquitousKeyValueStore.default.set(data, forKey: "com.ethosprotocol.vault_associations")
-            NSUbiquitousKeyValueStore.default.synchronize()
+            remoteStore.setData(data, forKey: "com.ethosprotocol.vault_associations")
+            remoteStore.synchronize()
         }
 
-        ICloudSyncService.shared.isSyncEnabled = true
-        ICloudSyncService.shared.save(vaultID: "vault-1", credentialID: "device-a-cred")
+        service.isSyncEnabled = true
+        service.save(vaultID: "vault-1", credentialID: "device-a-cred")
 
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-1"), "device-a-cred")
-        XCTAssertEqual(ICloudSyncService.shared.credentialID(for: "vault-2"), "device-b-cred")
+        XCTAssertEqual(service.credentialID(for: "vault-1"), "device-a-cred")
+        XCTAssertEqual(service.credentialID(for: "vault-2"), "device-b-cred")
     }
 }

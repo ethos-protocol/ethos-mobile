@@ -117,16 +117,6 @@ final class VaultModelTests: XCTestCase {
 
 final class KeychainServiceTests: XCTestCase {
 
-    func test_saveAndLoadToken() throws {
-        // Keychain writes in this bare, unsigned SPM test bundle can silently
-        // fail in CI (no host app / no keychain-access-group entitlement), so
-        // the read-back comes back nil even though SecItemAdd was called.
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "Keychain persistence is unreliable from an unsigned, hostless test bundle in CI")
-        KeychainService.shared.saveToken("test-token-123")
-        XCTAssertEqual(KeychainService.shared.loadToken(), "test-token-123")
-    }
-
     func test_deleteToken_returnsNil() {
         KeychainService.shared.saveToken("to-delete")
         KeychainService.shared.deleteToken()
@@ -829,119 +819,6 @@ final class BackgroundRefreshServiceTests: XCTestCase {
         XCTAssertNoThrow(BackgroundRefreshService.shared.cancelScheduledRefresh())
     }
 
-    func test_scheduleTTLWarning_doesNotThrow_forActiveVault() throws {
-        // UNUserNotificationCenter.current() traps with "bundleProxyForCurrentProcess
-        // is nil" when called from a bare, hostless SPM test bundle (no real app
-        // process) — this must be skipped BEFORE calling into NotificationService,
-        // not caught, since it's a fatal NSInternalInconsistencyException, not a
-        // normal thrown error.
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // Verifies that the notification scheduling path for TTL < 24h does not crash.
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleTTLWarning(vaultID: "vault-test", ttlRemaining: 3_600)
-        )
-    }
-
-    func test_scheduleTTLWarning_removesExistingNotification_beforeAddingNew() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // Schedule twice for same vault; should not crash or duplicate.
-        NotificationService.shared.scheduleTTLWarning(vaultID: "vault-dup", ttlRemaining: 7_200)
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleTTLWarning(vaultID: "vault-dup", ttlRemaining: 3_600)
-        )
-    }
-
-    // MARK: - Issue #35 Tests: Check-In Reminder Scaling
-
-    func test_scheduleCheckInReminder_1DayInterval_schedulesWithScaledLeadTime() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // 1 day = 86,400 seconds; 10% = 8,640 seconds ≈ 2.4 hours
-        // Should fire at ttlRemaining - 8,640 = 172,800 - 8,640 = 164,160 seconds
-        let oneDayInterval: UInt64 = 86_400
-        let ttlRemaining: UInt64 = 172_800 // 2 days
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleCheckInReminder(
-                vaultID: "1day-vault",
-                vaultName: "Test",
-                ttlRemaining: ttlRemaining,
-                checkInInterval: oneDayInterval
-            )
-        )
-    }
-
-    func test_scheduleCheckInReminder_7DayInterval_schedulesWithScaledLeadTime() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // 7 days = 604,800 seconds; 10% = 60,480 seconds ≈ 16.8 hours
-        let sevenDayInterval: UInt64 = 604_800
-        let ttlRemaining: UInt64 = 1_209_600 // 14 days
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleCheckInReminder(
-                vaultID: "7day-vault",
-                vaultName: "Test",
-                ttlRemaining: ttlRemaining,
-                checkInInterval: sevenDayInterval
-            )
-        )
-    }
-
-    func test_scheduleCheckInReminder_365DayInterval_capsLeadTimeAt24Hours() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // 365 days = 31,536,000 seconds; 10% = 3,153,600 seconds (36.5 days)
-        // Should cap at 24 hours = 86,400 seconds
-        let yearInterval: UInt64 = 31_536_000
-        let ttlRemaining: UInt64 = 63_072_000 // 2 years
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleCheckInReminder(
-                vaultID: "year-vault",
-                vaultName: "Test",
-                ttlRemaining: ttlRemaining,
-                checkInInterval: yearInterval
-            )
-        )
-    }
-
-    func test_scheduleCheckInReminder_shortInterval_schedulesSecondaryReminder() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        // 12 hours < 24 hours; should schedule both primary and secondary reminders
-        let shortInterval: UInt64 = 43_200 // 12 hours
-        let ttlRemaining: UInt64 = 86_400 // 1 day
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleCheckInReminder(
-                vaultID: "short-vault",
-                vaultName: "Test",
-                ttlRemaining: ttlRemaining,
-                checkInInterval: shortInterval
-            )
-        )
-    }
-
-    func test_scheduleCheckInReminder_removesExistingNotifications_beforeAddingNew() throws {
-        try XCTSkipIf(ProcessInfo.processInfo.environment["CI"] != nil,
-                      "UNUserNotificationCenter requires a real app host process, unavailable in CI")
-        let interval: UInt64 = 86_400
-        let ttlRemaining: UInt64 = 172_800
-        // Schedule twice; should remove old requests before adding new ones
-        NotificationService.shared.scheduleCheckInReminder(
-            vaultID: "dup-vault",
-            vaultName: "Test",
-            ttlRemaining: ttlRemaining,
-            checkInInterval: interval
-        )
-        XCTAssertNoThrow(
-            NotificationService.shared.scheduleCheckInReminder(
-                vaultID: "dup-vault",
-                vaultName: "Test",
-                ttlRemaining: ttlRemaining / 2,
-                checkInInterval: interval
-            )
-        )
-    }
 }
 
 // MARK: - Issue #34 Tests: Background Refresh Coverage

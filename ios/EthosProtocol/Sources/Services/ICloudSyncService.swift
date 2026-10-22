@@ -1,14 +1,33 @@
 import Foundation
 
+protocol ICloudKeyValueStore {
+    func bool(forKey key: String) -> Bool
+    func data(forKey key: String) -> Data?
+    func setBool(_ value: Bool, forKey key: String)
+    func setData(_ value: Data, forKey key: String)
+    func synchronize() -> Bool
+}
+
+extension NSUbiquitousKeyValueStore: ICloudKeyValueStore {
+    func setBool(_ value: Bool, forKey key: String) { set(value, forKey: key) }
+    func setData(_ value: Data, forKey key: String) { set(value, forKey: key) }
+}
+
 /// Manages optional iCloud sync for passkey-to-vault association metadata.
 /// Only non-sensitive data (vault IDs, credential IDs) is synced — never private keys.
 final class ICloudSyncService {
     static let shared = ICloudSyncService()
-    private init() {}
 
-    private let store = NSUbiquitousKeyValueStore.default
+    private let store: ICloudKeyValueStore
+    private let userDefaults: UserDefaults
     private let enabledKey = "com.ethosprotocol.icloud_sync_enabled"
     private let associationsKey = "com.ethosprotocol.vault_associations"
+
+    init(remoteStore: ICloudKeyValueStore = NSUbiquitousKeyValueStore.default,
+         userDefaults: UserDefaults = .standard) {
+        store = remoteStore
+        self.userDefaults = userDefaults
+    }
 
     // MARK: - Association Model
 
@@ -22,7 +41,7 @@ final class ICloudSyncService {
     var isSyncEnabled: Bool {
         get { store.bool(forKey: enabledKey) }
         set {
-            store.set(newValue, forKey: enabledKey)
+            store.setBool(newValue, forKey: enabledKey)
             store.synchronize()
             if newValue { pushAssociations(loadLocalAssociations()) }
         }
@@ -57,7 +76,7 @@ final class ICloudSyncService {
     /// also erase the association for any other device still signed in; restoreFromICloud()
     /// repopulates local storage from iCloud on the next sign-in if sync is re-enabled.
     func clearLocalAssociations() {
-        UserDefaults.standard.removeObject(forKey: associationsKey)
+        userDefaults.removeObject(forKey: associationsKey)
     }
 
     /// Pull associations from iCloud and merge into local storage using last-write-wins strategy.
@@ -86,14 +105,14 @@ final class ICloudSyncService {
     // MARK: - Private helpers
 
     private func loadLocalAssociations() -> [String: VaultAssociation] {
-        guard let data = UserDefaults.standard.data(forKey: associationsKey),
+        guard let data = userDefaults.data(forKey: associationsKey),
               let dict = try? JSONDecoder().decode([String: VaultAssociation].self, from: data) else { return [:] }
         return dict
     }
 
     private func persist(_ associations: [String: VaultAssociation]) {
         guard let data = try? JSONEncoder().encode(associations) else { return }
-        UserDefaults.standard.set(data, forKey: associationsKey)
+        userDefaults.set(data, forKey: associationsKey)
     }
 
     private func pushAssociations(_ associations: [String: VaultAssociation]) {
@@ -102,7 +121,7 @@ final class ICloudSyncService {
         // first device just wrote for a vault the second device never touched locally.
         let merged = Self.merge(local: associations, remote: remoteAssociations())
         guard let data = try? JSONEncoder().encode(merged) else { return }
-        store.set(data, forKey: associationsKey)
+        store.setData(data, forKey: associationsKey)
         store.synchronize()
     }
 
