@@ -109,10 +109,14 @@ jobs:
           fail-on-severity: high
           license-check: false
 
+      # Prevent CI-based XCTest skips from growing beyond the documented set.
+      - name: Check iOS CI skip budget
+        working-directory: ${{ github.workspace }}
+        run: python3 .github/scripts/check_ios_ci_skips.py
+
       # Runs the existing EthosProtocolTests XCTest target against the SPM
       # package (Package.swift) — deliberately BEFORE the Xcode project is
       # generated below (see below for why order matters).
-      #
       # Uses the "EthosProtocol-Package" scheme, not "EthosProtocol": SwiftPM
       # auto-generates one scheme per *product* plus one aggregate
       # "<manifest-name>-Package" scheme covering every target in the
@@ -133,15 +137,9 @@ jobs:
       # frameworks (BackgroundTasks, WidgetKit, UIKit) that don't compile
       # for swift test's default macOS host destination.
       - name: Test (iOS Simulator)
-        # GitHub Actions sets CI=true for this shell, but that does NOT reach
-        # the Simulator-hosted xctest process — it runs in its own sandboxed
-        # environment, not inherited from the invoking shell. xcodebuild's
-        # documented TEST_RUNNER_ prefix is what actually forwards a variable
-        # into the test host (stripping the prefix), which is what
-        # EthosProtocolTests.swift / ICloudSyncServiceTests.swift check via
-        # ProcessInfo.processInfo.environment["CI"] to skip tests that need a
-        # signed, hosted app process (Keychain / UNUserNotificationCenter /
-        # NSUbiquitousKeyValueStore) that a bare SPM test bundle doesn't have.
+        # Forward CI into the SPM test host so only the documented tests that
+        # still require unavailable Keychain or notification authorization are
+        # skipped. The skip budget above prevents that list from growing silently.
         run: |
           TEST_RUNNER_CI=true xcodebuild test \
             -scheme EthosProtocol-Package \

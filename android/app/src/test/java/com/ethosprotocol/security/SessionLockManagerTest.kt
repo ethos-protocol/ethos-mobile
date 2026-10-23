@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 class SessionLockManagerTest {
 
@@ -14,6 +15,8 @@ class SessionLockManagerTest {
         SessionLockManager.timeoutMs = 5 * 60 * 1_000L
         SessionLockManager.isLocked.value = false
         SessionLockManager.lastActivityTime = System.currentTimeMillis()
+        SessionLockManager.lastRefreshTime = 0L
+        SessionLockManager.refreshHandler = null
     }
 
     @After
@@ -22,6 +25,8 @@ class SessionLockManagerTest {
         SessionLockManager.isLocked.value = false
         SessionLockManager.timeoutMs = 5 * 60 * 1_000L
         SessionLockManager.lastActivityTime = System.currentTimeMillis()
+        SessionLockManager.lastRefreshTime = 0L
+        SessionLockManager.refreshHandler = null
     }
 
     // -------------------------------------------------------------------------
@@ -162,5 +167,21 @@ class SessionLockManagerTest {
             "onAppBackground() should reset the clock so a brief background trip doesn't lock",
             SessionLockManager.isLocked.value
         )
+    }
+
+    @Test
+    fun testRefreshToken_networkExceptionDoesNotLockSession() {
+        SessionLockManager.refreshHandler = { throw IOException("offline") }
+
+        assertFalse(SessionLockManager.refreshToken())
+        assertFalse("A transient network failure must not lock the session", SessionLockManager.isLocked.value)
+    }
+
+    @Test
+    fun testRefreshToken_authenticationFailureLocksSession() {
+        SessionLockManager.refreshHandler = { SessionLockManager.RefreshResult.AUTHENTICATION_FAILED }
+
+        assertFalse(SessionLockManager.refreshToken())
+        assertTrue("An explicit refresh rejection must lock the session", SessionLockManager.isLocked.value)
     }
 }
