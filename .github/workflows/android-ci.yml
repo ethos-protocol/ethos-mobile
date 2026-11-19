@@ -75,6 +75,38 @@ jobs:
 
           exit "$STATUS"
 
+  # Compile gate (#733). Deleting a declaration that another file still imports
+  # only fails at compile time, and the test job above does not compile every
+  # source set. This job compiles main, unit-test and androidTest Kotlin on every
+  # PR, after a static check that each com.ethosprotocol import has a declaration.
+  # Make this job a required status check on main in branch protection.
+  compile-gate:
+    name: Compile gate (main, unit test, androidTest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check com.ethosprotocol imports resolve to declarations
+        run: python3 ../.github/scripts/check_kotlin_imports.py
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Compile main, unit test and androidTest Kotlin
+        run: ./gradlew compileDebugKotlin compileDebugUnitTestKotlin compileDebugAndroidTestKotlin
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

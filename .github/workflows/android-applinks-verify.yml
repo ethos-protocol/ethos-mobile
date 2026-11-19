@@ -74,6 +74,7 @@ jobs:
         with:
           script: |
             const title = "⚠️ assetlinks.json verification failed (scheduled check)";
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             const existing = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} is:issue is:open in:title "${title}"`,
