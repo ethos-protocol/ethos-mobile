@@ -1,0 +1,29 @@
+# Rejects workflow `uses:` lines that reference an action by tag or branch
+# instead of a full commit SHA. See scripts/check_action_pins.py.
+name: Action Pin Lint
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/check_action_pins.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "scripts/check_action_pins.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-action-pins:
+    name: Check GitHub Actions are pinned to SHAs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify every remote action uses a commit SHA
+        run: python3 scripts/check_action_pins.py .github/workflows

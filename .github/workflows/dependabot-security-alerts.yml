@@ -15,15 +15,17 @@
 # such as #531/#370 on scheduled failures) and extends it to Dependabot's own
 # advisory database.
 #
-# The endpoint used here returns 403 unless BOTH of these hold (checked in
-# order when the run fails):
-#   1. Dependabot alerts are enabled for the repository
-#      (Settings > Code security > Dependabot alerts).
-#   2. The workflow token may read them: Settings > Actions > General >
-#      Workflow permissions > "Read permission for security events" — or an
-#      explicit `alerts: read` grant where workflow permissions are set per
-#      workflow. (The default read-only GITHUB_TOKEN alone is not enough;
-#      see docs.github.com "REST API endpoints for Dependabot alerts".)
+# The alerts endpoint returns 403 to the default GITHUB_TOKEN, so this
+# workflow reads alerts with a dedicated token instead:
+#
+#   Secret: DEPENDABOT_ALERTS_TOKEN
+#     A fine-grained PAT (or GitHub App token) scoped to this repository with
+#     "Dependabot alerts: Read" permission. Create it, then add it under
+#     Settings > Secrets and variables > Actions. The job fails early with an
+#     actionable message if the secret is missing.
+#
+# Dependabot alerts must also be enabled for the repository
+# (Settings > Code security > Dependabot alerts).
 name: Dependabot Security Alert Notifications
 
 on:
@@ -48,10 +50,20 @@ jobs:
     steps:
       # Purely API-driven: no repository checkout is needed.
 
+      - name: Require the Dependabot alerts token
+        env:
+          ALERTS_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
+        run: |
+          if [ -z "$ALERTS_TOKEN" ]; then
+            echo "::error::Secret DEPENDABOT_ALERTS_TOKEN is not set, so Dependabot alerts cannot be read."
+            echo "::error::Create a fine-grained PAT for this repository with 'Dependabot alerts: Read' permission and add it under Settings > Secrets and variables > Actions as DEPENDABOT_ALERTS_TOKEN. See the header of this file."
+            exit 1
+          fi
+
       - name: Fetch open Dependabot alerts
         id: alerts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -59,7 +71,7 @@ jobs:
             if grep -qE "HTTP 403|Resource not accessible by integration" alerts_error.txt; then
               echo "::error::Could not read Dependabot alerts (HTTP 403). Fix one of:"
               echo "::error::1. Enable Dependabot alerts: Settings > Code security > Dependabot alerts."
-              echo "::error::2. Allow the workflow token to read security events: Settings > Actions > General > Workflow permissions > 'Read permission for security events'."
+              echo "::error::2. Make sure DEPENDABOT_ALERTS_TOKEN has 'Dependabot alerts: Read' on this repository and has not expired."
             fi
             cat alerts_error.txt >&2
             exit 1

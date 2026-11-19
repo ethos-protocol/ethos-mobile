@@ -76,7 +76,7 @@ jobs:
       expiry_days: ${{ steps.beta_dist.outputs.expiry_days }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history + tags: release notes are generated from commits since
           # the previous vX.Y.Z tag.
@@ -136,7 +136,7 @@ jobs:
           xcodebuild -version
 
       - name: Set up Ruby and fastlane (cached)
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
         with:
           # Gemfile, Gemfile.lock and .ruby-version live at the repo root
           # (shared with the iOS App Store and Android release workflows).
