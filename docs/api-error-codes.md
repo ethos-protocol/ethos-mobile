@@ -178,9 +178,9 @@ python3 scripts/lookup_error_code.py rate
 | Error | iOS Source | Android Source |
 |-------|-----------|---------------|
 | HTTP status handling | `ios/EthosProtocol/Sources/Services/APIClient.swift` — `execute(_:)` | `android/app/src/main/java/com/ethosprotocol/api/ApiClient.kt` — `post()`, `delete()`, `toApiResult()` |
-| Error enum | `ios/EthosProtocol/Sources/Services/APIClient.swift` — `APIError` | `android/app/src/main/java/com/ethosprotocol/api/ApiResult.kt` |
+| Error enum | `ios/EthosProtocol/Sources/Services/APIClient.swift` — `APIError` | `android/app/src/main/java/com/ethosprotocol/api/ApiClient.kt` — `ApiResult` (sealed class) |
 | Error presentation | `ios/EthosProtocol/Sources/Models/Models.swift` — `ErrorPresentation` | `android/app/src/main/java/com/ethosprotocol/api/ApiErrorMapper.kt` |
 | Retry logic | `ios/EthosProtocol/Sources/Services/APIClient.swift` — `withRetry()` | `android/app/src/main/java/com/ethosprotocol/api/ApiClient.kt` — `withRetry()` |
 | OTP rate limiter | `ios/EthosProtocol/Sources/Services/OTPRateLimiter.swift` | `android/app/src/main/java/com/ethosprotocol/ui/ViewModels.kt` — `TwoFactorViewModel` |
-| Circuit breaker | — | `android/app/src/main/java/com/ethosprotocol/api/CircuitBreaker.kt` |
+| Circuit breaker | — | `android/app/src/main/java/com/ethosprotocol/api/ApiClient.kt` — `ApiCircuitBreaker` (class, used by `ApiClient`) |
 | Non-retryable codes | `ios/EthosProtocol/Sources/Services/CheckInSyncTask.swift` — `nonRetryableErrorCodes` | `android/app/src/main/java/com/ethosprotocol/services/PendingActionSyncWorker.kt` — `NON_RETRYABLE_ERROR_CODES` |

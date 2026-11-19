@@ -250,7 +250,7 @@ then applies the appropriate validation algorithm.
 All test fixtures are defined in a single source: `shared/stellar-address-fixtures.json`.
 Both platform test files MUST use these canonical fixtures to prevent silent drift.
 
-A CI check (`scripts/validate_stellar_fixtures.py`) runs on every PR to ensure:
+A CI check (`.github/scripts/validate_stellar_fixtures.py`) runs on every PR to ensure:
 - Both platforms' test files include all fixtures from the canonical list
 - Neither platform has diverged with extra fixtures
 - Fixture additions/changes happen in the JSON first, then in test files

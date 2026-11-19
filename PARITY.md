@@ -71,7 +71,7 @@ Last audited: 2026-08-31
 | **Widget** | | | |
 | Home-screen vault TTL widget | ✅ | ✅ | iOS: WidgetKit TTLWidget; Android: VaultStatusWidget (Glance) |
 | TTL-aware refresh policy | ✅ | ❌ | Android widget polls at a fixed interval; no urgency scaling (no tracking issue yet) |
-| Widget urgency selection (which vault to surface) | ❌ | ❌ | Both platforms always show the first vault (no tracking issue yet) |
+| Widget urgency selection (which vault to surface) | ✅ | ✅ | Falls back to the vault with the lowest TTL when no vault is pinned; a per-widget vault picker overrides it. iOS: `TTLWidget.swift` vault selection intent (#245/#246); Android: `VaultStatusWidget.kt` / `VaultWidgetConfigActivity` (#245/#246) |
 | **WebSocket / real-time** | | | |
 | Live vault updates via WebSocket | ✅ | ✅ | iOS: VaultEventSocket.swift; Android: VaultEventSocket.kt, both wired into their vault store/ViewModel with reconnect backoff |
 | **Background refresh** | | | |
@@ -102,7 +102,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Actionable push notification action (CHECK_IN) | Android | TBD |
 | Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
-| Widget urgency / vault selection | Both | TBD |
 | iCloud / cross-device sync | Android | TBD |
 | Deposit/Withdraw amount labels and validation messages hardcode "XLM" instead of the vault's `assetCode` (iOS: DepositView/WithdrawView; Android: DepositScreen/WithdrawScreen, VaultViewModel.deposit/withdraw) | Both | #222 (audit only — every vault is XLM today, so this is a documented follow-up, not a current bug) |
 
