@@ -114,6 +114,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 .github/scripts/check_ios_ci_skips.py
 
+      # Fails when code writes to UIPasteboard.general outside SensitiveClipboard,
+      # which would bypass the auto-clear and expiry logic (#270, #643).
+      - name: Check direct pasteboard writes
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/check_pasteboard_writes.py
+
       # Runs the existing EthosProtocolTests XCTest target against the SPM
       # package (Package.swift) — deliberately BEFORE the Xcode project is
       # generated below (see below for why order matters).

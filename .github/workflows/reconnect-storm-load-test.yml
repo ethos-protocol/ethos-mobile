@@ -1,0 +1,65 @@
+name: Reconnect Storm Load Test
+
+# Manual only. Runs load-test/websocket-reconnect-storm.js against staging twice
+# (JITTER_DISABLED=false, then true) so the jitter comparison in
+# load-test/RECONNECT_STORM_LOAD_TEST.md can be repeated. Both k6 summaries are
+# uploaded as a run artifact. Load tests against staging must not run on a
+# schedule or on pull requests.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ws_url:
+        description: "Staging WebSocket endpoint"
+        required: true
+        default: "wss://staging.ethos-protocol.app/ws/vault-events"
+        type: string
+      client_count:
+        description: "Number of virtual clients per run"
+        required: true
+        default: "500"
+        type: string
+
+# Read-only by default.
+permissions:
+  contents: read
+
+jobs:
+  reconnect-storm:
+    name: Reconnect storm (jitter on vs off)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run with jitter enabled (current behavior)
+        env:
+          WS_URL: ${{ inputs.ws_url }}
+          CLIENT_COUNT: ${{ inputs.client_count }}
+        run: |
+          k6 run -e WS_URL="$WS_URL" -e CLIENT_COUNT="$CLIENT_COUNT" \
+            -e JITTER_DISABLED=false \
+            --summary-export=summary-jitter-on.json \
+            load-test/websocket-reconnect-storm.js
+
+      - name: Run with jitter disabled (pre-#253 behavior)
+        env:
+          WS_URL: ${{ inputs.ws_url }}
+          CLIENT_COUNT: ${{ inputs.client_count }}
+        run: |
+          k6 run -e WS_URL="$WS_URL" -e CLIENT_COUNT="$CLIENT_COUNT" \
+            -e JITTER_DISABLED=true \
+            --summary-export=summary-jitter-off.json \
+            load-test/websocket-reconnect-storm.js
+
+      - name: Upload summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reconnect-storm-summaries-${{ github.run_id }}
+          path: summary-jitter-*.json
+          if-no-files-found: warn
+          retention-days: 30

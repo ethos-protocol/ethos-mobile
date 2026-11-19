@@ -65,5 +65,5 @@ The CI pipeline (`android-ci.yml`) currently:
 
 To improve flakiness detection in the future:
 - Enable `@Retry`-annotated tests to run multiple times automatically
-- Add `analyze_test_flakiness.py` to parse logs and report retry patterns
+- Parse logs for retry patterns (no script is wired into CI today; `analyze_test_flakiness.py` was removed because no workflow ran it)
 - Gate releases on all quarantined tests being fixed (prevent shipping with skipped tests)

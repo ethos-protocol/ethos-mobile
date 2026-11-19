@@ -27,6 +27,14 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-pasteboard-writes
+        name: Check direct UIPasteboard writes
+        entry: python3 scripts/check_pasteboard_writes.py
+        language: system
+        stages: [commit]
+        pass_filenames: false
+        files: \.swift$
+
       - id: check-sensitive-files
         name: Check for sensitive files
         entry: python3 scripts/check_sensitive_files.py
