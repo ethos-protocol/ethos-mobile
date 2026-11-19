@@ -42,7 +42,7 @@ import com.ethosprotocol.models.StellarAddress
 import com.ethosprotocol.services.BiometricHelper
 import com.ethosprotocol.services.UsernameValidator
 import com.ethosprotocol.services.VaultDeepLinkAction
-import com.ethosprotocol.services.AccessibilityService
+import com.ethosprotocol.services.ReduceMotionChecker
 import com.ethosprotocol.ui.AcceptanceViewModel
 import com.ethosprotocol.ui.AuthUiState
 import com.ethosprotocol.ui.AuthViewModel
@@ -64,7 +64,7 @@ import kotlinx.coroutines.withContext
 @Composable
 private fun AccessibleCircularProgressIndicator(modifier: Modifier = Modifier, strokeWidth: Dp = 4.dp) {
     val context = LocalContext.current
-    val shouldReduceMotion = AccessibilityService.isReduceMotionEnabled(context)
+    val shouldReduceMotion = ReduceMotionChecker.isReduceMotionEnabled(context)
 
     if (shouldReduceMotion) {
         Box(modifier = modifier)

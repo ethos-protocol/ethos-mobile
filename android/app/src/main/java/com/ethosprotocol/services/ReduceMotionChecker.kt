@@ -4,7 +4,7 @@ import android.content.Context
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 
-object AccessibilityService {
+object ReduceMotionChecker {
     /**
      * Checks if reduce-motion/animation is enabled in the device's accessibility settings.
      * On Android, this can be checked via:
