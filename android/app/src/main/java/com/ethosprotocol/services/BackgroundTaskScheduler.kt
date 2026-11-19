@@ -8,6 +8,52 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
+/** One background work item whose wake-up cost is tracked against a battery budget. */
+data class BatteryTaskMetric(
+    val name: String,
+    val purpose: String,
+    val intervalMinutes: Long,
+    val requiresNetwork: Boolean,
+    val maxWakeupsPerHour: Double
+)
+
+/**
+ * Battery-drain budgets for background work (#450). Each power-hungry operation declares
+ * its interval and the maximum wake-ups per hour it may cause; [isWithinBudget] is the
+ * check the unit suite asserts against, so a regression in an interval fails the test.
+ */
+object BatteryDrainMetrics {
+    const val MAX_URGENT_WAKEUPS_PER_HOUR = 4.0
+    const val MAX_NORMAL_WAKEUPS_PER_HOUR = 1.0
+
+    /**
+     * Work items that are most likely to impact battery life because they wake the device,
+     * fetch remote data, or run while the app is backgrounded.
+     */
+    val powerHungryOperations = listOf(
+        BatteryTaskMetric(
+            name = "VaultWidgetUpdateWorker",
+            purpose = "Refresh cached widget data and TTL status",
+            intervalMinutes = 15L,
+            requiresNetwork = true,
+            maxWakeupsPerHour = MAX_URGENT_WAKEUPS_PER_HOUR
+        ),
+        BatteryTaskMetric(
+            name = "PendingActionSyncWorker",
+            purpose = "Retry queued offline actions once connectivity returns",
+            intervalMinutes = 15L,
+            requiresNetwork = true,
+            maxWakeupsPerHour = MAX_URGENT_WAKEUPS_PER_HOUR
+        )
+    )
+
+    fun estimateWakeupsPerHour(intervalMinutes: Long): Double =
+        if (intervalMinutes <= 0L) Double.POSITIVE_INFINITY else 60.0 / intervalMinutes.toDouble()
+
+    fun isWithinBudget(intervalMinutes: Long, maxWakeupsPerHour: Double): Boolean =
+        estimateWakeupsPerHour(intervalMinutes) <= maxWakeupsPerHour
+}
+
 /**
  * Schedules background work for the app.
  *

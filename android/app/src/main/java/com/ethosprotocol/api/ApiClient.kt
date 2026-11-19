@@ -164,6 +164,13 @@ class ApiClient(
     // "Sign out all other devices" — revokes every session except the one making this call.
     suspend fun revokeOtherSessions(): ApiResult<Unit> = delete("/auth/sessions", Unit)
 
+    // Passkey credential management (#206) — an account is not limited to a single passkey,
+    // so listCredentials() always returns a list.
+    suspend fun listCredentials(): ApiResult<List<PasskeyCredential>> = get("/auth/credentials")
+
+    suspend fun revokeCredential(credentialId: String): ApiResult<Unit> =
+        delete("/auth/credentials/$credentialId", Unit)
+
     // Vaults
     suspend fun listVaults(): ApiResult<List<Vault>> = get("/vaults")
 
