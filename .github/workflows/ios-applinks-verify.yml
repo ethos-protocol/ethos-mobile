@@ -18,6 +18,11 @@ on:
     - cron: "0 6 * * *"   # 06:00 UTC daily
   workflow_dispatch:       # allow manual re-runs
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify-aasa:
     name: Verify apple-app-site-association (Universal Links / Passkeys)

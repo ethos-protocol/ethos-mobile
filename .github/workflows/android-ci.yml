@@ -14,7 +14,28 @@ defaults:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Issue #751: fails when the Android log-redaction lists drift from
+  # shared/redaction-allowlist.json.
+  redaction-allowlist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Check redaction allowlist
+        working-directory: .
+        run: python3 .github/scripts/check_redaction_allowlist.py
+
   # Kept out of build-and-test: the OWASP dependency-check task calls the NVD
   # API, which has no key configured here and rate-limits (HTTP 429) under
   # normal use — the scan remains advisory while build/lint/unit-test signal

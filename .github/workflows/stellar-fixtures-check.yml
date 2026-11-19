@@ -1,0 +1,39 @@
+name: Stellar Fixtures Check
+
+# Issue #752: keep the Stellar address fixtures in sync across platforms.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'shared/**'
+      - '.github/scripts/validate_stellar_fixtures.py'
+      - 'android/app/src/test/**'
+      - 'ios/EthosProtocol/Tests/**'
+  pull_request:
+    paths:
+      - 'shared/**'
+      - '.github/scripts/validate_stellar_fixtures.py'
+      - 'android/app/src/test/**'
+      - 'ios/EthosProtocol/Tests/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate-stellar-fixtures:
+    name: Validate Stellar fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Validate fixtures against platform tests
+        run: python3 .github/scripts/validate_stellar_fixtures.py

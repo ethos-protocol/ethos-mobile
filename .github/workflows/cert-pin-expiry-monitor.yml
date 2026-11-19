@@ -27,10 +27,16 @@ defaults:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check-cert-expiry:
     name: Check Pinned Certificate Expiry
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -73,6 +79,7 @@ jobs:
       #       alert the team, not block merges.
       - name: Check certificate expiry
         continue-on-error: true
+        timeout-minutes: 5
         env:
           WARN_DAYS: ${{ github.event.inputs.warn_days || '90' }}
           ETHOS_CERT_PINS: ${{ secrets.ETHOS_CERT_PINS }}

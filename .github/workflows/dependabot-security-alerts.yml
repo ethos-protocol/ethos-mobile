@@ -40,6 +40,11 @@ permissions:
 env:
   ISSUE_TITLE: "🚨 Open Dependabot security alerts"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   notify-open-alerts:
     name: Notify on open security alerts

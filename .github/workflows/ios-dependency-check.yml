@@ -25,6 +25,11 @@ defaults:
   run:
     working-directory: ios/EthosProtocol
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-check:
     runs-on: macos-latest

@@ -28,6 +28,11 @@ defaults:
   run:
     working-directory: android
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only PR runs are superseded; scheduled and push runs keep their results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Kept out of android-ci.yml's build-and-test: the OWASP dependency-check task
   # calls the NVD API, which has no key configured here and is both rate-limited
@@ -154,8 +159,7 @@ jobs:
                   "",
                   "Related: #178 (moved this job off the per-PR trigger after it repeatedly",
                   "hung for 1h+ without an NVD API key and got killed by the runner)."
-                ].join("
-"),
+                ].join("\n"),
                 labels: ["security", "android", "ci"]
               });
             }
