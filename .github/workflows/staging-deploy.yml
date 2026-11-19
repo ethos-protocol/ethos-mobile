@@ -44,6 +44,7 @@ jobs:
   android-staging-build:
     name: Build Android (Staging)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: android
@@ -99,6 +100,7 @@ jobs:
   ios-staging-build:
     name: Build iOS (Staging)
     runs-on: macos-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ios/EthosProtocol
@@ -179,6 +181,7 @@ jobs:
     name: Smoke test staging API
     needs: [android-staging-build, ios-staging-build]
     uses: ./.github/workflows/staging-smoke-test.yml
+    timeout-minutes: 20
     secrets:
       STAGING_API_BASE_URL: ${{ secrets.STAGING_API_BASE_URL }}
       STAGING_SMOKE_TOKEN: ${{ secrets.STAGING_SMOKE_TOKEN }}
