@@ -239,6 +239,15 @@ def verify(build_type, build_config, source, warn_if_unconfigured=False,
             problems.append(
                 "Release certificate pin '{}' (from {}) {}.".format(pin, origin, reason)
             )
+    # The single-source file is what every platform is generated from (#738): a
+    # placeholder there ships everywhere even when the build config is still in sync.
+    if canonical is not None:
+        for pin in canonical:
+            reason = placeholder_reason(pin)
+            if reason:
+                problems.append(
+                    "Shared pin '{}' (from {}) {}.".format(pin, shared_pins_file, reason)
+                )
 
     # The generated platform inputs must match the single-source pin set exactly.
     if canonical is not None and pins:

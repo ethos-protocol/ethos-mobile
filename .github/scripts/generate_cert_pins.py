@@ -25,6 +25,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import shared_cert_pins  # noqa: E402  (single schema definition, issue #737)
+
 # ---------------------------------------------------------------------------
 # Paths (relative to the repository root)
 # ---------------------------------------------------------------------------
@@ -49,38 +52,14 @@ class PinConfigError(Exception):
 def load_shared_pins(path: Path = SHARED_PINS_PATH) -> Dict[str, str]:
     """Load and validate the canonical pin set.
 
-    Expected schema::
-
-        {
-          "current": "<base64 sha256 pin>",
-          "backup":  "<base64 sha256 pin>"
-        }
+    The schema is defined once in ``shared_cert_pins`` (issue #737); this function
+    only adapts it to the ``current``/``backup`` keys the platform writers use.
     """
-    if not path.is_file():
-        raise PinConfigError(f"Shared pin file not found: {path}")
-
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise PinConfigError(f"Invalid JSON in {path}: {exc}") from exc
-
-    if not isinstance(raw, dict):
-        raise PinConfigError(f"{path} must contain a JSON object")
-
-    pins: Dict[str, str] = {}
-    for key in REQUIRED_KEYS:
-        value = raw.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise PinConfigError(f"{path}: missing or empty '{key}' pin")
-        pins[key] = value.strip()
-
-    if pins["current"] == pins["backup"]:
-        raise PinConfigError(
-            f"{path}: 'current' and 'backup' pins must differ "
-            "(backup exists to allow rotation)"
-        )
-
-    return pins
+        parsed = shared_cert_pins.load_shared_pins(path)
+    except shared_cert_pins.SharedPinSchemaError as exc:
+        raise PinConfigError(str(exc)) from exc
+    return {key: str(parsed[key]) for key in REQUIRED_KEYS}
 
 
 # ---------------------------------------------------------------------------

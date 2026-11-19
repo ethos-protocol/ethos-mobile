@@ -200,6 +200,11 @@ fi
 if [[ ! -f "$CERT_PINS_FILE" ]]; then
     echo "ERROR: cert pins file not found: $CERT_PINS_FILE" >&2
     FAIL=1
+elif ! python3 "$SCRIPT_DIR/../.github/scripts/shared_cert_pins.py" "$CERT_PINS_FILE"; then
+    # #739: a placeholder (all-zero) or malformed fingerprint can never match, so fail here
+    # with the reason instead of comparing against it.
+    echo "ERROR: $CERT_PINS_FILE failed the shared pin schema check" >&2
+    FAIL=1
 else
     if python3 - "$APP_PACKAGE" "$CERT_PINS_FILE" <<'PY'
 import json, sys
