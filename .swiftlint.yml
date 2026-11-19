@@ -16,3 +16,11 @@ custom_rules:
     included: "Sources"
     message: "Use a DEBUG-gated logger routed through LogRedactor instead of raw print()."
     severity: warning
+  # #781: user-facing Text("...") literals must go through LocalizedStrings so they are localized.
+  # Warning-level while the existing literals are migrated; flags capitalised string literals.
+  unlocalized_text_literal:
+    name: "Unlocalized Text Literal"
+    regex: '\bText\("[A-Z]'
+    included: "ios/EthosProtocol/Sources"
+    message: "Move this string to LocalizedStrings (Localizable.strings) instead of a Text(\"…\") literal."
+    severity: warning

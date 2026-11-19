@@ -57,11 +57,17 @@ struct NotificationPreferencesView: View {
         }
     }
 
+    /// #782: built from the locale's own hour template ("j"), so 24-hour locales get "17:00"
+    /// and 12-hour locales get "5 PM". A fixed "h a" format ignored the user's setting.
+    private static let hourFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("j")
+        return formatter
+    }()
+
     private func formattedHour(_ hour: Int) -> String {
         let components = DateComponents(hour: hour)
         let date = Calendar.current.date(from: components) ?? Date()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h a"
-        return formatter.string(from: date)
+        return Self.hourFormatter.string(from: date)
     }
 }

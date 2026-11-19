@@ -169,6 +169,39 @@ final class OfflineCacheSignOutTests: XCTestCase {
     }
 }
 
+// MARK: - Issue #783: Account switching must not leak the previous account's offline cache
+
+@MainActor
+final class OfflineCacheAccountSwitchTests: XCTestCase {
+    func test_switchTo_offline_doesNotReturnPreviousAccountsCachedVaults() {
+        // Build a roster of two accounts through the public API: each is saved from the active slot.
+        _ = KeychainService.shared.saveToken("previous-token", expiresAt: nil)
+        guard let previous = AccountManager.shared.saveCurrentSessionAsAccount(label: "Previous") else {
+            return XCTFail("could not save previous account")
+        }
+        _ = KeychainService.shared.saveToken("target-token", expiresAt: nil)
+        guard let target = AccountManager.shared.saveCurrentSessionAsAccount(label: "Target") else {
+            return XCTFail("could not save target account")
+        }
+        defer {
+            AccountManager.shared.removeAccount(previous.id)
+            AccountManager.shared.removeAccount(target.id)
+        }
+
+        // Active account is now `target`. Switch to `previous`, then seed the cache as that account.
+        XCTAssertTrue(AccountManager.shared.switchTo(previous.id))
+        let vaultsURL = "https://example.invalid/vaults-\(UUID())"
+        OfflineCache.shared.save(Data(#"[{"id":"previous-account-vault"}]"#.utf8), for: vaultsURL)
+        XCTAssertNotNil(OfflineCache.shared.load(for: vaultsURL), "precondition: cache seeded")
+
+        // Switch to the other account while "offline" (no network involved in switchTo).
+        XCTAssertTrue(AccountManager.shared.switchTo(target.id))
+
+        XCTAssertNil(OfflineCache.shared.load(for: vaultsURL),
+                     "switching accounts must not serve the previous account's cached vaults while offline")
+    }
+}
+
 // MARK: - Issue #616: Cache Write Failure Tests
 
 final class OfflineCacheWriteFailureTests: XCTestCase {

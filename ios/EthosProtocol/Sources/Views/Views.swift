@@ -675,6 +675,14 @@ struct VaultListView: View {
         }
     }
 
+    /// #782: allocated once rather than per label. Date/time styles follow the user's locale.
+    private static let absoluteSyncTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     private static func relativeAge(_ interval: TimeInterval) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
@@ -695,10 +703,7 @@ struct VaultListView: View {
             let hours = Int(interval) / 3_600
             return hours == 1 ? "1 hour ago" : "\(hours) hours ago"
         default:
-            let formatter = DateFormatter()
-            formatter.dateStyle = .medium
-            formatter.timeStyle = .short
-            return formatter.string(from: date)
+            return absoluteSyncTimeFormatter.string(from: date)
         }
     }
 }

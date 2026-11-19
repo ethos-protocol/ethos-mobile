@@ -75,6 +75,13 @@ final class AccountManager: ObservableObject {
             KeychainService.shared.saveToken(outgoingToken, expiresAt: outgoingExpiry, accountId: outgoingId)
         }
 
+        // #783: OfflineCache is keyed by URL only, not by account. Without this, a cached
+        // `/vaults` response from the previous account would be served if the new account
+        // is offline. Clear it whenever the active account actually changes.
+        if activeAccountId != accountId {
+            OfflineCache.shared.clearAll()
+        }
+
         KeychainService.shared.saveToken(targetToken, expiresAt: targetExpiry)
         activeAccountId = accountId
         UserDefaults.standard.set(accountId, forKey: Self.activeAccountDefaultsKey)
