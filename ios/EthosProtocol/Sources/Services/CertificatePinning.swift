@@ -64,7 +64,7 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
         let hashes = Self.usablePins(from: raw)
         #if DEBUG
         if hashes.isEmpty {
-            print("[PinningDelegate] WARNING: certificate pinning is DISABLED for \(pinnedHost) — "
+            PinningDelegate.debugLog("WARNING: certificate pinning is DISABLED for \(pinnedHost) — "
                 + "TLS_PUBLIC_KEY_PINS is unset or unconfigured. Set TLS_PUBLIC_KEY_PIN_CURRENT / "
                 + "TLS_PUBLIC_KEY_PIN_BACKUP (see project.yml). Release builds are gated in CI.")
         }
@@ -90,6 +90,16 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
     public init(pinnedHost: String, pinnedHashes: Set<String>) {
         self.pinnedHost = pinnedHost
         self.pinnedHashes = pinnedHashes
+    }
+
+    // MARK: - Debug logging (#774)
+
+    /// Debug-only diagnostics. Messages are scrubbed by `LogRedactor` and never
+    /// printed in Release builds, so pin details don't reach the device console.
+    static func debugLog(_ message: String) {
+        #if DEBUG
+        print("[PinningDelegate] " + LogRedactor.redactString(message))
+        #endif
     }
 
     // MARK: - URLSessionDelegate
@@ -122,7 +132,7 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
         var error: CFError?
         guard SecTrustEvaluateWithError(serverTrust, &error) else {
             #if DEBUG
-            print("[PinningDelegate] Trust evaluation failed: \(error?.localizedDescription ?? "unknown")")
+            PinningDelegate.debugLog("Trust evaluation failed: \(error?.localizedDescription ?? "unknown")")
             #endif
             completionHandler(.cancelAuthenticationChallenge, nil)
             return
@@ -143,7 +153,7 @@ public class PinningDelegate: NSObject, URLSessionDelegate {
 
         // No match found — reject the connection.
         #if DEBUG
-        print("[PinningDelegate] Certificate pin mismatch for host: \(pinnedHost). " +
+        PinningDelegate.debugLog("Certificate pin mismatch for host: \(pinnedHost). " +
               "None of \(certCount) certificate(s) matched any pinned hash.")
         #endif
         completionHandler(.cancelAuthenticationChallenge, nil)

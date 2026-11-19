@@ -14,7 +14,9 @@ struct StartupPerformance {
     mutating func markFirstFrame() {
         firstFrameTime = CACurrentMediaTime()
         let coldStartMs = Int((firstFrameTime! - appStartTime) * 1000)
+        #if DEBUG
         print("[StartupPerformance] First frame rendered in \(coldStartMs)ms")
+        #endif
     }
 
     func getColdStartTimeMs() -> Int {

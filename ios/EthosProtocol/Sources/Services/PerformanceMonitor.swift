@@ -83,6 +83,7 @@ final class PerformanceMonitor {
 
     private var apiMetrics: [APIMetric] = []
     private var screenMetrics: [ScreenMetric] = []
+    private var backgroundSubmitErrorCounts: [Int: Int] = [:]
 
     // MARK: Init
 
@@ -190,6 +191,21 @@ final class PerformanceMonitor {
         }
     }
 
+    // MARK: - Background scheduling failures (#773)
+
+    /// Records a `BGTaskScheduler.submit` failure, keyed by its error code.
+    func recordBackgroundSubmitFailure(code: Int) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.backgroundSubmitErrorCounts[code, default: 0] += 1
+        }
+    }
+
+    /// Failure counts keyed by BGTaskScheduler error code.
+    func backgroundSubmitFailureCounts() -> [Int: Int] {
+        queue.sync { backgroundSubmitErrorCounts }
+    }
+
     // MARK: - Reset (for testing)
 
     /// Clears all in-memory metrics. Intended for unit tests only.
@@ -197,6 +213,7 @@ final class PerformanceMonitor {
         queue.sync {
             apiMetrics.removeAll()
             screenMetrics.removeAll()
+            backgroundSubmitErrorCounts.removeAll()
         }
     }
 
