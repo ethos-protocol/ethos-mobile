@@ -369,7 +369,7 @@ final class VaultListPerformanceTests: XCTestCase {
 - **MUST** set `measureOptions` to control iteration count, or the first iteration's
   lazy-allocation cost will dominate the result.
 - **SHOULD** use a real fixture file rather than a loop generating structs in a
-  `@Testable` unit test — `UITests/VaultListPerformanceTest.swift` can drive the actual
+  `@Testable` unit test — `ios/EthosProtocol/Tests/VaultListPerformanceTest.swift` can drive the actual
   screen.
 - **NOTE** `xctrace` and XCTest performance tests are not currently run in CI
   (`ios-ci.yml`). A benchmark that only a developer can run by hand will not be

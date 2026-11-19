@@ -1,0 +1,26 @@
+name: Privacy Manifest Check
+
+# #771: fails when UserDefaults is used in iOS sources without a matching
+# PrivacyInfo.xcprivacy declaration (App Store review requirement).
+
+on:
+  pull_request:
+    paths:
+      - "ios/**"
+      - ".github/scripts/check_privacy_manifest.py"
+      - ".github/workflows/privacy-manifest-check.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-manifest:
+    name: Verify UserDefaults privacy declarations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check privacy manifests
+        run: python3 .github/scripts/check_privacy_manifest.py

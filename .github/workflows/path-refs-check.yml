@@ -1,0 +1,21 @@
+name: Path References Check
+
+# #769: fails when a .md, .kt, .swift or .yml file cites a repo path that does not exist.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  path-refs:
+    name: Verify cited file paths resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check path references
+        run: python3 .github/scripts/check_path_refs.py

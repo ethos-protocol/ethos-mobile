@@ -80,6 +80,9 @@ targets:
       - path: Sources/Services
       - path: Sources/ViewModels
       - path: Sources/Views
+    resources:
+      # #771: App Store privacy manifest (required-reason API declarations).
+      - path: EthosProtocol/PrivacyInfo.xcprivacy
     info:
       # INFOPLIST_FILE and CODE_SIGN_ENTITLEMENTS are both plain SRCROOT-
       # relative build settings. SRCROOT is the generated .xcodeproj's own
@@ -151,6 +154,9 @@ targets:
       # APIClient's private convenience init() builds its URLSession with a
       # PinningDelegate, defined here.
       - path: Sources/Services/CertificatePinning.swift
+    resources:
+      # #771: App Store privacy manifest for the widget extension.
+      - path: TTLWidget/PrivacyInfo.xcprivacy
     info:
       # See the EthosProtocol target's info.path comment above.
       path: ../TTLWidget/Info.plist

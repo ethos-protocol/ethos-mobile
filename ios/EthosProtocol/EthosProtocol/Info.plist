@@ -43,6 +43,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>app.ethos-protocol.vault-ttl-refresh</string>
+		<string>app.ethos-protocol.checkin-sync</string>
 	</array>
 
 	<!-- Custom-scheme deep links: UniversalLinkRouter.parse(url:) also recognizes

@@ -40,8 +40,8 @@ The CI/CD pipeline is implemented as GitHub Actions workflows under `.github/wor
 
 | Workflow | File | Triggers | Purpose |
 |----------|------|----------|---------|
-| Staging Deploy | `.kube/workflows/staging-deploy.yml` | push to `main`, `workflow_dispatch` | Builds Android + iOS staging artifacts and runs the smoke test suite |
-| Staging Smoke Test | `.kube/workflows/staging-smoke-test.yml` | `workflow_call`, `workflow_dispatch` | Reusable smoke test job that can be gated on by the release workflow |
+| Staging Deploy | `.github/workflows/staging-deploy.yml` | push to `main`, `workflow_dispatch` | Builds Android + iOS staging artifacts and runs the smoke test suite |
+| Staging Smoke Test | `.github/workflows/staging-smoke-test.yml` | `workflow_call`, `workflow_dispatch` | Reusable smoke test job that can be gated on by the release workflow |
 
 #### Staging Deploy Workflow
 

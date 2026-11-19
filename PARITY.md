@@ -100,7 +100,6 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
 | Check-in reminder lead-time scaling | Android | TBD |
 | Actionable push notification action (CHECK_IN) | Android | TBD |
-| Offline check-in queue | iOS | TBD |
 | TTL-aware widget refresh policy | Android | TBD |
 | Widget urgency / vault selection | Both | TBD |
 | iCloud / cross-device sync | Android | TBD |
