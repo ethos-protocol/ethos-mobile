@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 
 /**
  * Network quality tiers used to adapt image quality and API pagination.
@@ -134,3 +136,141 @@ data class Vault(
         return version > other.version
     }
 }
+
+// MARK: - 2FA Models
+
+@Serializable
+enum class TwoFactorMethod { totp, sms, email }
+
+/**
+ * #227: `availableMethods` lists the 2FA methods the server accepts for this account/vault.
+ * Clients must filter the method-selection UI to only what is listed here.
+ * Decoded defensively: absent field (older server) defaults to all three methods.
+ */
+@Serializable
+data class TwoFactorStatus(
+    @SerialName("vault_id") val vaultId: String,
+    val enabled: Boolean,
+    val method: TwoFactorMethod? = null,
+    val verified: Boolean = false,
+    val phone: String? = null,
+    val email: String? = null,
+    /** #227: Methods available for this account. Defaults to all when the server omits the field. */
+    @SerialName("available_methods") val availableMethods: List<TwoFactorMethod> = TwoFactorMethod.values().toList()
+)
+
+@Serializable
+data class Enable2FARequest(
+    val method: TwoFactorMethod,
+    val phone: String? = null,
+    val email: String? = null
+)
+
+@Serializable
+data class Enable2FAResponse(
+    @SerialName("vault_id") val vaultId: String,
+    val method: TwoFactorMethod,
+    val secret: String? = null,
+    @SerialName("provisioning_uri") val provisioningUri: String? = null
+)
+
+/** #226: `trustDevice` opt-in — when true the server issues a device trust token valid 30 days. */
+@Serializable
+data class Verify2FARequest(
+    val otp: String,
+    @SerialName("trust_device") val trustDevice: Boolean = false
+)
+
+/** #226: Response after verify; carries optional device trust token when opt-in was true. */
+@Serializable
+data class Verify2FAResponse(
+    @SerialName("device_trust_token") val deviceTrustToken: String? = null,
+    @SerialName("expires_at") val expiresAt: String? = null
+)
+
+// MARK: - #226 Trusted-Device Models
+
+@Serializable
+data class TrustDeviceRequest(@SerialName("trust_device") val trustDevice: Boolean = true)
+
+@Serializable
+data class TrustDeviceResponse(
+    @SerialName("device_trust_token") val deviceTrustToken: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+// MARK: - #224 Backup Codes Models
+
+@Serializable
+data class BackupCodesResponse(
+    val codes: List<String>,
+    @SerialName("generated_at") val generatedAt: String
+)
+
+@Serializable
+data class BackupCodesStatus(
+    val generated: Boolean,
+    @SerialName("remaining_count") val remainingCount: Int
+)
+
+// MARK: - #225 Switch 2FA Method Models
+
+@Serializable
+data class Switch2FARequest(
+    @SerialName("new_method") val newMethod: TwoFactorMethod,
+    val phone: String? = null,
+    val email: String? = null
+)
+
+@Serializable
+data class AuthChallenge(
+    val challenge: String,
+    @SerialName("expires_at") val expiresAt: String,
+    @SerialName("existing_credential_ids") val existingCredentialIds: List<String> = emptyList()
+)
+
+@Serializable
+data class AuthToken(
+    val token: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+@Serializable
+data class PasskeyVerifyRequest(
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("client_data_json") val clientDataJson: String,
+    val signature: String
+)
+
+@Serializable
+data class PasskeyRegisterRequest(
+    @SerialName("credential_id") val credentialId: String,
+    // `public_key` is the WebAuthn COSE_Key (RFC 9052) extracted from the attestation
+    // object's authData, base64url-encoded — not the raw CBOR attestation object.
+    // See shared/api-contract.md's PasskeyRegisterRequest (#1) section.
+    @SerialName("public_key") val publicKey: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
+
+// MARK: - Account Recovery ("lost your device?")
+//
+// Shared contract with iOS's #5: initiate() sends a recovery code to the account's
+// verified email, complete() links a newly-created passkey to that existing account once
+// the recovery token proves the requester received that code.
+
+@Serializable
+data class RecoveryInitiateRequest(val username: String)
+
+@Serializable
+data class RecoveryInitiateResponse(
+    @SerialName("recovery_token") val recoveryToken: String,
+    @SerialName("expires_at") val expiresAt: String
+)
+
+@Serializable
+data class RecoveryCompleteRequest(
+    @SerialName("recovery_token") val recoveryToken: String,
+    @SerialName("credential_id") val credentialId: String,
+    @SerialName("public_key") val publicKey: String,
+    @SerialName("client_data_json") val clientDataJson: String
+)
