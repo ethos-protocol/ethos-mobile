@@ -98,12 +98,12 @@ Each gap has a tracking issue; fix it on the lagging platform and update this ta
 | Beneficiary acceptance token forwarded in deep link | Android | #87 / #109 |
 | TOTP re-verify copy ("Scan URI" shown without URI) | Android | #115 |
 | Stellar address validation (StrKey + checksum) | Android | #113 / #71 |
-| Check-in reminder lead-time scaling | Android | TBD |
-| Actionable push notification action (CHECK_IN) | Android | TBD |
-| Offline check-in queue | iOS | TBD |
-| TTL-aware widget refresh policy | Android | TBD |
-| Widget urgency / vault selection | Both | TBD |
-| iCloud / cross-device sync | Android | TBD |
+| Check-in reminder lead-time scaling | Android | #197 |
+| Actionable push notification action (CHECK_IN) | Android | #198 |
+| Offline check-in queue | iOS | #770 |
+| TTL-aware widget refresh policy | Android | #199 |
+| Widget urgency / vault selection | Both | #764 |
+| iCloud / cross-device sync | Android | #200 |
 | Deposit/Withdraw amount labels and validation messages hardcode "XLM" instead of the vault's `assetCode` (iOS: DepositView/WithdrawView; Android: DepositScreen/WithdrawScreen, VaultViewModel.deposit/withdraw) | Both | #222 (audit only — every vault is XLM today, so this is a documented follow-up, not a current bug) |
 
 ---

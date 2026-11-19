@@ -597,15 +597,17 @@ while the doc is being rolled out. They are **not** a substitute for a fix, and 
 are not a disclosure list — if you find something new, report it per
 [SECURITY.md](../SECURITY.md).
 
-| Area | Gap | Direction |
-|------|-----|-----------|
-
-| Clipboard | `SensitiveClipboard` exists but several copy paths bypass it | §2.5 |
-| iOS Keychain | Access group declared in entitlements but not set on `SecItem` calls, so widget reads may fail | §2.3 |
-| Nonce generation | iOS uses `UInt8.random`; the contract mandates `CryptoKit.SymmetricKey` | §3.3 |
-| `X-Request-Signature` | Not in the shared contract; Android-only; signs too little and keys with the bearer token | §3.5 |
-| `user.id` | Derived from the username on both platforms rather than an opaque handle | §3.1 |
-| Request signature / redaction | Redaction list is hand-maintained and does not cover every contract header | §4.1 |
+| Area | Gap | Direction | Tracking | Status |
+|------|-----|-----------|----------|--------|
+| PIN storage | Local fallback PIN storage (see §2.4) | §2.4 | None (needs an issue) | Untracked |
+| Clipboard | `SensitiveClipboard` exists but several copy paths bypass it | §2.5 | #754 | Open |
+| iOS Keychain | Access group declared in entitlements but not set on `SecItem` calls, so widget reads may fail | §2.3 | #622 | Closed; verify |
+| Pinning | Certificate pinning fails open when validation cannot be established | §5.1 | #592 | Closed; verify |
+| Nonce generation | iOS uses `UInt8.random`; the contract mandates `CryptoKit.SymmetricKey` | §3.3 | #608 | Closed; verify |
+| `X-Request-Signature` | Not in the shared contract; Android-only; signs too little and keys with the bearer token | §3.5 | #607 | Closed; verify |
+| `user.id` | Derived from the username on both platforms rather than an opaque handle | §3.1 | #624 | Closed; verify |
+| Request signature / redaction | Redaction list is hand-maintained and does not cover every contract header | §4.1 | #751 | Open |
+| Room encryption | `PendingActionDatabaseKeyProvider` for the encrypted pending-actions database is not committed | §2.2 | #726 | Open |
 
 The pending-action store (`pending_actions.db`) is **no longer** a known gap. It is
 encrypted at rest with SQLCipher, using a passphrase held in the Android Keystore
