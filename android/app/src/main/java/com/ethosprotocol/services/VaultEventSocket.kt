@@ -16,6 +16,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
@@ -47,6 +50,9 @@ data class ReconnectBackoff(
     }
 }
 
+// Connection state exposed to the UI connection-status indicator (#255).
+enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, FALLBACK_TO_POLLING }
+
 // Client for the `wss://.../ws?vault_id={id}` endpoint (shared/api-contract.md).
 // Reuses ApiClient's HttpClient/WebSockets plugin rather than a second client.
 // A dropped or failed connection reconnects with exponential backoff
@@ -64,6 +70,9 @@ class VaultEventSocket(
     @Inject constructor(apiClient: ApiClient, tokenProvider: TokenProvider) :
         this(apiClient, tokenProvider, ReconnectBackoff.default)
 
+    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
+
     // internal (not private): tests replace this to simulate connect failures/frames
     // without a real server, matching how ApiClient exposes its engine to tests.
     internal var openSession: suspend (String) -> WebSocketSession = { vaultId ->
@@ -76,9 +85,11 @@ class VaultEventSocket(
     fun events(vaultId: String): Flow<VaultEvent> = flow {
         var attempt = 0
         while (currentCoroutineContext().isActive) {
+            _connectionState.value = ConnectionState.CONNECTING
             try {
                 val session = openSession(vaultId)
                 attempt = 0
+                _connectionState.value = ConnectionState.CONNECTED
                 for (frame in session.incoming) {
                     if (frame is Frame.Text) {
                         runCatching { eventJson.decodeFromString<VaultEvent>(frame.readText()) }
@@ -90,6 +101,7 @@ class VaultEventSocket(
             } catch (e: Exception) {
                 // Connection failed or dropped — fall through to backoff and reconnect.
             }
+            _connectionState.value = ConnectionState.DISCONNECTED
             if (!currentCoroutineContext().isActive) break
             backoff.sleep(backoff.delayForAttempt(attempt))
             attempt++

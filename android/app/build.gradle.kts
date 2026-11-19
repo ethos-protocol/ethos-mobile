@@ -248,6 +248,9 @@ ksp {
 }
 
 dependencies {
+    // EncryptedTokenProvider stores the bearer token in EncryptedSharedPreferences.
+    implementation(libs.security.crypto)
+
     // #631: Custom lint detector (UnguardedVaultIdLog) that flags unguarded vaultId in
     // Log.* calls. `lintChecks` makes the detector run as part of this module's lint
     // tasks without packaging it into the app. The rule is enabled in lint.xml.
