@@ -13,6 +13,7 @@
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/backup_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true">
 
         <!-- Sentry crash reporting (#425). The DSN is injected at build time via the

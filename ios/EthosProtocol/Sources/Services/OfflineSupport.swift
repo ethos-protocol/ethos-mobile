@@ -1,5 +1,8 @@
 import Network
 import Foundation
+import os
+
+private let offlineCacheLogger = Logger(subsystem: "com.ethosprotocol", category: "OfflineCache")
 
 // ADR-0001: Offline-first architecture — see docs/adr/adr-0001-offline-first.md
 
@@ -118,14 +121,14 @@ final class OfflineCache {
         } catch {
             // Leave the previous `.meta` untouched: the old timestamp still matches the old
             // payload that remains on disk, rather than pairing it with a failed write.
-            LogRedactor.shared.error("OfflineCache: failed to write payload for key \(key): \(error)")
+            offlineCacheLogger.error("\(LogRedactor.redactString("OfflineCache: failed to write payload for key \(key): \(error)"), privacy: .public)")
             return
         }
         do {
             let stamp = Data(Date().timeIntervalSince1970.description.utf8)
             try stamp.write(to: metaFile(for: key))
         } catch {
-            LogRedactor.shared.error("OfflineCache: failed to write timestamp for key \(key): \(error)")
+            offlineCacheLogger.error("\(LogRedactor.redactString("OfflineCache: failed to write timestamp for key \(key): \(error)"), privacy: .public)")
         }
         enforceSizeCap()
     }

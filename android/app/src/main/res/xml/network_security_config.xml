@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    #779 — Platform-level network security policy.
+
+    Cleartext (http://) traffic is disabled for the whole app, and for the API host
+    explicitly, so no code path can fall back to an unencrypted connection even if it
+    bypasses the OkHttp pinner in CertificatePinning.kt.
+
+    Certificate pins are NOT committed here. They are supplied at build time via
+    ETHOS_CERT_PINS (see CertificatePinner / README.md), so a rotation stays a
+    configuration change. Adding a <pin-set> with committed hashes would duplicate that
+    source of truth and risk shipping a stale or placeholder pin.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">api.ethos-protocol.app</domain>
+    </domain-config>
+</network-security-config>

@@ -55,8 +55,32 @@ enum LogRedactor {
     ///
     /// All replacements use case-insensitive regex so the caller does not need
     /// to normalise casing first.
+    /// Single-message entry point used by `SpotlightService`'s DEBUG logger. Kept as an
+    /// alias of `redactString` so there is exactly one redaction policy (#780).
+    static func redact(_ message: String) -> String {
+        redactString(message)
+    }
+
     static func redactString(_ input: String) -> String {
         var result = input
+        // Category 2 (URI form): otpauth:// provisioning URIs, redacted whole. Ported from
+        // the former Logging/ copy so the policy has a single definition (#780).
+        if let regex = try? NSRegularExpression(pattern: #"(?i)otpauth://[^\s\"']+"#) {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "[REDACTED]"
+            )
+        }
+
+        // Category 2 (key=value form): otp= / code= fields.
+        if let regex = try? NSRegularExpression(pattern: #"(?i)(\b(?:otp|code)\s*=\s*)[^\s&,;\"']+"#) {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "$1[REDACTED]"
+            )
+        }
 
         // ------------------------------------------------------------------
         // Category 1: Bearer JWT tokens
@@ -121,6 +145,15 @@ enum LogRedactor {
         // ------------------------------------------------------------------
         // Category 4: Beneficiary / owner wallet addresses
         // ------------------------------------------------------------------
+        // Stellar M-addresses (69 chars, base32). Must run before the G-address pass.
+        if let regex = try? NSRegularExpression(pattern: #"\bM[A-Z2-7]{68}\b"#) {
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: NSRange(result.startIndex..., in: result),
+                withTemplate: "[REDACTED_ADDRESS]"
+            )
+        }
+
         // Stellar public keys: 'G' followed by 55 uppercase base32 characters
         // (total 56 chars).  We also handle lowercase variants defensively.
         if let regex = try? NSRegularExpression(

@@ -636,8 +636,10 @@ public final class APIClient {
         }
     }
 
-    private func decode<T: Decodable>(_ data: Data, path: String) throws -> T {
-        if T.self == EmptyBody.self { return EmptyBody() as! T }
+    /// #778: the EmptyBody shortcut uses a conditional cast, so a future type mismatch
+    /// falls through to normal decoding instead of crashing with a force cast.
+    func decode<T: Decodable>(_ data: Data, path: String) throws -> T {
+        if T.self == EmptyBody.self, let empty = EmptyBody() as? T { return empty }
         do { return try decoder.decode(T.self, from: data) }
         catch {
             DecodingFailureLogger.shared.log(path: path, expectedType: String(describing: T.self), responseBody: data)
@@ -667,7 +669,7 @@ public final class APIClient {
     }
 }
 
-private struct EmptyBody: Codable {}
+struct EmptyBody: Codable {}
 
 private struct CreateVaultRequest: Encodable {
     let beneficiary: String

@@ -20,12 +20,19 @@ final class UniversalLinkRouter {
         case recoveryLink(token: String)
     }
 
-    private static let validationRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{1,128}$")
+    /// #777: compiled without `try!`. The pattern is constant, so this is never nil in
+    /// practice; if a future edit ever breaks it, identifier validation fails closed
+    /// (every identifier is rejected) instead of crashing on first use. A unit test
+    /// asserts the pattern compiles so the failure surfaces in CI.
+    static let validationRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: "^[A-Za-z0-9_-]{1,128}$"
+    )
 
     /// Validates that a vault ID or token matches the expected format
     private func isValidIdentifier(_ value: String) -> Bool {
+        guard let regex = Self.validationRegex else { return false }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        return Self.validationRegex.firstMatch(in: value, range: range) != nil
+        return regex.firstMatch(in: value, range: range) != nil
     }
 
     // #259: Vault IDs owned by the currently signed-in user.
