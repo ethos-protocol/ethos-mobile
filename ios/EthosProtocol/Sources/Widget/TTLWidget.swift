@@ -24,7 +24,8 @@ struct QuickCheckInIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         // Perform the check-in via the API
         do {
-            try await APIClient.shared.checkIn(vaultID: vaultID, idempotencyKey: nil)
+            // #790: idempotent + offline-queued via the shared path.
+            try await QueuedCheckIn.perform(vaultID: vaultID)
             return .result(value: vaultID)
         } catch {
             throw error

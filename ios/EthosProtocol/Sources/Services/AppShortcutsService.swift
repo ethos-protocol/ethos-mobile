@@ -14,7 +14,8 @@ struct CheckInVaultIntent: AppIntent {
             throw ShortcutError.vaultNotFound
         }
 
-        try await APIClient.shared.checkIn(vaultID: vault.id)
+        // #790: idempotent + offline-queued via the shared path.
+        try await QueuedCheckIn.perform(vaultID: vault.id)
         return .result(value: "Successfully checked in to vault \(vault.id)")
     }
 

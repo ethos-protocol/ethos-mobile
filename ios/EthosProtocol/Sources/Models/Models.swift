@@ -28,6 +28,10 @@ public struct Vault: Codable, Identifiable, Equatable {
     /// Decoded defensively: absent on a server response (older servers) defaults
     /// to `0`, which compares as "older than any versioned update".
     public let version: UInt64
+    /// When `ttlRemaining` was observed (#789). The TTL is a snapshot relative to this
+    /// instant, so the absolute deadline is `ttlFetchedAt + ttlRemaining` and stays fixed
+    /// across renders. `nil` for vaults decoded without a fetch timestamp.
+    public var ttlFetchedAt: Date? = nil
 
     public enum VaultStatus: String, Codable {
         case active, expired, released, paused
@@ -86,8 +90,10 @@ public struct Vault: Codable, Identifiable, Equatable {
     /// no hidden uncertainty to model here, only a date arithmetic the UI wasn't
     /// previously surfacing directly.
     public var predictedExpiryDate: Date {
+        // #789: anchor the TTL to when it was observed, not to "now". Anchoring to Date()
+        // made the displayed deadline drift forward on every render while offline.
         if let ttl = ttlRemaining {
-            return Date().addingTimeInterval(TimeInterval(ttl))
+            return (ttlFetchedAt ?? lastCheckIn).addingTimeInterval(TimeInterval(ttl))
         }
         return lastCheckIn.addingTimeInterval(TimeInterval(checkInInterval))
     }

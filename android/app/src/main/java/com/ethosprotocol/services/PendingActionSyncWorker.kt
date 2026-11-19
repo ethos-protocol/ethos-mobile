@@ -50,6 +50,11 @@ class PendingActionSyncWorker @AssistedInject constructor(
         val getAllStartMs = System.currentTimeMillis()
         val rawPending = dao.getAll()
         Log.d(TAG, "dao.getAll() took ${System.currentTimeMillis() - getAllStartMs}ms, rows=${rawPending.size}")
+        // #791: purge before the empty-queue early return so dead-letter rows are still
+        // bounded when nothing else is pending.
+        val purged = dao.purgeDeadLettersOlderThan(System.currentTimeMillis() - DEAD_LETTER_RETENTION_MS)
+        if (purged > 0) Log.i(TAG, "purged $purged dead-lettered actions past retention")
+
         val pending = compactConflicts(rawPending).filterNot { it.deadLetter }
         if (pending.isEmpty()) {
             recordOutcome(runAtIso, succeeded = 0, failed = 0, retrying = false, queued = 0, lastModifiedAt = null)
@@ -247,6 +252,9 @@ class PendingActionSyncWorker @AssistedInject constructor(
         // Everything else (5xx, 401, 0/exception) is treated as transient and retried.
         private val NON_RETRYABLE_ERROR_CODES = setOf(400, 404)
         private const val VAULT_EXPIRED_CODE = 410
+
+        // #791: how long a dead-lettered action is kept before being purged.
+        const val DEAD_LETTER_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
 
         fun schedule(context: Context) {
             val request = OneTimeWorkRequestBuilder<PendingActionSyncWorker>()

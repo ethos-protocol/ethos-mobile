@@ -53,6 +53,7 @@ class PendingActionSyncWorkerTest {
     @Before
     fun setup() {
         every { networkMonitor.isConnected } returns true
+        coEvery { dao.purgeDeadLettersOlderThan(any()) } returns 0
         worker = PendingActionSyncWorker(context, params, apiClient, dao, notificationHelper, networkMonitor)
     }
 
@@ -307,5 +308,19 @@ class PendingActionDatabaseMigrationTest {
         }
 
         db.close()
+    }
+
+    @Test
+    fun `dead-letter rows older than retention are purged on each run`() = runTest {
+        val before = System.currentTimeMillis()
+        val cutoff = slot<Long>()
+        coEvery { dao.purgeDeadLettersOlderThan(capture(cutoff)) } returns 3
+        coEvery { dao.getAll() } returns emptyList()
+
+        worker.doWork()
+
+        val expected = before - PendingActionSyncWorker.DEAD_LETTER_RETENTION_MS
+        assertTrue("cutoff should be ~now minus retention", cutoff.captured in (expected - 5_000)..(expected + 5_000))
+        coVerify(exactly = 1) { dao.purgeDeadLettersOlderThan(any()) }
     }
 }

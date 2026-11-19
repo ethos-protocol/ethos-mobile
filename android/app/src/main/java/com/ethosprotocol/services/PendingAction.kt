@@ -78,6 +78,11 @@ interface PendingActionDao {
     @Query("UPDATE pending_actions SET deadLetter = 1 WHERE id = :id")
     suspend fun markDeadLetter(id: Long)
 
+    // #791: dead-letter rows are never retried, so without a bound the table grows forever.
+    // Purged by the sync worker once they are older than the retention window.
+    @Query("DELETE FROM pending_actions WHERE deadLetter = 1 AND queuedAt < :cutoffMs")
+    suspend fun purgeDeadLettersOlderThan(cutoffMs: Long): Int
+
     @Query("DELETE FROM pending_actions")
     suspend fun deleteAll()
 }

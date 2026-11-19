@@ -19,6 +19,12 @@ struct PendingCheckIn: Codable, Equatable {
 
 // MARK: - PendingCheckInStore
 
+/// Errors surfaced by `PendingCheckInStore` so callers can tell the user instead of dropping data.
+enum PendingCheckInStoreError: Error, Equatable {
+    /// The offline queue already holds `maxQueueSize` check-ins (#792).
+    case queueFull
+}
+
 /// Durable, disk-backed queue for offline check-ins.
 ///
 /// Mirrors the CHECK_IN path of Android's `PendingActionDao` (PendingActionDatabase.kt) —
@@ -73,12 +79,15 @@ final class PendingCheckInStore {
     /// is not duplicated (mirrors Android's `OnConflictStrategy.REPLACE`).
     /// Throws if the queue could not be persisted, so the caller can surface the
     /// failure instead of silently losing a time-sensitive check-in.
+    ///
+    /// #792: at capacity a new check-in is refused with `PendingCheckInStoreError.queueFull`
+    /// rather than evicting the oldest queued check-in, which would be lost without notice.
     func insert(_ item: PendingCheckIn) throws {
         try queue.sync {
             var items = load()
             items.removeAll { $0.vaultId == item.vaultId }
+            guard items.count < Self.maxQueueSize else { throw PendingCheckInStoreError.queueFull }
             items.append(item)
-            if items.count > Self.maxQueueSize { items.removeFirst(items.count - Self.maxQueueSize) }
             try save(items)
         }
     }
