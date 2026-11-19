@@ -7,7 +7,7 @@ import android.os.Looper
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.ethosprotocol.analytics.SessionAnalytics
-import com.ethosprotocol.crash.CrashReporter
+import com.ethosprotocol.services.CrashReporter
 import com.ethosprotocol.pendingactions.PendingActionsDatabaseMigrator
 import com.ethosprotocol.utils.AppVersionUpdateChecker
 import com.ethosprotocol.utils.StartupPerformance

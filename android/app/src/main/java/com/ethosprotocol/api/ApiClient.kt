@@ -186,6 +186,20 @@ class ApiClient(
         return get(path)
     }
     suspend fun getVault(id: String): ApiResult<Vault> = get("/vaults/${vaultPathSegment(id)}")
+
+    /** Latest and minimum supported app versions (#725). */
+    suspend fun getAppVersion(): ApiResult<AppVersionInfo> = get("/app/version")
+
+    /**
+     * Activity history for a vault (#217). Pass [after] = page.nextCursor for the next page.
+     * The cursor is percent-encoded via URLBuilder, matching [listVaults].
+     */
+    suspend fun getVaultHistory(vaultId: String, after: String? = null): ApiResult<VaultHistoryPage> {
+        val path = URLBuilder("/vaults/${vaultPathSegment(vaultId)}/history").apply {
+            if (after != null) parameters.append("after", after)
+        }.buildString()
+        return get(path)
+    }
     suspend fun createVault(req: CreateVaultRequest, idempotencyKey: String? = null): ApiResult<Vault> =
         post("/vaults", req, idempotencyKey = idempotencyKey)
     suspend fun checkIn(vaultId: String, idempotencyKey: String? = null): ApiResult<Unit> =
