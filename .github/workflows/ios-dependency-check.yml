@@ -28,6 +28,7 @@ defaults:
 jobs:
   dependency-check:
     runs-on: macos-latest
+    timeout-minutes: 30
     permissions:
       issues: write
     steps:
@@ -37,6 +38,9 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode.app
 
       - name: Resolve Swift package dependencies
+        # Caps the registry/network calls: a stalled resolve fails the step
+        # instead of holding the runner until the job timeout.
+        timeout-minutes: 15
         run: |
           set +e
           swift package resolve 2>&1 | tee dependency-check-output.log
@@ -58,6 +62,7 @@ jobs:
 
       - name: Alert on failure (scheduled run)
         if: failure() && github.event_name == 'schedule'
+        timeout-minutes: 5
         uses: actions/github-script@v9
         with:
           script: |

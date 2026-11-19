@@ -89,17 +89,12 @@ Staging is the gate before a production release. The end-to-end flow is:
    git push origin v1.2.0
    ```
 
-5. **Trigger the production release workflow.** The release workflow depends on the staging smoke test job via `needs`:
+5. **Let the release workflows run.** Pushing a `vX.Y.Z` tag triggers both store release workflows:
 
-   ```yaml
-   jobs:
-     staging-smoke:
-       uses: ./.github/workflows/staging-smoke-test.yml
-       secrets: inherit
-     release:
-       needs: staging-smoke
-       runs: ./scripts/release.sh
-   ```
+   - `.github/workflows/ios-app-store-release.yml` builds the signed iOS release and uploads it to TestFlight. App Review submission only happens when `IOS_SUBMIT_FOR_REVIEW_ON_TAG` is `"true"`.
+   - `.github/workflows/android-play-store-release.yml` builds the signed Android bundle and uploads it to the Play internal track. Promotion to production only happens when `ANDROID_PROMOTE_TO_PRODUCTION_ON_TAG` is `"true"`, and then waits for approval on the `play-production` environment.
+
+   Neither workflow currently depends on the staging smoke test, so step 2 is a manual check. Run the smoke suite before you push the tag. Setup and the first-run checklist for each store are in `docs/ios-app-store-release.md` and `docs/android-play-store-release.md`.
 
 6. **Sign and distribute.** The release workflow signs the production APK / iPA and uploads to the store tracks. Staging artifacts are never shipped to end users.
 
@@ -116,11 +111,11 @@ Staging deploys are fully automated on merge to `main`. To deploy a specific com
 
 ###### Deploying to Production
 
-Production deploys are tag-driven and gated on the staging smoke tests. Never deploy directly from `main` without a tag.
+Production deploys are tag-driven. Never deploy directly from `main` without a tag. The staging smoke tests are not yet a workflow gate, so confirm them by hand first.
 
 1. Ensure the commit you are releasing passed staging smoke tests.
 2. Create and push an annotated tag (`git tag -a v1.2.0 ...`).
-3. The release workflow triggers on the tag, re-runs the staging smoke test as a gate, then builds and signs the production binaries.
+3. The iOS and Android release workflows trigger on the tag and build and sign the release binaries.
 4. Upload to the store tracks (Android internal → beta → production; iOS TestFlight → App Store).
 5. Version bumps and release notes are handled by the release workflow.
 

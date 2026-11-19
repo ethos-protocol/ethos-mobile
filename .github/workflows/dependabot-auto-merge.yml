@@ -28,10 +28,18 @@ permissions:
   contents: read
   pull-requests: write
 
+# One run per PR at a time. When Dependabot pushes several PRs in quick
+# succession, runs for the same PR are serialised (newest wins) and runs for
+# different PRs no longer race on shared repository state.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   enable-auto-merge:
     name: Enable auto-merge for patch updates
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Job-level filter: only Dependabot branches proceed. Human PRs show this
     # job as skipped without spinning up a runner. Dependabot always branches
     # as dependabot/**.

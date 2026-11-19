@@ -44,6 +44,7 @@ jobs:
   notify-open-alerts:
     name: Notify on open security alerts
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       # Purely API-driven: no repository checkout is needed.
