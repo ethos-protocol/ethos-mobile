@@ -177,6 +177,26 @@ public final class APIClient {
         _ = try await execute(req)
     }
 
+    /// Signs out the server session that `bearerToken` belongs to. Used when removing a saved
+    /// account whose token is not the active one. Every request carries `bearerToken`, never the
+    /// active token, so only that account's session can be affected. The session is found via the
+    /// `is_current` flag. If the token has no current session, there is nothing left to revoke.
+    /// Failures are thrown so the caller can keep the account's credentials.
+    func revokeSession(bearerToken token: String) async throws {
+        var listReq = request(path: "/auth/sessions", bearerToken: token)
+        listReq.httpMethod = "GET"
+        let (listData, _) = try await execute(listReq)
+        let sessions: [Session] = try decode(listData, path: "/auth/sessions")
+        guard let current = sessions.first(where: { $0.isCurrent }) else { return }
+
+        var deleteReq = request(path: Self.path("/auth/sessions", current.id), bearerToken: token)
+        deleteReq.httpMethod = "DELETE"
+        for (field, value) in Self.makeAntiReplayHeaders() {
+            deleteReq.setValue(value, forHTTPHeaderField: field)
+        }
+        _ = try await execute(deleteReq)
+    }
+
     // MARK: - Vaults
 
     /// One page of `GET /vaults`. See shared/api-contract.md's "List Pagination"
@@ -469,7 +489,7 @@ public final class APIClient {
         return try decode(data, path: path)
     }
 
-    private func request(path: String, queryItems: [URLQueryItem]? = nil) -> URLRequest {
+    private func request(path: String, queryItems: [URLQueryItem]? = nil, bearerToken: String? = nil) -> URLRequest {
         // Build the URL with URLComponents rather than appendingPathComponent so
         // the already-percent-encoded path (see path(_:_:) above) is preserved
         // verbatim instead of being re-encoded or normalized (#598).
@@ -484,7 +504,7 @@ public final class APIClient {
         let finalURL = components?.url ?? baseURL.appendingPathComponent(path)
         var req = URLRequest(url: finalURL)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = KeychainService.shared.loadToken() {
+        if let token = bearerToken ?? KeychainService.shared.loadToken() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         return req

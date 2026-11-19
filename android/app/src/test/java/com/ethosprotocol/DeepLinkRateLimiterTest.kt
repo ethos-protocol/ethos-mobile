@@ -18,9 +18,14 @@ class DeepLinkRateLimiterTest {
 
     private lateinit var savedStateHandle: SavedStateHandle
 
+    /** Fake monotonic clock, advanced explicitly so no test needs real time or Thread.sleep. */
+    private var fakeNow = 1_000_000L
+
     @Before
     fun setUp() {
         savedStateHandle = SavedStateHandle()
+        fakeNow = 1_000_000L
+        DeepLinkRateLimiter.clock = { fakeNow }
     }
 
     // =========================================================================
@@ -56,7 +61,7 @@ class DeepLinkRateLimiterTest {
         
         // Simulate time passing: manually set timestamp to 2+ seconds ago
         val key = "deep_link_call_${vaultId}_last_call_ms"
-        val twoSecondsAgo = System.currentTimeMillis() - 2_100
+        val twoSecondsAgo = fakeNow - 2_100
         savedStateHandle[key] = twoSecondsAgo
         
         // After cooldown expires, call is allowed
@@ -121,7 +126,7 @@ class DeepLinkRateLimiterTest {
         
         // Simulate time passing: set timestamp to 3 seconds ago (> 2s cooldown)
         val key = "deep_link_call_${vaultId}_last_call_ms"
-        val threeSecondsAgo = System.currentTimeMillis() - 3_000
+        val threeSecondsAgo = fakeNow - 3_000
         savedStateHandle[key] = threeSecondsAgo
         
         // Cooldown has expired
@@ -170,12 +175,28 @@ class DeepLinkRateLimiterTest {
         // First call
         assertTrue(DeepLinkRateLimiter.isCallAllowed(savedStateHandle, vaultId))
         
-        // Wait 2.1 seconds (manual simulation by setting old timestamp)
-        val key = "deep_link_call_${vaultId}_last_call_ms"
-        Thread.sleep(2_100) // This is slow but tests actual timing
+        // Advance the injected clock past the 2 s cooldown without sleeping
+        fakeNow += 2_100
         
         // Next call should be allowed now
-        // Note: This test may be slow; in real scenarios, mock time or use a TestCoroutineDispatcher
+        assertTrue(DeepLinkRateLimiter.isCallAllowed(savedStateHandle, vaultId))
+    }
+
+    @Test
+    fun isCallAllowed_clockMovedBackward_doesNotLockOut() {
+        val vaultId = "vault-backward"
+        
+        // Record a call at a high monotonic time
+        assertTrue(DeepLinkRateLimiter.isCallAllowed(savedStateHandle, vaultId))
+        
+        // Clock restarts lower (e.g. after reboot): the stale timestamp must not block calls
+        fakeNow = 5_000L
+        assertTrue("A clock that moved backward must not lock the limiter out",
+            DeepLinkRateLimiter.isCallAllowed(savedStateHandle, vaultId))
+        assertEquals(2_000L, DeepLinkRateLimiter.remainingCooldownMs(savedStateHandle, vaultId))
+        
+        // Normal cooldown resumes from the new timestamp
+        assertFalse(DeepLinkRateLimiter.isCallAllowed(savedStateHandle, vaultId))
     }
 
     // =========================================================================

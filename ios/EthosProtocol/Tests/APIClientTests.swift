@@ -431,6 +431,35 @@ final class APIClientAuthTests: XCTestCase {
 
         XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == sessionsURL })
     }
+
+    /// #785: removing a saved account must revoke that token's own current session.
+    func test_revokeSessionForToken_deletesCurrentSessionOfThatToken() async throws {
+        let sessionsURL = "https://api.ethos-protocol.app/v1/auth/sessions"
+        let revokeURL = "https://api.ethos-protocol.app/v1/auth/sessions/s1"
+        let json = """
+        [{"id": "s1", "device_name": "iPhone 15 Pro", "platform": "ios",
+          "created_at": "2026-01-01T00:00:00Z", "last_active_at": "2026-01-02T00:00:00Z", "is_current": true}]
+        """.data(using: .utf8)!
+        mockResponse(for: sessionsURL, body: json)
+        mockResponse(for: revokeURL, body: Data())
+
+        try await client.revokeSession(bearerToken: "account-token")
+
+        XCTAssertTrue(MockURLProtocol.requestedURLs.contains { $0.absoluteString == revokeURL })
+    }
+
+    /// #785: if the session lookup fails, the error must propagate so the account is kept.
+    func test_revokeSessionForToken_listFailure_throws() async {
+        let sessionsURL = "https://api.ethos-protocol.app/v1/auth/sessions"
+        mockResponse(for: sessionsURL, status: 500, body: Data())
+
+        do {
+            try await client.revokeSession(bearerToken: "account-token")
+            XCTFail("Expected revokeSession(bearerToken:) to throw when the server fails")
+        } catch {
+            // expected
+        }
+    }
 }
 
 // MARK: - #598 Vault ID Path Encoding Tests

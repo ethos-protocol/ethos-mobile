@@ -8,6 +8,20 @@ struct SettingsView: View {
     @ObservedObject private var accountManager = AccountManager.shared
     @State private var showSaveAccountAlert = false
     @State private var newAccountLabel = ""
+    @State private var removalError: String?
+
+    /// Removes accounts one at a time, stopping at the first failure. Accounts whose
+    /// server sign-out failed are kept and the user is told why (#785).
+    private func removeAccounts(_ ids: [String]) async {
+        for id in ids {
+            do {
+                try await accountManager.removeAccount(id)
+            } catch {
+                removalError = "This account could not be signed out on the server, so it was kept. Check your connection and try again."
+                return
+            }
+        }
+    }
 
     var body: some View {
         Form {
@@ -27,9 +41,8 @@ struct SettingsView: View {
                     .foregroundStyle(.primary)
                 }
                 .onDelete { offsets in
-                    for index in offsets {
-                        accountManager.removeAccount(accountManager.accounts[index].id)
-                    }
+                    let ids = offsets.map { accountManager.accounts[$0].id }
+                    Task { await removeAccounts(ids) }
                 }
                 Button(action: { showSaveAccountAlert = true }) {
                     Label("Save Current Account", systemImage: "plus.circle")
@@ -51,6 +64,14 @@ struct SettingsView: View {
                     newAccountLabel = ""
                 }
                 Button("Cancel", role: .cancel) { newAccountLabel = "" }
+            }
+            .alert("Account Not Removed", isPresented: Binding(
+                get: { removalError != nil },
+                set: { if !$0 { removalError = nil } }
+            )) {
+                Button("OK", role: .cancel) { removalError = nil }
+            } message: {
+                Text(removalError ?? "")
             }
 
             Section {

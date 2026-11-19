@@ -22,20 +22,26 @@ final class SessionLockService: ObservableObject {
     /// `true` when the session is locked and a re-authentication prompt should be shown.
     @Published var isLocked: Bool = false
 
-    /// The most recent time user activity (or unlock) was recorded.
-    private var lastActivityTime: Date
+    /// Monotonic clock reading (seconds since boot) of the most recent user
+    /// activity (or unlock). `ProcessInfo.systemUptime` is not affected by manual
+    /// clock changes or NTP corrections, unlike `Date()`, so the lock decision
+    /// cannot fire early or be skipped because the wall clock moved.
+    private var lastActivityTime: TimeInterval
+
+    /// The monotonic clock used for every inactivity measurement.
+    static var monotonicNow: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     // MARK: - Initializers
 
-    /// Production initializer — `lastActivityTime` starts at `Date()` (now).
+    /// Production initializer — `lastActivityTime` starts at the current monotonic time.
     init() {
-        self.lastActivityTime = Date()
+        self.lastActivityTime = Self.monotonicNow
     }
 
     /// Testable initializer. Allows tests to seed a past `lastActivityTime`
-    /// so that `handleForeground()` can be called immediately without actually
-    /// waiting `timeoutInterval` seconds.
-    internal init(timeoutInterval: TimeInterval, lastActivityTime: Date) {
+    /// (a `monotonicNow`-based value) so that `handleForeground()` can be called
+    /// immediately without actually waiting `timeoutInterval` seconds.
+    internal init(timeoutInterval: TimeInterval, lastActivityTime: TimeInterval) {
         self.timeoutInterval = timeoutInterval
         self.lastActivityTime = lastActivityTime
     }
@@ -47,7 +53,7 @@ final class SessionLockService: ObservableObject {
     /// a vault row, submitting a form) to prevent premature lock-out during
     /// active use.
     func recordActivity() {
-        lastActivityTime = Date()
+        lastActivityTime = Self.monotonicNow
     }
 
     /// Call when `scenePhase` transitions to `.background`. Records the current
@@ -61,7 +67,7 @@ final class SessionLockService: ObservableObject {
     /// time against `lastActivityTime`; if the gap is at or above
     /// `timeoutInterval`, `isLocked` is set to `true`.
     func handleForeground() {
-        let elapsed = Date().timeIntervalSince(lastActivityTime)
+        let elapsed = Self.monotonicNow - lastActivityTime
         if elapsed >= timeoutInterval {
             isLocked = true
         }

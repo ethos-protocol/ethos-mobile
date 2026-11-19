@@ -1,5 +1,6 @@
 package com.ethosprotocol.security
 
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -32,16 +33,24 @@ object SessionLockManager {
     var refreshIntervalMs: Long = 5 * 60 * 1_000L
 
     /**
-     * Epoch-millisecond timestamp of the last recorded activity.
-     * `internal` so tests can seed it directly without waiting real time.
+     * Monotonic millisecond clock used for every inactivity and refresh timer.
+     * `SystemClock.elapsedRealtime()` is not affected by wall-clock changes (manual
+     * edits or NTP corrections), so the lock cannot fire early or be skipped by
+     * changing the device time. Injectable so tests can advance time deterministically.
      */
-    internal var lastActivityTime: Long = System.currentTimeMillis()
+    internal var clock: () -> Long = { SystemClock.elapsedRealtime() }
 
     /**
-     * Epoch-millisecond timestamp of the last successful token refresh.
-     * `internal` so tests can seed it directly without waiting real time.
+     * Monotonic-clock timestamp of the last recorded activity, or `null` if none has
+     * been recorded yet. `internal` so tests can seed it directly.
      */
-    internal var lastRefreshTime: Long = 0L
+    internal var lastActivityTime: Long? = null
+
+    /**
+     * Monotonic-clock timestamp of the last successful token refresh, or `null` if
+     * no refresh has succeeded. `internal` so tests can seed it directly.
+     */
+    internal var lastRefreshTime: Long? = null
 
     /**
      * `true` when the session is locked and the UI should present a
@@ -66,7 +75,7 @@ object SessionLockManager {
      * submitting forms, etc.) to prevent premature lock-out during active use.
      */
     fun recordActivity() {
-        lastActivityTime = System.currentTimeMillis()
+        lastActivityTime = clock()
     }
 
     /**
@@ -78,8 +87,9 @@ object SessionLockManager {
      */
     fun onRequestSucceeded(): Boolean {
         recordActivity()
-        val now = System.currentTimeMillis()
-        if (now - lastRefreshTime < refreshIntervalMs) {
+        val now = clock()
+        val last = lastRefreshTime
+        if (last != null && now - last < refreshIntervalMs) {
             return false
         }
         return refreshToken()
@@ -102,7 +112,7 @@ object SessionLockManager {
         }
         when (result) {
             RefreshResult.SUCCESS -> {
-                lastRefreshTime = System.currentTimeMillis()
+                lastRefreshTime = clock()
                 recordActivity()
                 return true
             }
@@ -125,8 +135,9 @@ object SessionLockManager {
      * [lastActivityTime] meets or exceeds [timeoutMs], the session is locked.
      */
     fun onAppForeground() {
-        val elapsed = System.currentTimeMillis() - lastActivityTime
-        if (elapsed >= timeoutMs) {
+        // No recorded activity means the process just started; treat that as activity now.
+        val last = lastActivityTime ?: return recordActivity()
+        if (clock() - last >= timeoutMs) {
             isLocked.value = true
         }
     }

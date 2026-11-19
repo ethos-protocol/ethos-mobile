@@ -81,10 +81,21 @@ final class AccountManager: ObservableObject {
         return true
     }
 
-    /// Removes an account from the roster and deletes its saved credentials.
+    /// Removes an account from the roster and deletes its saved credentials,
+    /// after first signing out that account's server session (#785). The local
+    /// entry and token are kept if the revoke fails, so the user can retry. The
+    /// error is thrown so the caller can show it. If the server already rejected
+    /// the token (401), the session is gone and removal proceeds locally.
     /// Does not touch the active session even if `accountId` is currently
     /// active — call `switchTo` another account (or sign out) first.
-    func removeAccount(_ accountId: String) {
+    func removeAccount(_ accountId: String, api: APIClient = .shared) async throws {
+        if let token = KeychainService.shared.loadToken(accountId: accountId) {
+            do {
+                try await api.revokeSession(bearerToken: token)
+            } catch APIError.unauthorized {
+                // Already signed out server-side; nothing left to revoke.
+            }
+        }
         KeychainService.shared.deleteToken(accountId: accountId)
         accounts.removeAll { $0.id == accountId }
         persistAccounts()

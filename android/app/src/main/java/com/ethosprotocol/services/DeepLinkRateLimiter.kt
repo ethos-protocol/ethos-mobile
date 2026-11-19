@@ -1,6 +1,7 @@
 package com.ethosprotocol.services
 
 import androidx.lifecycle.SavedStateHandle
+import android.os.SystemClock
 import android.util.Log
 import com.ethosprotocol.BuildConfig
 
@@ -30,15 +31,26 @@ object DeepLinkRateLimiter {
     private const val KEY_SUFFIX_TIMESTAMP = "_last_call_ms"
 
     /**
+     * Monotonic millisecond clock. `SystemClock.elapsedRealtime()` is immune to wall-clock
+     * changes, so moving the device time cannot disable or prematurely reset the cooldown.
+     * Injectable so tests can advance time without sleeping.
+     *
+     * Because elapsedRealtime restarts at zero after a reboot, a persisted timestamp can be
+     * ahead of the clock. Such a negative elapsed time is treated as an expired cooldown
+     * (the limiter resets on reboot), so a stale timestamp can never lock calls out.
+     */
+    internal var clock: () -> Long = { SystemClock.elapsedRealtime() }
+
+    /**
      * Returns true if a new API call for [vaultId] is allowed, false if it's still in cooldown.
      * Updates the persisted call timestamp on success.
      */
     fun isCallAllowed(savedStateHandle: SavedStateHandle, vaultId: String): Boolean {
         val key = "$KEY_PREFIX$vaultId$KEY_SUFFIX_TIMESTAMP"
         val lastCallMs = readTimestamp(savedStateHandle, key)
-        val now = System.currentTimeMillis()
+        val now = clock()
         
-        if (lastCallMs == null || now - lastCallMs >= MIN_CALL_INTERVAL_MS) {
+        if (lastCallMs == null || isCooldownExpired(now - lastCallMs)) {
             savedStateHandle[key] = now
             return true
         }
@@ -54,14 +66,9 @@ object DeepLinkRateLimiter {
     fun remainingCooldownMs(savedStateHandle: SavedStateHandle, vaultId: String): Long {
         val key = "$KEY_PREFIX$vaultId$KEY_SUFFIX_TIMESTAMP"
         val lastCallMs = readTimestamp(savedStateHandle, key) ?: return 0
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastCallMs
+        val elapsed = clock() - lastCallMs
         
-        return if (elapsed < MIN_CALL_INTERVAL_MS) {
-            MIN_CALL_INTERVAL_MS - elapsed
-        } else {
-            0
-        }
+        return if (isCooldownExpired(elapsed)) 0 else MIN_CALL_INTERVAL_MS - elapsed
     }
 
     /**
@@ -71,6 +78,13 @@ object DeepLinkRateLimiter {
         val key = "$KEY_PREFIX$vaultId$KEY_SUFFIX_TIMESTAMP"
         savedStateHandle.remove<Any>(key)
     }
+
+    /**
+     * A negative elapsed time means the clock restarted (reboot) after the call was recorded,
+     * so the cooldown is treated as expired rather than blocking until the old value is reached.
+     */
+    private fun isCooldownExpired(elapsedMs: Long): Boolean =
+        elapsedMs < 0 || elapsedMs >= MIN_CALL_INTERVAL_MS
 
     /**
      * Reads a numeric timestamp without assuming exact type preservation:

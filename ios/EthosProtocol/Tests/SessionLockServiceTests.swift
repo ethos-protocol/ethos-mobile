@@ -11,7 +11,7 @@ final class SessionLockServiceTests: XCTestCase {
         // Seed lastActivityTime to 60 s ago with a 300 s timeout — well within limit.
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-60)
+            lastActivityTime: SessionLockService.monotonicNow - 60
         )
 
         service.handleForeground()
@@ -28,7 +28,7 @@ final class SessionLockServiceTests: XCTestCase {
         // Seed lastActivityTime to 301 s ago with a 300 s timeout — just over the limit.
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-301)
+            lastActivityTime: SessionLockService.monotonicNow - 301
         )
 
         service.handleForeground()
@@ -41,7 +41,7 @@ final class SessionLockServiceTests: XCTestCase {
     func testLockAtExactTimeout() {
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-300)
+            lastActivityTime: SessionLockService.monotonicNow - 300
         )
 
         service.handleForeground()
@@ -59,7 +59,7 @@ final class SessionLockServiceTests: XCTestCase {
         // Start already locked (elapsed time way past timeout).
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-1_000)
+            lastActivityTime: SessionLockService.monotonicNow - 1_000
         )
         service.handleForeground()
         XCTAssertTrue(service.isLocked, "Pre-condition: service should be locked")
@@ -81,7 +81,7 @@ final class SessionLockServiceTests: XCTestCase {
     func testRecordActivityPreventsLock() {
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-1_000)
+            lastActivityTime: SessionLockService.monotonicNow - 1_000
         )
 
         // User interacts — clock is reset to now.
@@ -101,7 +101,7 @@ final class SessionLockServiceTests: XCTestCase {
         // Start with an old lastActivityTime.
         let service = SessionLockService(
             timeoutInterval: 300,
-            lastActivityTime: Date().addingTimeInterval(-1_000)
+            lastActivityTime: SessionLockService.monotonicNow - 1_000
         )
 
         // App goes to background now — clock is reset.
