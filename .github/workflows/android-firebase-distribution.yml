@@ -135,7 +135,7 @@ jobs:
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Set up Ruby and fastlane (cached)
-        uses: ruby/setup-ruby@f9c4492e86def3e644ab32a0ef185eda5b0c20d0 # v1
+        uses: ruby/setup-ruby@be3c7df29b3349ec6bcfc6b4792f1cf9f5237d18 # v1
         with:
           # Gemfile, Gemfile.lock and .ruby-version live at the repo root
           # (shared with the iOS release and Android Play Store workflows).
