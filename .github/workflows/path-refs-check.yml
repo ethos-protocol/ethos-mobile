@@ -15,7 +15,7 @@ jobs:
     name: Verify cited file paths resolve
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check path references
         run: python3 .github/scripts/check_path_refs.py

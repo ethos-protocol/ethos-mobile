@@ -20,7 +20,7 @@ jobs:
     name: Verify UserDefaults privacy declarations
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check privacy manifests
         run: python3 .github/scripts/check_privacy_manifest.py

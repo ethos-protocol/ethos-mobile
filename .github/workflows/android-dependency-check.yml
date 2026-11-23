@@ -113,7 +113,7 @@ jobs:
       # can be read without opening the log. Refs #557, #558.
       - name: Keep dependency-check output
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-check-output
           path: android/dependency-check-output.log

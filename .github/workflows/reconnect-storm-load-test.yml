@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up k6
         uses: grafana/setup-k6-action@v1
@@ -57,7 +57,7 @@ jobs:
 
       - name: Upload summaries
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reconnect-storm-summaries-${{ github.run_id }}
           path: summary-jitter-*.json
