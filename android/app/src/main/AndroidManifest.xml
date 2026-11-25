@@ -69,7 +69,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep link: https://ethos-protocol.app/accept?vault_id=... (#838) -->
+            <!-- Deep link: https://ethos-protocol.app/accept?vault_id=... (#647) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -80,7 +80,7 @@
                     android:path="/accept" />
             </intent-filter>
 
-            <!-- Deep link: ethosprotocol://vault/{vault_id}/{action} (#964) -->
+            <!-- Deep link: ethosprotocol://vault/{vault_id}/{action} (#795) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -104,7 +104,7 @@
             </intent-filter>
         </service>
 
-        <!-- Vault status home screen widget (#840) -->
+        <!-- Vault status home screen widget (#796) -->
         <receiver
             android:name=".widget.VaultStatusWidget"
             android:exported="true"
