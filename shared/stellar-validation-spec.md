@@ -269,7 +269,7 @@ A CI check (`.github/scripts/validate_stellar_fixtures.py`) runs on every PR to 
 - Location: `android/app/src/main/java/com/ethosprotocol/models/StellarAddress.kt`
 - Provides `StellarAddress.isValidAddress(value: String): Boolean`  
   (accepts both G and M addresses)
-- Used in `CreateVaultDialog.isBeneficiaryValid` inside `Screens.kt`
+- Used in `CreateVaultDialog.isBeneficiaryValid` inside `VaultListScreens.kt`
 - Tests: `StellarAddressTest` in `android/app/src/test/java/com/ethosprotocol/StellarAddressTest.kt`
 - Fixtures used: All addresses from `shared/stellar-address-fixtures.json`
 
