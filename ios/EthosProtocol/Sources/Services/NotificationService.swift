@@ -249,13 +249,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         switch response.actionIdentifier {
         case "CHECK_IN_ACTION":
             guard let id = vaultID else { break }
-            // `checkIn(vaultID:idempotencyKey:)` is ambiguous between APIClient's original
-            // throwing/Void signature and the CheckInSyncTask.APIClientProtocol conformance's
-            // overload — pin the reference to the original before calling it.
-            let performCheckIn: (String, String?) async throws -> Void = APIClient.shared.checkIn(vaultID:idempotencyKey:)
             Task {
                 do {
-                    try await performCheckIn(id, nil)
+                    try await APIClient.shared.checkIn(vaultID: id, idempotencyKey: nil)
                     // Issue #473: recorded only on success, separately from the
                     // tap above, so tap rate and completion rate are distinguishable.
                     NotificationDeliveryLog.shared.record(kind: .completed, source: source, eventType: eventType, vaultID: id)

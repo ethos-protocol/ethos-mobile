@@ -492,11 +492,7 @@ final class VaultStore: ObservableObject {
         // this specific attempt rather than a brand-new check-in.
         let idempotencyKey = UUID().uuidString
         do {
-            // `checkIn(vaultID:idempotencyKey:)` is ambiguous between APIClient's original
-            // throwing/Void signature and the CheckInSyncTask.APIClientProtocol conformance's
-            // overload — pin the reference to the original before calling it.
-            let performCheckIn: (String, String?) async throws -> Void = APIClient.shared.checkIn(vaultID:idempotencyKey:)
-            try await performCheckIn(vault.id, idempotencyKey)
+            try await APIClient.shared.checkIn(vaultID: vault.id, idempotencyKey: idempotencyKey)
             VaultActionLog.record(.checkIn, for: vault.id) // #479
             if !Task.isCancelled { await load() }
         } catch APIError.networkUnavailable {
