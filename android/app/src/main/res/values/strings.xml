@@ -138,6 +138,18 @@
     <!-- Notification strings -->
     <string name="notification_log_title">Notification Log</string>
     <string name="notification_log_empty">No notification events logged yet.</string>
+    <string name="notification_channel_group_title">Vault notifications</string>
+    <string name="notification_channel_checkin_reminders">Check-in reminders</string>
+    <string name="notification_channel_queued_requests">Queued requests</string>
+    <string name="notification_channel_vault_expiry">Vault expiry alerts</string>
+    <string name="notification_queued_title">Pending actions</string>
+    <string name="notification_queued_single">1 action is waiting for you</string>
+    <string name="notification_queued_plural">%1$d actions are waiting for you</string>
+    <string name="notification_vault_expired_title">Vault expired</string>
+    <string name="notification_vault_expired_body_checkin">Check in to keep your vault active.</string>
+    <string name="notification_vault_expired_body_request">A request is waiting for your approval.</string>
+    <string name="notification_group_summary_title">Vault notifications (%1$d)</string>
+    <string name="notification_group_summary_text">Tap to review your vault activity</string>
 
     <!-- Vault specific strings -->
     <string name="vault_checkin_interval">Check-in interval: %1$d days</string>

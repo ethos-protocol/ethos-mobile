@@ -63,6 +63,10 @@ Last audited: 2026-08-31
 | Push token registration retry/backoff on failure | ✅ | ✅ | Previously fire-and-forget on both platforms; now retries with backoff and persists a pending token to retry on next foreground (#234) |
 | WebSocket/push duplicate notification dedup | ✅ | ✅ | A `vault_expired`/`vault_released` event applied via WebSocket suppresses a same-event push banner delivered shortly after (#232) |
 | Actionable "Check In" notification action | ✅ | ❌ | Android does not set up a CHECK_IN notification action (no tracking issue yet) |
+| Grouped notifications with summaries | ❌ | ✅ | Android groups check-in, queued and expiry notifications by category with per-vault sort keys, channel groups and inbox-style summaries (#492); iOS does not set a notification thread identifier today |
+| **System UI integration** | | | |
+| Branded launch / splash screen | ⚠️ | ✅ | iOS uses the default `UILaunchScreen`; Android uses `Theme.SplashScreen` with a branded icon, day/night background and a keep-on-screen condition tied to the first frame (#492) |
+| Edge-to-edge layout with theme-aware system bars | ✅ | ✅ | iOS: SwiftUI safe-area insets; Android: edge-to-edge with light/dark status and navigation bar icon contrast (#492) |
 | **Offline support** | | | |
 | Network connectivity monitor | ✅ | ✅ | |
 | Offline read cache (SHA-256 keyed) | ✅ | ✅ | |

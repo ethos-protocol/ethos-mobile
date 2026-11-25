@@ -60,6 +60,7 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:theme="@style/Theme.EthosProtocol.Splash"
             android:windowSoftInputMode="adjustResize">
 
             <!-- Launcher -->

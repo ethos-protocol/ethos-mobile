@@ -4,4 +4,11 @@
          Compose, so this only needs to cover the window background shown
          before Compose content is set. -->
     <style name="Theme.EthosProtocol" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.EthosProtocol.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="windowSplashScreenAnimationDuration">300</item>
+        <item name="postSplashScreenTheme">@style/Theme.EthosProtocol</item>
+    </style>
 </resources>

@@ -1,6 +1,8 @@
 package com.ethosprotocol.services
 
+import android.app.Notification
 import android.app.NotificationChannel
+import android.app.NotificationChannelGroup
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -46,6 +48,23 @@ class NotificationHelper @Inject constructor(
         // Customizable banner positions for the in-app notification banner.
         const val POSITION_TOP = "top"
         const val POSITION_BOTTOM = "bottom"
+
+        const val NOTIFICATION_CHANNEL_GROUP_ID = "vault_notifications"
+        const val CHECK_IN_GROUP_KEY = "check_in"
+        const val EXPIRED_GROUP_KEY = "vault_expired"
+        const val QUEUED_GROUP_KEY = "queued"
+
+        private const val MAX_SUMMARY_LINES = 5
+        private const val SORT_KEY_WIDTH = 12
+
+        internal fun summaryIdFor(groupKey: String): Int =
+            50_000 + (groupKey.hashCode() and 0x7FFFFFFF) % 50_000
+
+        internal fun sortKeyFor(ttlRemainingSeconds: Long?, vaultId: String? = null): String {
+            val time = (ttlRemainingSeconds?.coerceAtLeast(0L) ?: Long.MAX_VALUE)
+                .toString().padStart(SORT_KEY_WIDTH, '0')
+            return "$time|${vaultId.orEmpty()}"
+        }
     }
 
     // String.hashCode() collides between distinct vault IDs within the 32-bit hash space, which
@@ -60,6 +79,15 @@ class NotificationHelper @Inject constructor(
         context.getSharedPreferences(IN_APP_PREFS, Context.MODE_PRIVATE)
 
     init {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        if (nm.getNotificationChannelGroup(NOTIFICATION_CHANNEL_GROUP_ID) == null) {
+            nm.createNotificationChannelGroup(
+                NotificationChannelGroup(
+                    NOTIFICATION_CHANNEL_GROUP_ID,
+                    context.getString(R.string.notification_channel_group_title)
+                )
+            )
+        }
         createChannel(CHANNEL_ID, context.getString(R.string.notification_channel_checkin_reminders), NotificationManager.IMPORTANCE_HIGH)
         createChannel(QUEUED_CHANNEL_ID, context.getString(R.string.notification_channel_queued_requests), NotificationManager.IMPORTANCE_DEFAULT)
         createChannel(EXPIRED_CHANNEL_ID, context.getString(R.string.notification_channel_vault_expiry), NotificationManager.IMPORTANCE_HIGH)
@@ -113,7 +141,7 @@ class NotificationHelper @Inject constructor(
             val pi = PendingIntent.getActivity(context, pendingIntentRequestCodeFor(vaultId), intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-            val groupKey = vaultId ?: "general"
+            val groupKey = CHECK_IN_GROUP_KEY
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
                 .setContentTitle(title)
@@ -121,26 +149,35 @@ class NotificationHelper @Inject constructor(
                 .setAutoCancel(true)
                 .setContentIntent(pi)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                // Groups all of a vault's notifications together so they visually cluster even if
-                // notificationIdFor() were ever wrong, rather than relying solely on ID uniqueness
-                // for replace-vs-append behavior.
+                // Reminders cluster into one summary; the sort key keeps the soonest
+                // expiry (and, for ties, the same vault) first in the group.
                 .setGroup(groupKey)
+                .setSortKey(sortKeyFor(ttlRemaining, vaultId))
                 .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
                 .build()
 
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.notify(notificationIdFor(vaultId), notification)
-
-            // Post a summary notification for the group if there are multiple notifications
-            if (vaultId != null) {
-                showGroupSummary(nm, groupKey)
-            }
+            showGroupSummary(nm, groupKey)
         }
     }
 
-    private fun showGroupSummary(nm: NotificationManager, groupKey: String) {
-        // Notification ID for summary: use a deterministic high number based on group key hash
-        val summaryId = 50_000 + (groupKey.hashCode() and 0x7FFFFFFF) % 50_000
+    internal fun channelIdForGroup(groupKey: String): String = when (groupKey) {
+        QUEUED_GROUP_KEY -> QUEUED_CHANNEL_ID
+        EXPIRED_GROUP_KEY -> EXPIRED_CHANNEL_ID
+        else -> CHANNEL_ID
+    }
+
+    internal fun showGroupSummary(nm: NotificationManager, groupKey: String) {
+        val summaryId = summaryIdFor(groupKey)
+        val children = nm.activeNotifications
+            .filter { it.notification.group == groupKey && !it.notification.isGroupSummary }
+            .sortedBy { it.notification.sortKey ?: "" }
+        val lines = children.mapNotNull {
+            it.notification.extras.getCharSequence(Notification.EXTRA_TEXT)
+                ?.toString()
+                ?.takeIf { text -> text.isNotBlank() }
+        }.takeLast(MAX_SUMMARY_LINES)
 
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -148,19 +185,25 @@ class NotificationHelper @Inject constructor(
         val pi = PendingIntent.getActivity(context, summaryId, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val summary = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, channelIdForGroup(groupKey))
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("Vault Reminders")
-            .setContentText("Multiple check-in reminders")
+            .setContentTitle(context.getString(R.string.notification_group_summary_title, children.size))
+            .setContentText(context.getString(R.string.notification_group_summary_text))
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setGroup(groupKey)
+            .setSortKey("")
             .setGroupSummary(true)
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
 
-        nm.notify(summaryId, summary)
+        if (lines.isNotEmpty()) {
+            val inboxStyle = NotificationCompat.InboxStyle()
+            lines.forEach(inboxStyle::addLine)
+            builder.setStyle(inboxStyle)
+        }
+
+        nm.notify(summaryId, builder.build())
     }
 
     fun showQueuedActions(count: Int) {
@@ -181,14 +224,20 @@ class NotificationHelper @Inject constructor(
             .setAutoCancel(false)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setGroup(QUEUED_GROUP_KEY)
+            .setSortKey(sortKeyFor(null))
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .build()
 
-        context.getSystemService(NotificationManager::class.java)
-            .notify(QUEUED_NOTIFICATION_ID, notification)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.notify(QUEUED_NOTIFICATION_ID, notification)
+        showGroupSummary(nm, QUEUED_GROUP_KEY)
     }
 
     fun cancelQueuedActions() {
-        context.getSystemService(NotificationManager::class.java).cancel(QUEUED_NOTIFICATION_ID)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.cancel(QUEUED_NOTIFICATION_ID)
+        nm.cancel(summaryIdFor(QUEUED_GROUP_KEY))
     }
 
     fun showVaultExpiredNotification(vaultId: String, actionType: PendingActionType) {
@@ -204,6 +253,7 @@ class NotificationHelper @Inject constructor(
         val pi = PendingIntent.getActivity(context, notificationIdFor(vaultId), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+        val groupKey = EXPIRED_GROUP_KEY
         val notification = NotificationCompat.Builder(context, EXPIRED_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle(context.getString(R.string.notification_vault_expired_title))
@@ -211,16 +261,26 @@ class NotificationHelper @Inject constructor(
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setGroup(groupKey)
+            .setSortKey(sortKeyFor(0L, vaultId))
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
             .build()
 
-        context.getSystemService(NotificationManager::class.java)
-            .notify(notificationIdFor(vaultId), notification)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.notify(notificationIdFor(vaultId), notification)
+        showGroupSummary(nm, groupKey)
     }
 
     private fun createChannel(id: String, name: String, importance: Int) {
         val nm = context.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(id) == null) {
-            nm.createNotificationChannel(NotificationChannel(id, name, importance))
+        val existing = nm.getNotificationChannel(id)
+        if (existing == null) {
+            val channel = NotificationChannel(id, name, importance)
+            channel.group = NOTIFICATION_CHANNEL_GROUP_ID
+            nm.createNotificationChannel(channel)
+        } else if (existing.group != NOTIFICATION_CHANNEL_GROUP_ID) {
+            existing.group = NOTIFICATION_CHANNEL_GROUP_ID
+            nm.createNotificationChannel(existing)
         }
     }
 }
