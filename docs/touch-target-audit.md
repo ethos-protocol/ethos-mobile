@@ -1,15 +1,15 @@
 # Touch Target Audit (Issue: Accessibility — minimum tap target size)
 
-Audit of interactive controls in `Screens.kt` (Android) and `Views.swift` (iOS) against the
+Audit of interactive controls in `VaultListScreens.kt` / `VaultDeepLinkScreen.kt` (Android) and `Views.swift` (iOS) against the
 platform minimum touch target sizes: 48x48dp on Android, 44x44pt on iOS.
 
 ## Findings
 
 | Control | File | Before | After |
 |---|---|---|---|
-| `StatusChip` (VaultCard status row) | `Screens.kt` | `SuggestionChip` default height ~32dp — below the 48dp minimum | Wrapped in a `Box(Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))` to guarantee a 48dp tap target while keeping the compact visual size |
-| Top bar `IconButton`s (Add vault, overflow menu, back) | `Screens.kt` | Material3 `IconButton` defaults to 48dp — compliant | No change needed; confirmed via audit |
-| Deep-link screen "Done" `IconButton` | `Screens.kt` (lines ~961, ~1097, ~1422) | Material3 default — compliant | No change needed; confirmed via audit |
+| `StatusChip` (VaultCard status row) | `VaultListScreens.kt` | `SuggestionChip` default height ~32dp — below the 48dp minimum | Wrapped in a `Box(Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp))` to guarantee a 48dp tap target while keeping the compact visual size |
+| Top bar `IconButton`s (Add vault, overflow menu, back) | `VaultListScreens.kt` | Material3 `IconButton` defaults to 48dp — compliant | No change needed; confirmed via audit |
+| Deep-link screen "Done" `IconButton` | `VaultDeepLinkScreen.kt` | Material3 default — compliant | No change needed; confirmed via audit |
 | Notification inline "Check In" action | `NotificationHelper.kt` | Rendered by the OS notification shade, not app layout | Out of app control; platform (Android System UI) is responsible for the tap target of `NotificationCompat.Action` |
 | iOS toolbar buttons (`Image(systemName:)`, `Label`) | `Views.swift` | SwiftUI toolbar buttons default to a 44pt minimum via `.contentShape`/system button styling | Confirmed compliant; no change needed |
 

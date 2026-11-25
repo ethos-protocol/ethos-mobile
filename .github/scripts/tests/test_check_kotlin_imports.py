@@ -65,6 +65,17 @@ class CheckKotlinImportsTests(unittest.TestCase):
               "import com.ethosprotocol.models.DEFAULT_LIMIT\n")
         self.assertEqual(self.problems(), [])
 
+    def test_fun_interface_counts_as_a_declaration(self):
+        write(self.root, f"{self.src}/services/PasskeyService.kt",
+              "package com.ethosprotocol.services\n\n"
+              "fun interface CredentialManagerFactory {\n"
+              "    fun create(activity: Any): Any\n"
+              "}\n")
+        write(self.root, f"{self.src}/ui/Screen.kt",
+              "package com.ethosprotocol.ui\n\n"
+              "import com.ethosprotocol.services.CredentialManagerFactory\n")
+        self.assertEqual(self.problems(), [])
+
     def test_nested_symbol_is_accepted_when_parent_is_a_type(self):
         write(self.root, f"{self.src}/api/ApiClient.kt",
               "package com.ethosprotocol.api\n\nclass ApiClient {\n"

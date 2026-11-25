@@ -5,7 +5,7 @@ Tracks issue #494.
 ## Current state
 
 - The app's screens are already Compose: `android/app/src/main/java/com/ethosprotocol/ui/screens/`
-  (for example `Screens.kt` and `NotificationPreferencesScreen.kt`).
+  (for example `VaultListScreens.kt` and `NotificationPreferencesScreen.kt`).
 - The only XML layouts left are the five home-screen widget layouts in
   `android/app/src/main/res/layout/` (`vault_widget*.xml`).
 

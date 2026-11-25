@@ -2,7 +2,7 @@
 
 ## Problem
 
-The offline banner (Android `OfflineBanner` in `Screens.kt`, iOS `StatusBannerView` in
+The offline banner (Android `OfflineBanner` in `VaultListScreens.kt`, iOS `StatusBannerView` in
 `Views.swift`) is a labeled view, so a screen reader announces it when it first appears in the
 hierarchy. But `docs/manual-qa-checklist.md`'s TalkBack pass only ever exercised the *static*
 banner (already offline when the screen loads) — the *transition* case (going offline while the
@@ -11,7 +11,7 @@ API call, which nothing in the codebase was making.
 
 ## What changed
 
-- **Android** (`Screens.kt`, `VaultListScreen`): added a `LaunchedEffect(state.isOffline)` that
+- **Android** (`VaultListScreens.kt`, `VaultListScreen`): added a `LaunchedEffect(state.isOffline)` that
   compares against the previous value (via a `remember { mutableStateOf<Boolean?>(null) }`) and
   calls `View.announceForAccessibility(...)` only on an actual transition, skipping the initial
   composition. Announces `"Offline — showing cached data"` and `"Back online"`.
