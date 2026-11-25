@@ -31,3 +31,4 @@ jobs:
         run: |
           python3 -m unittest discover -s .github/scripts/tests -p "test_check_workflow_refs.py" -v
           python3 -m unittest discover -s .github/scripts/tests -p "test_applinks_alert_script.py" -v
+          python3 -m unittest discover -s .github/scripts/tests -p "test_verify_app_store_id.py" -v

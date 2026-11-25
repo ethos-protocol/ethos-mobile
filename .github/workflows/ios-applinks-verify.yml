@@ -7,11 +7,15 @@ on:
       # Re-run if the entitlements or the verification script changes
       - "ios/EthosProtocol/EthosProtocol/EthosProtocol.entitlements"
       - "scripts/verify_apple_app_site_association.sh"
+      - ".well-known/*fallback.html"
+      - "scripts/verify_app_store_id.sh"
   pull_request:
     branches: [main]
     paths:
       - "ios/EthosProtocol/EthosProtocol/EthosProtocol.entitlements"
       - "scripts/verify_apple_app_site_association.sh"
+      - ".well-known/*fallback.html"
+      - "scripts/verify_app_store_id.sh"
   # Daily scheduled run catches any server-side drift in apple-app-site-association
   # without needing a code push.
   schedule:
@@ -42,6 +46,11 @@ jobs:
           # Leave unset to skip App ID verification (fetch + JSON checks will still run).
           TEAM_IDENTIFIER: ${{ vars.APPLE_TEAM_IDENTIFIER }}
         run: bash scripts/verify_apple_app_site_association.sh
+
+      - name: Verify App Store ID in fallback pages
+        env:
+          APPLE_APP_STORE_ID: ${{ vars.APPLE_APP_STORE_ID }}
+        run: bash scripts/verify_app_store_id.sh
 
       # The check stays red for as long as the hosted file is wrong (or the domain
       # isn't live yet), so filing a fresh issue on every scheduled run buried the
