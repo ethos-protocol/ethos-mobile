@@ -494,6 +494,47 @@ class ApiClientTest {
 
         assertNotNull(result)
         assertTrue("Follower should still receive a successful result, got $result", result is ApiResult.Success)
+        assertEquals(emptyList<Any>(), (result as ApiResult.Success).data)
+        assertEquals(2, requestCount)
+    }
+
+    @Test
+    fun `multiple followers awaiting same key still receive result when leader is cancelled mid-request`() = runTest {
+        every { tokenProvider.token } returns "good-token"
+        every { tokenProvider.isNearExpiry() } returns false
+
+        val firstRequestStarted = CompletableDeferred<Unit>()
+        var requestCount = 0
+        val engine = MockEngine {
+            requestCount++
+            if (requestCount == 1) {
+                firstRequestStarted.complete(Unit)
+                kotlinx.coroutines.awaitCancellation()
+            }
+            respond(
+                content = "[]",
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+        val apiClient = ApiClient(tokenProvider, networkMonitor, offlineCache, "https://test", engine)
+
+        val leader = launch { apiClient.listVaults() }
+        firstRequestStarted.await()
+
+        val follower1 = async { apiClient.listVaults() }
+        val follower2 = async { apiClient.listVaults() }
+        // Let both followers join the in-flight request for the same key.
+        yield()
+
+        leader.cancelAndJoin()
+
+        val results = listOf(follower1, follower2).awaitAll()
+        results.forEach { result ->
+            assertTrue("Follower should receive a successful result, got $result", result is ApiResult.Success)
+            assertEquals(emptyList<Any>(), (result as ApiResult.Success).data)
+        }
+        assertTrue("Expected leader cancellation to trigger a fresh request", requestCount >= 2)
     }
 
     // #592: pinning must fail closed. If the platform TrustManager cannot be obtained,
