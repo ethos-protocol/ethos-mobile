@@ -74,7 +74,7 @@ only — a cold start measured minutes after launch is not in the buffer.
 - **MUST** run `reset()` before measuring, or percentiles will mix runs.
 - **MUST** instrument any new screen or network path you add. The existing coverage
   is a handful of screens (`trackScreen` appears in `Views.swift` and `SettingsView.swift`;
-  `TrackScreen` in `Screens.kt` and `NotificationPreferencesScreen.kt`) and coverage
+  `TrackScreen` in `AuthScreens.kt`, `VaultListScreens.kt` and `NotificationPreferencesScreen.kt`) and coverage
   gaps are invisible — an untraced screen is not a fast screen.
 - **NEVER** log a full request or response body from a trace. Traces go to a third-party
   console on Android. See the security guidelines, "Data protection and logging".
@@ -644,7 +644,7 @@ any number here.
 | `APMConfiguration` | **Dead code** — zero references on either platform; `PerformanceThresholds` is the operative set | iOS + Android |
 | Startup threshold (3 000 ms) | Published in the README, evaluated on neither platform | `APMConfiguration` |
 | `StartupTracing` (iOS) | Signpost intervals defined, **never called** | `StartupTracing.swift` |
-| Screen coverage | 3-4 screens per platform, added manually — the README's "no user action required" overstates it | `Views.swift`, `Screens.kt` |
+| Screen coverage | 3-4 screens per platform, added manually — the README's "no user action required" overstates it | `Views.swift`, `AuthScreens.kt`, `VaultListScreens.kt` |
 | Log subsystem | Three subsystem strings in one app; filtering by the documented one hides the others | `PerformanceMonitor` vs `BackgroundRefreshService` |
 
 The screen-lifetime metric is the most consequential: a screen read for 30 seconds is

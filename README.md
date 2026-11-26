@@ -50,7 +50,7 @@ mobile/
     ├── ui/
     │   ├── ViewModels.kt        # AuthViewModel, VaultViewModel (Hilt)
     │   ├── MainActivity.kt      # NavHost entry point
-    │   ├── screens/Screens.kt   # Compose screens
+    │   ├── screens/             # Compose screens, one file per screen group
     │   └── theme/Theme.kt       # Material3 dynamic color
     └── di/AppModule.kt          # Hilt DI bindings
 ```

@@ -10,18 +10,28 @@ struct CheckInVaultIntent: AppIntent {
     @Parameter(title: "Vault ID") var vaultID: String
 
     func perform() async throws -> some IntentResult {
-        guard let vault = try await findVault(by: vaultID) else {
+        let message = try await executeCheckIn()
+        return .result(value: message)
+    }
+
+    func executeCheckIn(
+        listVaults: () async throws -> [Vault] = { try await APIClient.shared.listVaults().vaults },
+        idempotencyKey: String = UUID().uuidString,
+        store: PendingCheckInStore = .shared,
+        send: QueuedCheckIn.Send = { try await APIClient.shared.checkIn(vaultID: $0, idempotencyKey: $1) }
+    ) async throws -> String {
+        guard let vault = try await listVaults().first(where: { $0.id == vaultID }) else {
             throw ShortcutError.vaultNotFound
         }
 
         // #790: idempotent + offline-queued via the shared path.
-        try await QueuedCheckIn.perform(vaultID: vault.id)
-        return .result(value: "Successfully checked in to vault \(vault.id)")
-    }
-
-    private func findVault(by id: String) async throws -> Vault? {
-        let page = try await APIClient.shared.listVaults()
-        return page.vaults.first { $0.id == id }
+        try await QueuedCheckIn.perform(
+            vaultID: vault.id,
+            idempotencyKey: idempotencyKey,
+            store: store,
+            send: send
+        )
+        return "Successfully checked in to vault \(vault.id)"
     }
 }
 
@@ -34,7 +44,14 @@ struct ViewVaultExpiryIntent: AppIntent {
     @Parameter(title: "Vault ID") var vaultID: String
 
     func perform() async throws -> some IntentResult {
-        guard let vault = try await findVault(by: vaultID) else {
+        let message = try await executeViewExpiry()
+        return .result(value: message)
+    }
+
+    func executeViewExpiry(
+        listVaults: () async throws -> [Vault] = { try await APIClient.shared.listVaults().vaults }
+    ) async throws -> String {
+        guard let vault = try await listVaults().first(where: { $0.id == vaultID }) else {
             throw ShortcutError.vaultNotFound
         }
 
@@ -43,15 +60,10 @@ struct ViewVaultExpiryIntent: AppIntent {
             formatter.allowedUnits = [.day, .hour, .minute, .second]
             formatter.unitsStyle = .abbreviated
             let formattedTime = formatter.string(from: TimeInterval(ttl / 1_000_000_000)) ?? "Unknown"
-            return .result(value: "Vault \(vault.id) expires in \(formattedTime)")
+            return "Vault \(vault.id) expires in \(formattedTime)"
         } else {
-            return .result(value: "Vault \(vault.id) has no TTL information")
+            return "Vault \(vault.id) has no TTL information"
         }
-    }
-
-    private func findVault(by id: String) async throws -> Vault? {
-        let page = try await APIClient.shared.listVaults()
-        return page.vaults.first { $0.id == id }
     }
 }
 

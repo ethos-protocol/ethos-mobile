@@ -38,7 +38,7 @@ IMPORT_RE = re.compile(
 DECLARATION_RE = re.compile(
     r"^\s*(?:(?:public|private|internal|protected|data|sealed|open|abstract|enum|"
     r"annotation|inline|const|lateinit|override|suspend|tailrec|operator|infix|"
-    r"external|value|inner|companion)\s+)*"
+    r"external|value|inner|companion|fun)\s+)*"
     r"(?:class|object|interface|typealias|fun|val|var)\s+"
     r"(?:<[^>]*>\s*)?(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)",
     re.MULTILINE,

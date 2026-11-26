@@ -23,8 +23,10 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import android.util.Base64
 import android.os.SystemClock
@@ -94,7 +96,7 @@ class ApiClient(
     }
 
     private val requestDedupMutex = Mutex()
-    private val inFlightGetRequests = mutableMapOf<String, CompletableDeferred<ApiResult<Any?>>>()
+    private val inFlightGetRequests = mutableMapOf<String, CompletableDeferred<ApiResult<Any?>?>>()
 
     // internal (not private): VaultEventSocket reuses this same client/connection pool
     // to open the `/ws` connection documented in shared/api-contract.md, rather than
@@ -498,32 +500,53 @@ class ApiClient(
         block: suspend () -> ApiResult<T>
     ): ApiResult<T> {
         val key = "GET:$path"
-        val (deferred, isLeader) = requestDedupMutex.withLock {
-            inFlightGetRequests[key]?.let { it to false } ?: run {
-                val created = CompletableDeferred<ApiResult<Any?>>()
-                inFlightGetRequests[key] = created
-                created to true
+        while (true) {
+            val (deferred, isLeader) = requestDedupMutex.withLock {
+                inFlightGetRequests[key]?.let { it to false } ?: run {
+                    val created = CompletableDeferred<ApiResult<Any?>?>()
+                    inFlightGetRequests[key] = created
+                    created to true
+                }
             }
-        }
-        if (!isLeader) return deferred.await() as ApiResult<T>
+            if (!isLeader) {
+                val shared = deferred.await()
+                if (shared != null) return shared as ApiResult<T>
+                // Leader was cancelled before completing; loop to elect a new leader.
+                continue
+            }
 
-        try {
-            val result = block()
-            deferred.complete(result as ApiResult<Any?>)
-            return result
-        } catch (e: CancellationException) {
-            // #600: the leader's coroutine was cancelled (e.g. its screen was dismissed).
-            // That cancellation belongs to the leader alone — completing the shared
-            // deferred exceptionally would hand every follower a CancellationException
-            // for a request it never cancelled. Drop the in-flight entry so followers
-            // (and later callers) start a fresh leader instead.
-            requestDedupMutex.withLock { inFlightGetRequests.remove(key) }
-            throw e
-        } catch (e: Throwable) {
-            deferred.completeExceptionally(e)
-            throw e
-        } finally {
-            requestDedupMutex.withLock { inFlightGetRequests.remove(key) }
+            try {
+                val result = block()
+                deferred.complete(result as ApiResult<Any?>)
+                return result
+            } catch (e: CancellationException) {
+                // #600: the leader's coroutine was cancelled (e.g. its screen was dismissed).
+                // That cancellation belongs to the leader alone — completing the shared
+                // deferred exceptionally would hand every follower a CancellationException
+                // for a request it never cancelled, while leaving it uncompleted would hang
+                // followers forever. Drop the in-flight entry and complete with null so
+                // followers wake up and elect a fresh leader instead.
+                withContext(NonCancellable) {
+                    requestDedupMutex.withLock {
+                        if (inFlightGetRequests[key] === deferred) {
+                            inFlightGetRequests.remove(key)
+                        }
+                    }
+                    deferred.complete(null)
+                }
+                throw e
+            } catch (e: Throwable) {
+                deferred.completeExceptionally(e)
+                throw e
+            } finally {
+                withContext(NonCancellable) {
+                    requestDedupMutex.withLock {
+                        if (inFlightGetRequests[key] === deferred) {
+                            inFlightGetRequests.remove(key)
+                        }
+                    }
+                }
+            }
         }
     }
 

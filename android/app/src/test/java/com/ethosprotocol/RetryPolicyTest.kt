@@ -186,6 +186,69 @@ class RetryPolicyTest {
     }
 
     @Test
+    fun `withRetry cancels coroutine during backoff sleep and asserts one attempt was made`() = runTest {
+        val sleepStarted = CompletableDeferred<Unit>()
+        val sleepCancelled = CompletableDeferred<Unit>()
+        val policy = RetryPolicy(
+            maxAttempts = 5,
+            baseDelayMillis = 100,
+            sleep = {
+                sleepStarted.complete(Unit)
+                try {
+                    CompletableDeferred<Unit>().await()
+                } catch (e: CancellationException) {
+                    sleepCancelled.complete(Unit)
+                    throw e
+                }
+            },
+            random = Random(0)
+        )
+        var attempts = 0
+
+        val job = launch {
+            withRetry(policy, isRetryable = { true }) {
+                attempts++
+                throw IOException("boom")
+            }
+        }
+
+        sleepStarted.await()
+        job.cancel()
+        job.join()
+
+        assertTrue("Job should be cancelled", job.isCancelled)
+        assertTrue("Cancellation should have occurred during policy sleep", sleepCancelled.isCompleted)
+        assertEquals("Operation should run exactly once", 1, attempts)
+    }
+
+    @Test
+    fun `withRetry cancels during policy sleep and propagates CancellationException without retrying`() = runTest {
+        var attempts = 0
+        var sleepExecuted = false
+        val policy = RetryPolicy(
+            maxAttempts = 4,
+            baseDelayMillis = 100,
+            sleep = {
+                sleepExecuted = true
+                throw CancellationException("cancelled during sleep")
+            },
+            random = Random(0)
+        )
+
+        try {
+            withRetry(policy, isRetryable = { true }) {
+                attempts++
+                throw IOException("transient error")
+            }
+            fail("Should have thrown CancellationException")
+        } catch (e: CancellationException) {
+            assertEquals("cancelled during sleep", e.message)
+            assertTrue("policy.sleep should have been called", sleepExecuted)
+            assertEquals("Operation should run exactly once", 1, attempts)
+        }
+    }
+
+    @Test
     fun `withRetry rethrows CancellationException instead of retrying when cancelled during backoff`() = runTest {
         val sleepStarted = CompletableDeferred<Unit>()
         val neverResume = CompletableDeferred<Unit>()
@@ -196,7 +259,7 @@ class RetryPolicyTest {
                 sleepStarted.complete(Unit)
                 neverResume.await()
             },
-            random = Random.Default
+            random = Random(0)
         )
         var attempts = 0
 

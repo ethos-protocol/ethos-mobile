@@ -98,6 +98,7 @@ them from the environment and fail with the list of missing names.
 | `MATCH_GIT_BASIC_AUTHORIZATION` | secret | testflight | For an `https` match repo: `printf 'x-access-token:<token>' \| base64`, where the token is a fine-grained PAT (or GitHub App token) with **read-only Contents** access to that one repo. |
 | `ETHOS_CERT_PINS` | secret (exists) | testflight | Already used by Android CI: comma-separated Base64 SPKI SHA-256 pins for `api.ethos-protocol.app`. iOS uses the first two (current, backup). A Release build refuses to ship with fewer than two. |
 | `APPLE_TEAM_IDENTIFIER` | variable (exists) | testflight | 10-character Apple Developer Team ID (already used by `ios-applinks-verify.yml`). Injected at build time, so `DEVELOPMENT_TEAM` in `project.yml` stays blank. |
+| `APPLE_APP_STORE_ID` | variable (optional) | verification | Numeric Apple ID assigned by App Store Connect (used in `.well-known` fallback pages; verified in CI via `scripts/verify_app_store_id.sh`). |
 | `IOS_SUBMIT_FOR_REVIEW_ON_TAG` | variable (optional) | testflight | `true` to request review submission on every tag push (still gated by the environment). |
 
 ### App Store Connect API key
@@ -244,6 +245,7 @@ refused until each is `true` or `false`:
 - [ ] Private match repo created; `fastlane match appstore` run once from a Mac.
 - [ ] Secrets set: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8_BASE64`, `MATCH_GIT_URL`, `MATCH_PASSWORD`, `MATCH_GIT_BASIC_AUTHORIZATION` (https match repo). `ETHOS_CERT_PINS` has current and backup pins.
 - [ ] Variable `APPLE_TEAM_IDENTIFIER` set (already required by App Links verification).
+- [ ] Variable `APPLE_APP_STORE_ID` set and real App Store ID linked in `.well-known` fallback pages (verified via `scripts/verify_app_store_id.sh`).
 - [ ] Environment `app-store` created with required reviewers, restricted to `main` and `v*`.
 - [ ] `fastlane/review_submission.yml`: every `CONFIRM` answered in a reviewed PR; `automatic_release` / `phased_release` chosen.
 - [ ] Decide on the iPad orientation question (ITMS-90474 risk) before the first upload.

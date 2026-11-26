@@ -104,7 +104,7 @@ class ScreenshotDarkTest {
 // ---------------------------------------------------------------------------
 // Standalone preview composables (no Hilt / ViewModel required).
 //
-// Stateful screens have stateless *Content counterparts in Screens.kt that
+// Stateful screens have stateless *Content counterparts in ui/screens/ that
 // accept plain parameters — those are used here directly. For screens that
 // don't yet expose a stateless layer we inline the minimal layout needed.
 // ---------------------------------------------------------------------------

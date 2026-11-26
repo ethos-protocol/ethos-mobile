@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Key
@@ -20,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,8 +41,10 @@ import com.ethosprotocol.ui.screens.VaultDeepLinkScreen
 import com.ethosprotocol.ui.screens.VaultListScreen
 import com.ethosprotocol.ui.screens.WithdrawScreen
 import com.ethosprotocol.ui.theme.EthosProtocolTheme
+import com.ethosprotocol.ui.theme.SystemUiAppearance
 import com.ethosprotocol.utils.StartupPerformance
 import dagger.hilt.android.AndroidEntryPoint
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -53,6 +57,8 @@ class MainActivity : FragmentActivity() {
     private val deepLinkViewModel: DeepLinkViewModel by viewModels()
 
     private var showPermissionRationale by mutableStateOf(false)
+
+    private val firstFrameRendered = AtomicBoolean(false)
 
     private val authVm: AuthViewModel by viewModels()
 
@@ -71,8 +77,10 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        splashScreen.setKeepOnScreenCondition { !firstFrameRendered.get() }
 
         // Only handle the launch intent on a fresh start (savedInstanceState == null).
         // On recreation (config change or process death), SavedStateHandle already holds
@@ -82,9 +90,12 @@ class MainActivity : FragmentActivity() {
         }
 
         setContent {
-            EthosProtocolTheme {
+            val darkTheme = isSystemInDarkTheme()
+            EthosProtocolTheme(darkTheme = darkTheme) {
+                SystemUiAppearance(darkTheme = darkTheme)
                 LaunchedEffect(Unit) {
                     StartupPerformance.markFirstFrame(this@MainActivity)
+                    firstFrameRendered.set(true)
                 }
 
                 val beneficiaryAccept by deepLinkViewModel.pendingBeneficiaryAccept

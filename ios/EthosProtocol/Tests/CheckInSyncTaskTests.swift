@@ -9,7 +9,7 @@ final class CheckInSyncTaskTests: XCTestCase {
         var resultToReturn: CheckInResult = .success
         private(set) var idempotencyKeysUsed: [String?] = []
 
-        func checkIn(vaultID: String, idempotencyKey: String?) async -> CheckInResult {
+        func checkInForSync(vaultID: String, idempotencyKey: String?) async -> CheckInResult {
             idempotencyKeysUsed.append(idempotencyKey)
             return resultToReturn
         }

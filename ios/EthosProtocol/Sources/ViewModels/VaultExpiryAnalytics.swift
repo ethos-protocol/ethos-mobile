@@ -51,24 +51,31 @@ enum VaultExpiryAnalytics {
         return total / Double(vaults.count)
     }
 
-    /// Each vault's predicted next deadline — `ttlRemaining` when the server
-    /// has supplied a fresh snapshot, else `lastCheckIn + checkInInterval` —
-    /// sorted soonest first. This is the same deterministic projection as
-    /// Vault.predictedExpiryDate would be, computed directly here so this
-    /// analytics module doesn't depend on that property existing.
+    /// Each vault's predicted next deadline — `ttlRemaining`, anchored to the
+    /// instant it was observed (`ttlFetchedAt`), when the server has supplied a
+    /// snapshot, else `lastCheckIn + checkInInterval` — sorted soonest first.
+    ///
+    /// This is deliberately *not* re-derived here: it delegates to
+    /// `Vault.predictedExpiryDate`, the single projection that also backs the
+    /// vault detail view. #789 fixed that property to anchor the TTL to
+    /// `ttlFetchedAt` rather than to "now", so an offline re-render can no
+    /// longer drift the deadline forward; computing it separately here (the
+    /// old `Date().addingTimeInterval(ttl)` duplicate) reintroduced exactly
+    /// that bug for the trends view (#831).
+    ///
+    /// Ties are broken by vault ID so the ordering — and therefore the list the
+    /// trends view renders — is deterministic across evaluations. At most
+    /// `limit` entries are returned; a limit of zero (or less) returns none.
     static func upcomingExpirations(for vaults: [Vault], limit: Int = 5) -> [UpcomingExpiry] {
         vaults
-            .map { vault in
-                let date: Date
-                if let ttl = vault.ttlRemaining {
-                    date = Date().addingTimeInterval(TimeInterval(ttl))
-                } else {
-                    date = vault.lastCheckIn.addingTimeInterval(TimeInterval(vault.checkInInterval))
+            .map { UpcomingExpiry(vaultID: $0.id, predictedDate: $0.predictedExpiryDate) }
+            .sorted { lhs, rhs in
+                if lhs.predictedDate != rhs.predictedDate {
+                    return lhs.predictedDate < rhs.predictedDate
                 }
-                return UpcomingExpiry(vaultID: vault.id, predictedDate: date)
+                return lhs.vaultID < rhs.vaultID
             }
-            .sorted { $0.predictedDate < $1.predictedDate }
-            .prefix(limit)
+            .prefix(max(0, limit))
             .map { $0 }
     }
 }
